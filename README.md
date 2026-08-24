@@ -249,6 +249,8 @@ python scripts/ar_cli.py worker --remote-host my-npu --start \
 
 #### **3.2 AscendC**
 
+除 Claude/Lingxi-code Agent 入口外，仓库现在提供独立的直接 LLM API 多轮生成器。其生成、评测反馈、KEEP/DISCARD、断点状态与 token 统计由 Python 状态机实现，不依赖 Claude Code；可连接 DeepSeek、GPT 或其他 OpenAI 兼容接口。使用方法见 [AscendC 直接 LLM 多轮生成文档](docs/ascendc-direct-llm.md)。
+
 #### 场景一：单算子生成 (Lingxi-code Agent)
 
 适用于开发者需要快速生成、验证某个特定算子的 AscendC 实现。
@@ -348,6 +350,7 @@ AscendOpGenAgent/
 │   ├── kernelgen-workflow.md   # 子 Agent（代码生成工作流）
 │   ├── ascend-kernel-developer.md
 │   └── performance-optimizer.md
+├── ascendc_multi_turn/         # 独立于 Claude Agent 的直接 LLM AscendC 多轮生成器
 ├── benchmarks/                 # 评测数据集存放目录
 │   ├── KernelBench/
 │   │   ├── level1/             # Level 1 测试用例 (100个)
