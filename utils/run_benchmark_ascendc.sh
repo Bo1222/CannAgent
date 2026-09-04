@@ -19,6 +19,9 @@
 
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${SCRIPT_DIR}/load_env.sh"
+
 # ── 默认值 ──
 BENCHMARK_DIR=""
 LEVEL=""
@@ -27,6 +30,7 @@ IDS=""
 NPU_ID=0
 NPU_LIST=""
 OUTPUT_DIR=""
+MODEL="${ASCENDC_AGENT_MODEL:-${CLAUDE_MODEL:-}}"
 
 # ── 参数解析 ──
 while [[ $# -gt 0 ]]; do
@@ -38,6 +42,7 @@ while [[ $# -gt 0 ]]; do
         --npu)           NPU_ID="$2"; shift 2 ;;
         --npu-list)      NPU_LIST="$2"; shift 2 ;;
         --output)        OUTPUT_DIR="$2"; shift 2 ;;
+        --model)         MODEL="$2"; shift 2 ;;
         -h|--help)
             echo "用法: bash utils/run_benchmark_ascendc.sh --benchmark-dir <path> --level <N> [--range <start-end> | --ids <id_list>] [--npu <id> | --npu-list <list>] --output <path>"
             echo ""
@@ -49,6 +54,7 @@ while [[ $# -gt 0 ]]; do
             echo "  --npu            单 NPU 设备 ID，如 0 (默认 0，与 --npu-list 互斥)"
             echo "  --npu-list       多 NPU 列表，逗号分隔，如 0,1,2,3,4,5 (与 --npu 互斥，优先级更高)"
             echo "  --output         输出目录 (必填)"
+            echo "  --model          Claude 模型，默认读取 ASCENDC_AGENT_MODEL/CLAUDE_MODEL"
             echo ""
             echo "示例:"
             echo "  # 单 NPU 串行模式"
@@ -61,6 +67,11 @@ while [[ $# -gt 0 ]]; do
         *) echo "未知参数: $1"; exit 1 ;;
     esac
 done
+
+CLAUDE_MODEL_ARGS=()
+if [[ -n "$MODEL" ]]; then
+    CLAUDE_MODEL_ARGS=(--model "$MODEL")
+fi
 
 # ── 参数校验 ──
 if [[ -z "$BENCHMARK_DIR" ]]; then
@@ -207,7 +218,7 @@ if [[ "$USE_PARALLEL" == true ]]; then
 
                     PROMPT="使用当前agent生成ascendC算子，npu=${npu}，算子描述文件为 ${file}，输出到 ${TARGET_OP_DIR}/"
 
-                    if claude -p "$PROMPT" \
+                    if claude "${CLAUDE_MODEL_ARGS[@]}" -p "$PROMPT" \
                         --allowedTools 'Bash(*)' 'Read(*)' 'Write(*)' 'Edit(*)' 'Glob(*)' 'Grep(*)' 'Skill(*)' \
                         >> "${OUTPUT_DIR}/npu_${npu}.log" 2>&1; then
 
@@ -303,7 +314,7 @@ else
 
         PROMPT="使用当前agent生成ascendC算子，npu=${NPU_ID}，算子描述文件为 ${file}，输出到 ${TARGET_OP_DIR}/"
 
-        if claude -p "$PROMPT" \
+        if claude "${CLAUDE_MODEL_ARGS[@]}" -p "$PROMPT" \
             --allowedTools 'Bash(*)' 'Read(*)' 'Write(*)' 'Edit(*)' 'Glob(*)' 'Grep(*)' 'Skill(*)'; then
             END_TIME=$(date +%s)
             ELAPSED=$((END_TIME - START_TIME))
@@ -382,4 +393,3 @@ if [[ "$USE_PARALLEL" == true ]]; then
     echo "NPU 日志目录: ${OUTPUT_DIR}/"
 fi
 echo "================================================================"
-

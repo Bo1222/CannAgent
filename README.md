@@ -4,89 +4,196 @@
 
 中文 | [English](README.en.md)
 
-**AscendOpGenAgent** 是一个面向 Ascend NPU 的自动化算子生成与评测框架。本项目基于 Triton/AscendC 自动生成并验证高性能算子代码，旨在大幅提升 Ascend 架构下的算子开发效率与质量。
+**AscendOpGenAgent** 是一个面向 Ascend NPU 的自动化算子生成、评测与多轮优化框架。项目基于 Triton 与 AscendC 自动生成并验证高性能算子代码，并提供三套执行路径：Claude Code 交互式单算子生成、Claude Code 驱动的 AutoResearch 多轮迭代优化、以及直接调用 DeepSeek/OpenAI Chat Completions 接口的 AscendC 多轮生成器。
+
+> **关于 Claude 的角色**：本项目不是"Claude 套壳"。AutoResearch 的多轮状态机、阶段机、评测、KEEP/DISCARD 判定和文件约束全部由本仓库的 Python 代码（`autoresearch/scripts/`）实现，Claude Code 在其中扮演 **LLM agent runtime**（负责 plan/edit/diagnose 的推理），并由 Claude Code hooks 触发状态机推进。`ascendc_multi_turn` 路径完全不依赖 Claude Code，当前明确支持 DeepSeek 和 OpenAI。详见「架构」。
 
 ## 目录
 
 - [AscendOpGenAgent](#ascendopgenagent)
   - [目录](#目录)
   - [核心功能](#核心功能)
+  - [架构](#架构)
+    - [执行入口概览](#执行入口概览)
+    - [Three execution paths](#three-execution-paths)
+    - [AutoResearch 阶段机（多轮 Agent Framework）](#autoresearch-阶段机多轮-agent-framework)
+    - [AscendC 多轮生成器流程](#ascendc-多轮生成器流程)
+  - [Claude 的真实位置](#claude-的真实位置)
   - [快速开始](#快速开始)
     - [1. 环境要求](#1-环境要求)
     - [2. 安装与配置](#2-安装与配置)
     - [3. 使用场景指南](#3-使用场景指南)
       - [**3.1 Triton**](#31-triton)
-      - [场景一：单算子生成](#场景一单算子生成)
-      - [场景二：Benchmark 批量评测](#场景二benchmark-批量评测)
-      - [场景三：AutoResearch 多轮迭代优化](#场景三autoresearch-多轮迭代优化)
       - [**3.2 AscendC**](#32-ascendc)
-      - [场景一：单算子生成 (Lingxi-code Agent)](#场景一单算子生成-lingxi-code-agent)
-      - [场景二：Benchmark 批量评测 (Ascend-Benchmark-Evaluator)](#场景二benchmark-批量评测-ascend-benchmark-evaluator)
-    - [评测基线](#评测基线)
-      - [Triton](#triton)
-      - [AscendC](#ascendc)
+      - [**3.3 AutoResearch 多轮迭代优化**](#33-autoresearch-多轮迭代优化)
+  - [评测基线](#评测基线)
   - [项目结构](#项目结构)
+  - [单用例多 Shape 支持](#单用例多-shape-支持)
   - [许可证](#许可证)
 
 ## 核心功能
 
 | 算子类型 | 模块 | 定位 | 核心能力 |
 |------|------|------|----------|
-| **Triton** | **AKG-Triton Agent** | 单算子交互式生成 | 任务提取 → 代码生成 → 评测验证（精度对齐与性能测试） |
-| **Triton**  | **Benchmark-Evaluator** | 一键批量评测 | 执行指定 Benchmark 评测，自动总结并生成详细报告 |
-| **Triton**  | **AutoResearch** | 多轮迭代性能优化 | plan → edit → eval → keep/discard 闭环，Claude Code hook 强约束的阶段机 |
-| **AscendC** | **Lingxi_code Agent** | AscendC 单算子交互式生成 | 代码生成 → 评测验证（精度对齐与性能测试） |
+| **Triton** | **triton-ascend-coder Agent** | 单算子交互式生成 | 任务提取 → 代码生成 → 评测验证（精度对齐与性能测试） |
+| **Triton** | **Benchmark-Evaluator** | 一键批量评测 | 执行指定 Benchmark 评测，自动总结并生成详细报告 |
+| **AscendC** | **ascend-kernel-developer Agent** | AscendC 单算子交互式生成 | 代码生成 → 评测验证（精度对齐与性能测试） |
 | **AscendC** | **Ascend-Benchmark-Evaluator** | AscendC 算子一键批量评测 | 执行指定 Benchmark 评测，自动总结并生成详细报告 |
+| **Triton** | **AutoResearch** | 多轮迭代性能优化 | plan → edit → eval → keep/discard 闭环，由 Python 阶段机强约束，Claude Code 提供 agent runtime |
+| **AscendC** | **ascendc_multi_turn** | 直接 LLM 多轮生成（不依赖 Claude Code） | generate → evaluate → select 闭环，Python 状态机实现 KEEP/DISCARD、token 统计与断点续跑 |
 
->  **共享内核**：AKG-Triton Agent、Benchmark-Evaluator两者底层共用代码生成 Agent，统一处理“代码生成 → 验证 → 性能测试”的核心工作流，确保生成逻辑的一致性与高复用性。
+> **共享内核**：Triton 单算子 Agent 与 Benchmark-Evaluator 底层共用同一个代码生成 Agent 工作流（`agents/triton-ascend-coder.md` + `skills/triton/`），统一处理「代码生成 → 验证 → 性能测试」的核心流程，保证生成逻辑一致性与复用。
 
-##  快速开始
+## 架构
+
+### 执行入口概览
+
+```
+User
+ └─ 选择入口
+    ├─ (A) Claude Code 交互式 ─ agents/triton-ascend-coder.md 或 ascend-kernel-developer.md
+    ├─ (B) AutoResearch         ─ autoresearch/ 自包含子目录（cd && claude + hooks）
+    └─ (C) AscendC 直接 LLM     ─ python -m ascendc_multi_turn
+```
+
+### Three execution paths
+
+**(A) 交互式单算子生成（Triton / AscendC）**
+
+把 `agents/*.md` 与 `skills/*` 装进 `.claude/`，在 Claude Code 中按提示词生成单个算子：
+`任务提取 → 算法设计 → 代码生成与验证（迭代） → 性能优化与验证（迭代） → 输出报告`。
+
+**(B) AutoResearch 多轮迭代优化（Agent Framework）**
+
+`autoresearch/` 是一个自包含子目录，运行在 Claude Code 里，借助 Claude Code hooks（`PreToolUse` / `PostToolUse` / `Stop`）驱动一个由 `autoresearch/scripts/` 实现的阶段机。它解决"拿着已有正确 kernel + 参考实现，围绕可测量指标做多轮性能优化"的问题，支持批量跑、断点续跑、远端 NPU worker 与失败自动诊断。
+
+**(C) AscendC 直接 LLM 多轮生成**
+
+`ascendc_multi_turn/` 是一个独立的 Python 包，显式实现 `knowledge route → generate → compile → verify → perform → KEEP/DISCARD` 循环，复用仓库的 AscendC 工具链（`utils/build_ascendc.py`、`utils/verification_ascendc.py`、性能分析 skill）。它不调用 Claude Code，通过同一 Chat Completions 客户端连接 DeepSeek 或 OpenAI。详见 [docs/ascendc-direct-llm.md](docs/ascendc-direct-llm.md)。
+
+### AutoResearch 阶段机（多轮 Agent Framework）
+
+核心阶段循环（phase 常量与转移规则见 `autoresearch/scripts/phase_machine/`)：
+
+```text
+scaffold(import ref+kernel) → BASELINE → PLAN → EDIT ⇄ eval → KEEP/DISCARD
+                                            │        │
+                                            ▼        ▼
+                                        (连续失败≥阈值) DIAGNOSE → 新 PLan
+                                            │
+                                            ▼
+                                      eval_rounds ≥ max_rounds → FINISH
+```
+
+```mermaid
+flowchart TD
+    A[scaffold: import ref + kernel] --> B[[BASELINE]]
+    B -->|baseline.py 跑通| C[[PLAN]]
+    C -->|create_plan.py 生成 plan.md| D[[EDIT]]
+    D -->|Edit kernel.py| E{pipeline.py: quick_check + eval}
+    E -->|check fail / eval crash| D
+    E -->|correctness-ok, metric improved| F[KEEP: 提交, 更新 best_metric]
+    E -->|correctness-ok, metric not improved| G[DISCARD: 回滚]
+    E -->|correctness-fail / constraint-fail| H[FAIL: 回滚, consecutive_failures+=1]
+    F --> I{consecutive_failures ≥ 阈值?}
+    G --> I
+    H --> I
+    I -->|否, 且还有 plan 项| D
+    I -->|是| J[[DIAGNOSE]]
+    J -->|ar-diagnosis 子代理 / 手动规划| C
+    F --> K{eval_rounds ≥ max_rounds?}
+    K -->|否| D
+    K -->|是| L[[FINISH]]
+```
+
+关键实现位置：
+
+- **阶段机 / 状态机**：`phase_machine/phase_policy.py:595`（`compute_next_phase`）、`phase_machine/phase_policy.py:619`（`compute_resume_phase`）、`workflow/transition.py`（`PhaseController`）。
+- **单轮结算（KEEP/DISCARD/FAIL）**：`workflow/round.py:29`（`record_round`）——正确性门 → 约束门 → 主指标存在 → 是否改善（`is_improvement`），决定 ROUND 走 KEEP / DISCARD / FAIL。
+- **状态保存**：`phase_machine/state_store.py` —— 单一 `state.json`（`<task_dir>/.ar_state/state.json`）是控制面唯一事实源，原子写入 state.json 即事务提交；`history.jsonl` 为追加式的逐轮记录；`plan.md` 为 agent 面向的 plan。
+- **每轮编排**：`engine/pipeline.py`（quick_check → eval → record_round → settle）。
+- **eval 链路**：`task_config/`（loader / eval_client / eval_assemble）+ `utils/eval_runner.py`。支持本地 NPU，也支持走远程 HTTP worker（`worker/server.py`，`ar_cli.py` 管理 daemon 与 `ssh -L` tunnel）。
+- **工具/文件约束**：hooks 通过 `phase_policy.check_bash` / `check_edit` 限制 Bash 命令形态与可写文件范围（`hooks/guard_bash.py`、`guard_edit.py`），保证 `.ar_state/` 只能被脚本/状态机写入，不能被模型手改。
+- **终止条件**：`eval_rounds >= max_rounds` 是唯一合法 FINISH 触发；`consecutive_failures >= 阈值` 进入 DIAGNOSE；DIAGNOSE 后回到新 plan。过早 Stop 被 `hooks/stop_save.py` 拦截（只有 FINISH 阶段允许 Stop）。
+
+该子系统的完整文档见 [autoresearch/AUTORESEARCH.md](autoresearch/AUTORESEARCH.md)。
+
+### AscendC 多轮生成器流程
+
+`ascendc_multi_turn/` 由 `MultiTurnRunner`（`runner.py:15`）实现一个显式的 Python 循环（第 99 行 `for round_num in ...`），完全不依赖任何 agent runtime：
+
+```mermaid
+flowchart TD
+    R0[读取 reference model.py + cases] --> P{迭代 round_num ≤ max_rounds}
+    P -->|是| B[检测 CANN 版本并路由 Skill/API 文档]
+    B --> C0[构建 prompt: knowledge + reference + current + feedback]
+    C0 --> L[调用 DeepSeek 或 OpenAI, 返回 files/delete 增量]
+    L --> F{解析文件包, 路径/完整性校验}
+    F -->|FORMAT_FAIL| E
+    F -->|ok| A[写回 task_dir]
+    A --> C[evaluator: 静态检查 → AscendC 编译 → 正确性验证 → 性能测试]
+    C --> D{_is_better? 正确且分数更高}
+    D -->|KEEP| K[记录 best.json, 更新 current]
+    D -->|DISCARD| G[回滚到 best, current=best]
+    D -->|首个正确候选| K
+    G --> E[LogTrajectory + 写 state]
+    K --> E
+    E --> P
+    P -->|否, best 存在| Z[还原 best, 写 summary.json + token 统计]
+```
+
+关键实现位置：
+
+- **循环**：`runner.py:99` — `for round_num in range(...)`，`max_rounds` 即终止条件。
+- **每轮输入**：`prompts.py:60`（`build_prompt`）把 `reference_code + cases + current(FileBundle) + previous_result(EvalResult)` 组装进 prompt —— 上一轮评测反馈以 JSON 形式回灌给下一轮，用于 repair / optimize。
+- **KEEP/DISCARD**：`runner.py:62`（`_is_better`）—— 只有正确（`correctness`）且分数严格优于已存 best 才 KEEP，否则 DISCARD 回滚到 best；首个正确候选直接成为 best。
+- **文件协议与安全**：`bundle.py` —— 模型只能返回 `model_new_ascendc.py` 和 `kernel/` 下的源码（`validate_relative_path` 阻止绝对路径 / `..` 穿越 / build 文件），`validate_initial_bundle` 强制首轮必须包含完整 wrapper + pybind + kernel cpp。
+- **评测反馈**：`evaluator.py:42`（`LocalAscendEvaluator`）——依次跑 `validate_ascendc_impl.py` → `utils/build_ascendc.py` → `utils/verification_ascendc.py` → 性能分析；几何平均 speedup 作为分数。
+- **状态保存**：每轮写入 `.llm_state/round_NN/{prompt,response,candidate.json}`，`trajectory.json`、`calls.jsonl`、`token_usage.json`、`best.json`、`summary.json`；中断后用 `--resume` 从下一轮继续（`runner.py:71` `_resume_state`）。
+- **终止与退出**：达到 `max_rounds` 后，若存在 best 则还原并报告 success，否则失败。
+
+## Claude 的真实位置
+
+- **交互式单算子生成（路径 A）**：Claude Code 就是完整 agent，负责任务提取、代码生成、迭代修复 —— 这是"Claude 为主"的模式，但仓库提供了结构化的 `agents/*.md` 定义和 `skills/*` 知识库，并非裸 prompt。
+- **AutoResearch（路径 B）**：**Claude Code 是 agent runtime / LLM 后端**，负责 plan / edit / diagnose 的推理；而**多轮迭代控制、阶段机、状态、评测、KEEP/DISCARD、失败诊断、终止判定全部由 `autoresearch/scripts/` 的 Python 实现**。Claude Code 通过 hooks（`.claude/settings.json` 触发 `hooks/guard_*` 与 `hooks/post_*`）被约束在一个由本项目状态机定义的工作流中。因此这部分**不是"几个 Claude prompt + skills"的套壳**，而是一个有独立状态机的 Agent Framework，Claude 只是其中执行 LLM 推理的后端。
+- **AscendC 多轮生成器（路径 C）**：**完全不涉及 Claude**。多轮循环、状态、KEEP/DISCARD、评测、token 统计全在 `ascendc_multi_turn/` 的 Python 代码里，LLM 侧可选 DeepSeek（默认）或 OpenAI。
+
+## 快速开始
 
 ### 1. 环境要求
 
 在运行本项目之前，请确保您的环境满足以下要求：
-- Python 3.8+
-- Ascend CANN 8.0+
-- Triton Ascend
-- PyTorch 2.0+
-- Claude Code CLI (请确保已正确安装并配置)
-- tilelang-ascend (参考https://github.com/tile-ai/tilelang-ascend/blob/ascendc_pto/README.md#method-3-compile-and-install-from-source 安装)
+- Python 3.10+（AutoResearch 要求，见 `autoresearch/requirements-worker.txt`）
+- Ascend CANN + NPU（`npu-smi info` 可列出设备，Arch Ascend 910B 系列）
+- Triton Ascend + PyTorch 2.0+
+- Claude Code CLI（用于路径 A / B，路径 C 不需要）
+- tilelang-ascend（参考 https://github.com/tile-ai/tilelang-ascend/blob/ascendc_pto/README.md#method-3-compile-and-install-from-source 安装，供 AscendC/TileLang 路径使用）
 
 ### 2. 安装与配置
 
-克隆本项目并配置 Claude Code 环境：
-
 ```bash
-# 1. 克隆项目并进入目录
 git clone https://github.com/your-repo/AscendOpGenAgent.git
 cd AscendOpGenAgent
-
-# 2. 配置 Claude Code（可选，如需自定义配置）
-# Claude Code 会自动识别项目中的 .claude/CLAUDE.md 配置文件
 ```
 
-完成后，即可在项目目录中使用 Claude Code 进行开发。
+- **交互式生成 / 批量评测（路径 A）**：把对应 Agent 和 skills 装进项目的 `.claude/`（见各场景小节）。
+- **AutoResearch（路径 B）**：直接进入 `autoresearch/`，其中已带好 `.claude/{settings.json,agents,commands}` 与顶层 `CLAUDE.md`，无需再配置。
+- **AscendC 直接 LLM（路径 C）**：在 `.env` 中选择 DeepSeek 或 OpenAI 并设置对应 API key，无需 Claude。
 
 ### 3. 使用场景指南
 
-本项目主要提供两个核心使用场景，请根据需求选择对应的 Agent 或 Skill。
 #### **3.1 Triton**
 
-#### 场景一：单算子生成
+##### 场景一：单算子生成
 
-适用于开发者需要快速生成、验证某个特定算子的 Triton 实现。
-
-**操作步骤**：
-
-1. 在 AscendOpGenAgent 目录下配置 Agent和skills：
+1. 在 AscendOpGenAgent 目录下配置 Agent 和 skills：
 ```bash
-mkdir -p .claude
 mkdir -p .claude/skills
 mv agents/triton-ascend-coder.md .claude/CLAUDE.md
 mv skills/triton/* .claude/skills/
 ```
 
-2. 进入 AscendOpGenAgent 目录，启动 claude：
+2. 启动 claude：
 ```bash
 claude
 ```
@@ -98,92 +205,35 @@ claude
 
 **执行流程**：Agent 自动执行 Phase 0-5：参数确认 → 任务构建 → 算法设计 → 代码生成与验证（迭代） → 性能优化与验证（迭代） → 输出报告。
 
----
+##### 场景二：Benchmark 批量评测
 
-#### 场景二：Benchmark 批量评测
-
-适用于批量评测算子的生成效果，支持单 NPU 串行或多 NPU 并行执行。
-
-**支持两种输入模式：**
+支持两种输入模式：
 - **标准模式**：使用 KernelBench（PyTorch Model）
-- **GPU 迁移模式**：使用 TritonNPUKernelBench（GPU Triton Code → NPU Triton Code）
+- **GPU 迁移模式**：使用 `benchmarks/TritonNPUKernelBench`（GPU Triton Code → NPU Triton Code）
 
----
+**子模式 A：标准模式（KernelBench）**
 
-##### 子模式 A：标准模式（KernelBench）
+配置 `.claude/`（同场景一），再执行批量调度脚本：
 
-适用于标准 PyTorch 算子的批量生成与评测。
-
-**操作步骤**：
-
-1. 在 AscendOpGenAgent 目录下创建 `.claude` 目录并配置 Agent：
+单 NPU 串行：
 ```bash
-mkdir -p .claude
-mkdir -p .claude/skills
-mv agents/triton-ascend-coder.md .claude/CLAUDE.md
-mv skills/triton/* .claude/skills/
-```
-
-2. 进入 AscendOpGenAgent 目录，执行批量调度脚本：
-
-**单 NPU 串行模式**：
-```bash
-cd /path/to/AscendOpGenAgent
 bash utils/run_benchmark_triton.sh \
     --benchmark-dir /path/to/KernelBench \
-    --level 1 \
-    --range 1-30 \
-    --npu 0 \
-    --output /path/to/output
+    --level 1 --range 1-30 --npu 0 --output /path/to/output
 ```
 
-**多 NPU 并行模式**（推荐）：
+多 NPU 并行（推荐）：
 ```bash
-cd /path/to/AscendOpGenAgent
 bash utils/run_benchmark_triton.sh \
     --benchmark-dir /path/to/KernelBench \
-    --level 1 \
-    --range 1-30 \
-    --npu-list "0,1,2,3,4,5" \
-    --output /path/to/output
+    --level 1 --range 1-30 --npu-list "0,1,2,3,4,5" --output /path/to/output
 ```
 
-**参数说明**：
-- `--benchmark-dir`: Benchmark 根目录路径（必填）
-- `--level`: Level 编号，如 1, 2, 3, 4（必填）
-- `--range`: 算子范围，如 `1-30`（与 `--ids` 二选一）
-- `--ids`: 指定算子编号列表，逗号分隔，如 `3,7,15`（与 `--range` 二选一）
-- `--npu`: 单 NPU 设备 ID，如 0（默认 0，与 `--npu-list` 互斥）
-- `--npu-list`: 多 NPU 列表，逗号分隔，如 `0,1,2,3,4,5`（与 `--npu` 互斥，优先级更高）
-- `--output`: 输出目录（必填）
+参数：`--benchmark-dir`(必填)、`--level`(必填，1-4)、`--range` 或 `--ids`（二选一）、`--npu` 或 `--npu-list`（互斥）、`--output`(必填)。
 
----
+**子模式 B：GPU Triton Code → NPU（TritonNPUKernelBench）**
 
-##### 子模式 B：GPU Triton Code → NPU（TritonNPUKernelBench）
-
-适用于将已有的 GPU Triton kernel 迁移为 NPU Triton 实现，并与 GPU 性能进行直接对比。
-
-**前置准备**：
-将以下文件上传到 `benchmarks/TritonNPUKernelBench/` 目录（文件名必须同名）：
-- `{op_name}.pt` - 包含 `input_data`（必需）和可选的 `gpu_output`
-- `vllm_gpu_perf.csv` - GPU 性能基线数据（用于对比加速比）
-
-**操作步骤**：
-
-1. 在 AscendOpGenAgent 目录下配置 Agent：
-```bash
-mkdir -p .claude
-mkdir -p .claude/skills
-mv agents/triton-ascend-coder.md .claude/CLAUDE.md
-mv skills/triton/* .claude/skills/
-```
-
-2. 进入 AscendOpGenAgent 目录，启动 claude：
-```bash
-claude
-```
-
-3. 输入算子生成 Prompt：
+将 `{op_name}.pt`（含 `input_data`、可选 `gpu_output`）与 `vllm_gpu_perf.csv` 上传到 `benchmarks/TritonNPUKernelBench/`，配置 `.claude/` 后启动 claude 并输入：
 ```text
 生成triton算子，
 描述文件路径：benchmarks/TritonNPUKernelBench/${算子}.py，
@@ -191,81 +241,20 @@ arch是 ascend910b2，ASCEND_RT_VISIBLE_DEVICES=1
 输出目录是 /path/to/output
 ```
 
-> **说明**：虽然 prompt 中包含 `.py` 文件路径，Agent 会自动检测到 TritonNPUKernelBench 路径并进入 **GPU Kernel 输入模式**，自动查找同名的 `.pt` 文件和 `vllm_gpu_perf.csv` 文件。`.py` 文件用于了解算子逻辑，实际数据从 `.pt` 加载。
-
-**执行流程**：
-- **Phase 0**: 自动检测 TritonNPUKernelBench 路径，进入 GPU Kernel 输入模式
-- **Phase 1**: 从 `.pt` 文件构建任务描述（不调用 op-task-extractor skill，由 Agent 自建）
-- **Phase 2-5**: 标准流程生成 NPU Triton 代码
-- **性能对比**: 自动对比 NPU 实现与 GPU 基线性能
-
-**输出特性**（仅在 GPU 迁移模式下）：
-- `report.md` 将额外显示 **"GPU 参考性能"** 部分：
-  - GPU 参考延迟（来自 `vllm_gpu_perf.csv`）
-  - Ascend Triton 延迟
-  - Ascend/GPU 倍数
-- `summary.json` 将包含扩展字段：
-  - `gpu_mode: true`
-  - `perf_data.gpu_reference_ms`
-  - `perf_data.ascend_vs_gpu_ratio`
-  - `per_shape_results[].gpu_reference_ms`
-  - `per_shape_results[].ascend_vs_gpu_ratio`
-
-
-#### 场景三：AutoResearch 多轮迭代优化
-
-适用于已有 ref 和种子 kernel、需要 Claude 长时间迭代优化性能的场景。Claude 写优化 plan → 改 kernel → quick_check + eval → 自动判 KEEP/DISCARD → 进入下一轮，连续失败自动 DIAGNOSE，预算耗尽自动收尾出报告。整套阶段机由 Claude Code hook 强约束。
-
-**操作步骤**：
-
-1. 进入 `autoresearch/` 自包含子目录并启动 claude：
-```bash
-cd autoresearch
-claude
-```
-`autoresearch/` 内已经带好 `.claude/{settings.json,agents,commands}` 和顶层 `CLAUDE.md`，git pull 拉到更新也直接生效。其他模式（triton-coder / ascendc）仍按各自章节的步骤配置 `.claude/`。
-
-2. 输入算子优化命令（已有 ref + 种子 kernel，把 `<op>` 换成你的算子名）：
-```text
-/autoresearch --ref workspace/<op>_ref.py --kernel workspace/<op>_kernel.py \
-  --op-name <op> --devices 5 --max-rounds 30
-```
-
-如果本机没 NPU，可以把 orchestrator 留在本机、eval 转发到远端 Ascend 机器。在
-`autoresearch/config.yaml` 的 `remote_worker.hosts` 加一个 host alias 后：
-
-```bash
-# 启远端 worker daemon + 自动 ssh -L tunnel（一条命令搞定，cleanup 同理）
-python scripts/ar_cli.py worker --remote-host my-npu --start \
-    --backend ascend --arch ascend910b3 --devices 0 --port 9111
-
-# /autoresearch 加 --worker-url 即透明走远端
-/autoresearch --ref ... --kernel ... --devices 0 --worker-url 127.0.0.1:9111
-```
-
-完整入门教程、批量跑、断点续跑、阶段机不变量、远程 worker 细节等见 **[autoresearch/AUTORESEARCH.md](autoresearch/AUTORESEARCH.md)**。
-
----
+Agent 会自动检测 TritonNPUKernelBench 路径并进入 **GPU Kernel 输入模式**，对比 NPU 实现与 GPU 基线性能（`report.md` 额外显示 "GPU 参考性能"）。
 
 #### **3.2 AscendC**
 
-除 Claude/Lingxi-code Agent 入口外，仓库现在提供独立的直接 LLM API 多轮生成器。其生成、评测反馈、KEEP/DISCARD、断点状态与 token 统计由 Python 状态机实现，不依赖 Claude Code；可连接 DeepSeek、GPT 或其他 OpenAI 兼容接口。使用方法见 [AscendC 直接 LLM 多轮生成文档](docs/ascendc-direct-llm.md)。
+##### 场景一：单算子生成（ascend-kernel-developer Agent）
 
-#### 场景一：单算子生成 (Lingxi-code Agent)
-
-适用于开发者需要快速生成、验证某个特定算子的 AscendC 实现。
-
-**操作步骤**：
-
-1. 在 AscendOpGenAgent 目录下配置 Agent 和 skills：
+1. 配置 Agent 和 skills：
 ```bash
-mkdir -p .claude
 mkdir -p .claude/skills
 mv agents/ascend-kernel-developer.md .claude/CLAUDE.md
 mv skills/ascendc/* .claude/skills/
 ```
 
-2. 进入 AscendOpGenAgent 目录，启动 claude：
+2. 启动 claude：
 ```bash
 claude
 ```
@@ -277,64 +266,88 @@ claude
 
 **执行流程**：Agent 自动执行：确认参数 → 提取任务描述 → 生成代码 → 验证精度与性能 → 输出最终报告。
 
----
+##### 场景二：Benchmark 批量评测（Ascend-Benchmark-Evaluator）
 
-#### 场景二：Benchmark 批量评测 (Ascend-Benchmark-Evaluator)
+配置 `.claude/`（同场景一），再执行批量调度脚本：
 
-适用于批量评测算子的生成效果，支持单 NPU 串行或多 NPU 并行执行。
-
-**操作步骤**：
-
-1. 在 AscendOpGenAgent 目录下创建 `.claude` 目录并配置 Agent：
+单 NPU 串行：
 ```bash
-mkdir -p .claude
-mkdir -p .claude/skills
-mv agents/ascend-kernel-developer.md .claude/CLAUDE.md
-mv skills/ascendc/* .claude/skills/
-```
-
-2. 进入 AscendOpGenAgent 目录，执行批量调度脚本：
-
-**单 NPU 串行模式**：
-```bash
-cd /path/to/AscendOpGenAgent
 bash utils/run_benchmark_ascendc.sh \
     --benchmark-dir /path/to/NPUKernelBench \
-    --level 1 \
-    --range 1-30 \
-    --npu 0 \
-    --output /path/to/output
+    --level 1 --range 1-30 --npu 0 --output /path/to/output
 ```
 
-**多 NPU 并行模式**（推荐）：
+多 NPU 并行（推荐）：
 ```bash
-cd /path/to/AscendOpGenAgent
 bash utils/run_benchmark_ascendc.sh \
     --benchmark-dir /path/to/NPUKernelBench \
-    --level 1 \
-    --range 1-30 \
-    --npu-list "0,1,2,3,4,5" \
-    --output /path/to/output
+    --level 1 --range 1-30 --npu-list "0,1,2,3,4,5" --output /path/to/output
 ```
 
-**参数说明**：
-- `--benchmark-dir`: Benchmark 根目录路径（必填）
-- `--level`: Level 编号，如 1, 2, 3（必填）
-- `--range`: 算子范围，如 `1-30`（与 `--ids` 二选一）
-- `--ids`: 指定算子编号列表，逗号分隔，如 `3,7,15`（与 `--range` 二选一）
-- `--npu`: 单 NPU 设备 ID，如 0（默认 0，与 `--npu-list` 互斥）
-- `--npu-list`: 多 NPU 列表，逗号分隔，如 `0,1,2,3,4,5`（与 `--npu` 互斥，优先级更高）
-- `--output`: 输出目录（必填）
+> 底层 batch 调度脚本通过 `claude --print` 无头模式调用 agent（需要配置 `ANTHROPIC_AUTH_TOKEN` / `ANTHROPIC_BASE_URL`，见 `utils/run_benchmark_*.sh` 顶部注释）。
 
-### 评测基线
+##### 场景三：AscendC 直接 LLM 多轮生成（不依赖 Claude Code）
 
-#### Triton
-关于 Triton 的相关数据，请参阅[`benchmarks/BASELINE_latest.md`](benchmarks/BASELINE_latest.md)
+`ascendc_multi_turn/` 是独立于 Claude 的 AscendC 多轮生成器。`--mock` 可在无 NPU 时验证编排流程。
 
-#### AscendC
-关于 AscendC 的相关数据，请参阅[`benchmarks/BASELINE_latest.md`](benchmarks/BASELINE_latest.md) 
+DeepSeek 示例：
+```bash
+pip install -r requirements.txt
+cp .env.example .env
+# 编辑 .env，填写 DEEPSEEK_API_KEY
+python -m ascendc_multi_turn \
+  --op-file benchmarks/NPUKernelBench/level1/1_GELU.py \
+  --output-dir outputs/1_GELU \
+  --provider deepseek \
+  --model deepseek-chat \
+  --base-url https://api.deepseek.com \
+  --max-rounds 5 --soc-version Ascend910B3 --device 0
+```
 
+使用 OpenAI/GPT 测试时，在 `.env` 填写 `OPENAI_API_KEY`、`OPENAI_MODEL`、
+`OPENAI_BASE_URL`，并改用 `--provider openai`。每轮会先通过
+`ascendc-translator` Skill 选择与 CANN 版本匹配的 API 文档，再执行代码生成和评测。
 
+无 NPU 验证编排：
+```bash
+python -m ascendc_multi_turn \
+  --op-file benchmarks/NPUKernelBench/level1/1_GELU.py \
+  --output-dir /tmp/ascendc-flow-check --max-rounds 3 --mock
+```
+
+详见 [docs/ascendc-direct-llm.md](docs/ascendc-direct-llm.md)。
+
+#### **3.3 AutoResearch 多轮迭代优化**
+
+适用于已有 ref 和种子 kernel、需要围绕性能指标做长时间多轮迭代的场景。整套阶段机由仓库 Python 代码实现，Claude Code 提供 agent runtime。
+
+1. 进入 AutoResearch 自包含子目录并启动 claude：
+```bash
+cd autoresearch
+claude
+```
+
+2. 输入算子优化命令（把 `<op>` 换成你的算子名，先放 `workspace/<op>_ref.py` 与 `workspace/<op>_kernel.py`）：
+```text
+/autoresearch --ref workspace/<op>_ref.py --kernel workspace/<op>_kernel.py \
+  --op-name <op> --devices 5 --max-rounds 30
+```
+
+3. 本机无 NPU 时，可把 eval 转发到远端 Ascend 机器。在 `autoresearch/config.yaml` 的 `remote_worker.hosts` 加一个 host alias 后：
+```bash
+# 启远端 worker daemon + 自动 ssh -L tunnel（cleanup 用 --stop 同理）
+python scripts/ar_cli.py worker --remote-host my-npu --start \
+    --backend ascend --devices 0 --port 9111
+
+# /autoresearch 加 --worker-url 即透明走远端
+/autoresearch --ref ... --kernel ... --devices 0 --worker-url 127.0.0.1:9111
+```
+
+批量跑、断点续跑、阶段机不变量、远程 worker 细节见 **[autoresearch/AUTORESEARCH.md](autoresearch/AUTORESEARCH.md)**。
+
+## 评测基线
+
+- **Triton / AscendC**：请参阅 [`benchmarks/BASELINE_latest.md`](benchmarks/BASELINE_latest.md)（另有按日期归档的 `BASELINE_0327.md` / `BASELINE_0408.md` / `BASELINE_0415.md` / `BASELINE_0420.md`）。
 
 ## 项目结构
 
@@ -342,62 +355,57 @@ bash utils/run_benchmark_ascendc.sh \
 AscendOpGenAgent/
 ├── .gitignore
 ├── LICENSE
+├── CONTRIBUTING.md
 ├── README.en.md
 ├── README.md
-├── agents/                     # Agent 定义目录
-│   ├── AKG-triton.md           # 主编排 Agent
-│   ├── benchmark-scheduler.md
-│   ├── kernelgen-workflow.md   # 子 Agent（代码生成工作流）
+├── TODO.md
+├── archive_tasks/               # 归档的算子任务产物（design/kernel 分层）
+├── agents/                      # Agent 定义（Claude Code 交互式路径）
 │   ├── ascend-kernel-developer.md
-│   └── performance-optimizer.md
-├── ascendc_multi_turn/         # 独立于 Claude Agent 的直接 LLM AscendC 多轮生成器
-├── benchmarks/                 # 评测数据集存放目录
-│   ├── KernelBench/
-│   │   ├── level1/             # Level 1 测试用例 (100个)
-│   │   ├── level2/             # Level 2 测试用例 (99个)
-│   │   ├── level3/             # Level 3 测试用例 (52个)
-│   │   └── level4/             # Level 4 测试用例 (20个)
-│   ├── NPUKernelBench/
-│   │   └── level1/             # NPU KernelBench Level 1 测试用例 (31个)
-│   └── TritonNPUKernelBench/   # GPU Triton → NPU 迁移评测数据集
-│       ├── {op_name}.pt        # 包含 input_data 和可选 gpu_output
-│       ├── {op_name}.py        # GPU Triton kernel 源码
-│       └── vllm_gpu_perf.csv   # GPU 性能基线数据
-├── skills/                     # Skill 实现目录
-│   ├── ascendc_evalution/
-│   ├── ascend_benchmark_evaluator/
-│   ├── ascendc/
-│   ├── benchmark-evaluator/    # 批量评测 Skill
-│   ├── dsl_baseline_generation/
-│   ├── dsl_lowering/
-│   ├── functional_conversion/
-│   ├── kernel-designer/
-│   ├── kernel-generator/       # 代码生成 Skill
-│   ├── kernel-verifier/        # 验证与性能测试 Skill
-│   ├── latency-optimizer/
-│   ├── op-task-extractor/      # 任务提取 Skill
-│   ├── op_desc_generation/
-│   └── reference_generation/
-└── autoresearch/               # AutoResearch 自包含子目录（`cd autoresearch && claude` 直接激活）
-    ├── CLAUDE.md               # 主 agent prompt
-    ├── config.yaml             # 运行时配置（profiler / autotune / 精度 / remote_worker）
-    ├── .claude/                # Claude Code 配置（提交进仓库）
-    │   ├── settings.json       #   hooks + 权限
-    │   ├── agents/ar-diagnosis.md
-    │   └── commands/autoresearch.md
-    └── scripts/                # 框架运行时
-        ├── ar_cli.py           #   worker 子命令 + remote-host SSH 调度
-        ├── engine/             #   baseline / pipeline / eval_kernel / scaffold
-        ├── workflow/           #   record_round / run_baseline_init
-        ├── hooks/              #   guard_* + post_* (Claude Code hooks)
-        ├── phase_machine/      #   BASELINE / PLAN / EDIT / DIAGNOSE / REPLAN / FINISH
-        ├── task_config/        #   task.yaml loader + eval_client (本地+远程 transport)
-        ├── worker/             #   FastAPI HTTP worker daemon (/api/v1/run + /status)
-        ├── batch/              #   batch prepare / run / monitor / summarize
-        └── utils/              #   correctness / eval_runner / settings / ...
-
+│   └── triton-ascend-coder.md
+├── ascendc_multi_turn/          # 直接 LLM AscendC 多轮生成器（无 Claude 依赖）
+│   ├── __main__.py / runner.py / bundle.py / evaluator.py
+│   ├── llm.py (DeepSeek/OpenAI provider / Mock) / prompts.py / models.py
+│   └── logging.py (TrajectoryLogger)
+├── autoresearch/                # AutoResearch 自包含子目录（cd && claude 直接激活）
+│   ├── CLAUDE.md                # 主 agent prompt
+│   ├── AUTORESEARCH.md          # 完整操作系统文档
+│   ├── config.yaml              # profiler / eval / remote_worker / thresholds
+│   ├── .claude/                 # Claude Code 配置（提交进仓库）
+│   │   ├── settings.json        #   hooks + 权限
+│   │   ├── agents/ar-diagnosis.md
+│   │   └── commands/autoresearch.md
+│   └── scripts/                 # 框架运行时（Python）
+│       ├── ar_cli.py            #   worker 子命令 + remote-host SSH 调度
+│       ├── engine/              #   baseline / pipeline / create_plan / eval_kernel / parse_args / quick_check
+│       ├── workflow/            #   round(record_round) / transition(PhaseController) / planning / baseline / progress_reducer
+│       ├── hooks/               #   guard_* + post_* + stop_save（Claude Code hooks）
+│       ├── phase_machine/       #   BASELINE / PLAN / EDIT / DIAGNOSE / REPLAN / FINISH + guidance / phase_policy / validators / state_store
+│       ├── task_config/         #   task.yaml loader + eval_client（本地+远程 transport）+ package_builder
+│       ├── worker/              #   FastAPI HTTP worker daemon (/api/v1/run、/api/v1/status)
+│       ├── batch/               #   discover / prepare / run / monitor / summarize / verify
+│       └── utils/               #   correctness / eval_runner / settings / git_utils / hw_detect / ...
+├── benchmarks/
+│   ├── KernelBench/             # level1-4（PyTorch Model 标准基准）
+│   ├── NPUKernelBench/          # level0-4（NPU AscendC 基准）
+│   ├── TritonNPUKernelBench/    # GPU Triton → NPU 迁移评测数据（{op}.pt / {op}.py / vllm_gpu_perf.csv）
+│   └── BASELINE_*.md
+├── docs/
+│   └── ascendc-direct-llm.md    # AscendC 直接 LLM 多轮生成文档
+├── skills/
+│   ├── triton/                  # Triton-Ascend 知识库（SKILL.md + references）
+│   │   ├── kernel-designer / kernel-generator / kernel-splitter / kernel-verifier
+│   │   ├── latency-optimizer / op-task-extractor
+│   └── ascendc/                 # AscendC 知识库
+│       ├── ascendc-translator / tilelang-designer / case-simplifier
+│       ├── performance-analyzer / trace-recorder
+├── tests/
+│   └── test_ascendc_multi_turn.py
+└── utils/                       # 构建 / 验证 / 评测 / 批量调度
+    ├── build_ascendc.py / verification_ascendc.py / verification_tilelang.py
+    ├── performance.py / generate_report_dynamic.py / render_session.py
+    ├── run_benchmark_triton.sh / run_benchmark_ascendc.sh / install_env_deps.sh
 ```
-
 
 ## 单用例多 Shape 支持
 
@@ -414,7 +422,7 @@ import torch.nn as nn
 class Model(nn.Module):
     def __init__(self):
         super(Model, self).__init__()
-        
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return torch.nn.functional.gelu(x)
 
@@ -441,7 +449,7 @@ import torch.nn as nn
 class Model(nn.Module):
     def __init__(self):
         super(Model, self).__init__()
-        
+
     def forward(self, x: torch.Tensor, approximate='none') -> torch.Tensor:
         return torch.nn.functional.gelu(x, approximate=approximate)
 
@@ -500,141 +508,28 @@ def get_init_inputs():
 
 ### 输出规格（性能报告）
 
-#### 单 Shape 性能报告
-
-```json
-{
-  "op_name": "gelu",
-  "warmup": 5,
-  "repeats": 50,
-  "total_cases": 1,
-  "passed_cases": 1,
-  "failed_cases": 0,
-  "nan_indices": [],
-  "inf_indices": [],
-  "zero_indices": [],
-  "negative_indices": [],
-  "none_indices": [],
-  "framework": {
-    "avg_latency_ms": 0.2345,
-    "peak_memory_mb": 2.50,
-    "operators": {}
-  },
-  "implementation": {
-    "avg_latency_ms": 0.1567,
-    "peak_memory_mb": 1.25,
-    "operators": {}
-  },
-  "speedup_vs_torch": 1.4965,
-  "per_shape_results": [
-    {
-      "case_idx": 1,
-      "input_desc": [{"type":"tensor","shape":[1024,1024],"dtype":"torch.float16"}],
-      "status": "pass",
-      "framework": {"avg_latency_ms": 0.2345, "peak_memory_mb": 2.50},
-      "implementation": {"avg_latency_ms": 0.1567, "peak_memory_mb": 1.25},
-      "speedup_vs_torch": 1.4965,
-      "error_type": null,
-      "error_msg": null
-    }
-  ]
-}
-```
-
-#### 多 Shape 性能报告
-
-```json
-{
-  "op_name": "gelu",
-  "warmup": 5,
-  "repeats": 50,
-  "total_cases": 3,
-  "passed_cases": 3,
-  "failed_cases": 0,
-  "nan_indices": [],
-  "inf_indices": [],
-  "zero_indices": [],
-  "negative_indices": [],
-  "none_indices": [],
-  "framework": {
-    "avg_latency_ms": 0.4567,
-    "peak_memory_mb": 8.50,
-    "operators": {}
-  },
-  "implementation": {
-    "avg_latency_ms": 0.3123,
-    "peak_memory_mb": 4.25,
-    "operators": {}
-  },
-  "speedup_vs_torch": 1.4910,
-  "per_shape_results": [
-    {
-      "case_idx": 1,
-      "input_desc": [{"type":"tensor","shape":[128,128],"dtype":"torch.float16"}],
-      "status": "pass",
-      "framework": {"avg_latency_ms": 0.0234, "peak_memory_mb": 0.50},
-      "implementation": {"avg_latency_ms": 0.0156, "peak_memory_mb": 0.25},
-      "speedup_vs_torch": 1.5000,
-      "error_type": null,
-      "error_msg": null
-    },
-    {
-      "case_idx": 2,
-      "input_desc": [{"type":"tensor","shape":[256,256],"dtype":"torch.float16"}],
-      "status": "pass",
-      "framework": {"avg_latency_ms": 0.0891, "peak_memory_mb": 2.00},
-      "implementation": {"avg_latency_ms": 0.0588, "peak_memory_mb": 1.00},
-      "speedup_vs_torch": 1.5153,
-      "error_type": null,
-      "error_msg": null
-    },
-    {
-      "case_idx": 3,
-      "input_desc": [{"type":"tensor","shape":[1024,1024],"dtype":"torch.float16"}],
-      "status": "pass",
-      "framework": {"avg_latency_ms": 1.2577, "peak_memory_mb": 8.00},
-      "implementation": {"avg_latency_ms": 0.8625, "peak_memory_mb": 12.50},
-      "speedup_vs_torch": 1.4582,
-      "error_type": null,
-      "error_msg": null
-    }
-  ]
-}
-```
-
-**输出字段说明**：
+性能报告汇总字段（参见 `utils/performance.py` 生成逻辑）：
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
 | `op_name` | `str` | 算子名称 |
-| `warmup` | `int` | 预热次数 |
-| `repeats` | `int` | 正式测试次数 |
-| `total_cases` | `int` | 测试的 Shape 数量（单 Shape 为 1，多 Shape ≥2） |
-| `passed_cases` / `failed_cases` | `int` | 多 Shape 通过 / 失败用例数（异常 `s_i` 的 shape 仍计入 `passed_cases`）|
-| `nan_indices` / `inf_indices` / `zero_indices` / `negative_indices` / `none_indices` | `List[int]` | 各类异常 `s_i` 的 case_idx 列表（从 1 开始，不进入几何平均）；无异常时为 `[]` |
-| `framework.avg_latency_ms` | `float` | PyTorch 实现平均延迟（毫秒），各 Shape 算术平均（兼容语义）|
-| `framework.peak_memory_mb` | `float` | PyTorch 峰值内存（MB）各 Shape 平均 |
-| `implementation.avg_latency_ms` | `float` | 实现平均延迟（毫秒），各 Shape 算术平均（兼容语义）|
-| `implementation.peak_memory_mb` | `float` | 实现峰值内存（MB）各 Shape 平均 |
-| `speedup_vs_torch` | `float\|null` | **几何平均加速比** = `(∏ s_i)^(1/n)`，仅对 status==pass 且 `s_i` 为有限正数的 Shape；全部异常时为 `null` |
-| `perf_method` | `str` | 评测方式："profiler"（torch_npu.profiler）或 "fallback"（time.perf_counter 兜底） |
-| `skill_path` | `str` | 使用的 benchmark skill 路径 |
-| `per_shape_results` | `List[Dict]` | 各 Shape 明细数据（永远存在，含失败用例）|
+| `warmup` / `repeats` | `int` | 预热 / 正式测试次数 |
+| `total_cases` / `passed_cases` / `failed_cases` | `int` | 测试的 Shape 数量与通过/失败用例数 |
+| `nan_indices` / `inf_indices` / `zero_indices` / `negative_indices` / `none_indices` | `List[int]` | 各类异常 `s_i` 的 case_idx 列表（无异常时为 `[]`，不进入几何平均） |
+| `framework` / `implementation` | `Dict` | PyTorch / 实现版本的 `avg_latency_ms` 与 `peak_memory_mb` |
+| `speedup_vs_torch` | `float\|null` | **几何平均加速比** = `(∏ s_i)^(1/n)`（自 commit `8df1790` 起；仅对 status==pass 且 `s_i` 为有限正数的 Shape；全部异常时为 `null`） |
+| `perf_method` | `str` | "profiler"（torch_npu.profiler）或 "fallback"（time.perf_counter 兜底） |
+| `per_shape_results` | `List[Dict]` | 各 Shape 明细（含失败用例，`case_idx`/`input_desc`/`status`/`speedup_vs_torch`/`error_type`/`error_msg`） |
 
-**per_shape_results 元素说明**：
+单 Shape / 多 Shape 的完整 JSON 示例与逐字段说明，见历史 README 与 `utils/performance.py`。多 Shape 的核心区别：
 
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| `case_idx` | `int` | 用例序号（从 1 开始）|
-| `input_desc` | `List[Dict]` | 输入结构化描述（tensor: shape+dtype；scalar: value）|
-| `status` | `str` | `"pass"` 或 `"fail"` |
-| `framework` / `implementation` | `Dict\|null` | pass 时含 `avg_latency_ms`、`peak_memory_mb`；fail 时为 null |
-| `speedup_vs_torch` | `float\|null` | 该 Shape 的加速比；fail 或 `s_i` 异常（NaN/Inf/0/负数/None）时为 null |
-| `error_type` / `error_msg` | `str\|null` | fail 时记录异常类型与堆栈（截断 2000 字符）|
+- `total_cases`：单 Shape 为 1，多 Shape ≥2。
+- `framework.avg_latency_ms` / `implementation.avg_latency_ms`：各 Shape 算术平均的毫秒延迟。
+- `speedup_vs_torch`：几何平均加速比，异常 Shape 不参与。
 
 ### 适用场景
 
-1. **算子泛化性测试**：验证生成的 Triton 算子在多种输入规模下的正确性和稳定性
+1. **算子泛化性测试**：验证生成算子在多种输入规模下的正确性和稳定性
 2. **性能趋势分析**：通过对比不同 Shape 的加速比，识别算子的优势和局限性
 3. **AI 模型场景复现**：模拟真实模型中的典型输入 Shape 分布（如 LLM 的多种序列长度）
 4. **自动 Benchmark 评测**：批量评测时自动覆盖多种 Shape，减少重复工作量

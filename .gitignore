@@ -31,3 +31,15 @@ workspace/
 # Outer .claude/ (used by triton-coder / ascendc setup mv chains)
 .claude/settings.local.json
 .claude/scheduled_tasks.lock
+.claude/
+.opencode/
+
+# Local environment and LLM credentials
+.env
+.env.*
+*.env
+!.env.example
+
+# Agent.md and log files
+AGENTS.md
+CHANGELOG.md

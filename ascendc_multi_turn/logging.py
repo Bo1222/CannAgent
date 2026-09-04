@@ -29,10 +29,14 @@ class TrajectoryLogger:
         temporary.write_text(json.dumps(self.data, ensure_ascii=False, indent=2), encoding="utf-8")
         os.replace(temporary, self.log_path)
 
-    def save_call(self, round_num: int, response: dict[str, Any]) -> None:
+    def save_call(self, round_num: int, response: dict[str, Any], *, call_type: str = "generator") -> None:
         # Raw model output is stored once in round_N/response.txt.  Keep this
         # append-only file compact so it can be aggregated across many ops.
-        record = {"round": round_num, **{key: value for key, value in response.items() if key != "content"}}
+        record = {
+            "round": round_num,
+            "call_type": call_type,
+            **{key: value for key, value in response.items() if key != "content"},
+        }
         with self.calls_path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(record, ensure_ascii=False) + "\n")
 
@@ -45,6 +49,10 @@ class TrajectoryLogger:
         self.data["success"] = success
         self._save()
         self.done_path.touch()
+
+    def save_knowledge(self, knowledge: dict[str, Any]) -> None:
+        self.data["knowledge"] = knowledge
+        self._save()
 
     @property
     def completed_rounds(self) -> int:
@@ -62,4 +70,20 @@ class TrajectoryLogger:
             for key, value in usage.items():
                 if isinstance(value, int) and ("token" in key):
                     totals[key] = totals.get(key, 0) + value
+        return totals
+
+    def token_totals_by_call_type(self) -> dict[str, dict[str, int]]:
+        totals: dict[str, dict[str, int]] = {}
+        if not self.calls_path.is_file():
+            return totals
+        for line in self.calls_path.read_text(encoding="utf-8").splitlines():
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            call_type = str(record.get("call_type", "generator"))
+            bucket = totals.setdefault(call_type, {})
+            for key, value in record.get("usage", {}).items():
+                if isinstance(value, int) and "token" in key:
+                    bucket[key] = bucket.get(key, 0) + value
         return totals

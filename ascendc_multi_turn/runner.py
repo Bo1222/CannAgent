@@ -6,6 +6,13 @@ from pathlib import Path
 
 from .bundle import capture_bundle, parse_file_bundle, restore_bundle, validate_initial_bundle
 from .evaluator import Evaluator
+from .knowledge import (
+    build_knowledge_prompt,
+    knowledge_limits,
+    parse_knowledge_selection,
+    render_knowledge,
+    resolve_knowledge_version,
+)
 from .llm import LLMProvider
 from .logging import TrajectoryLogger
 from .models import EvalResult, FileBundle, RunConfig
@@ -95,21 +102,61 @@ class MultiTurnRunner:
         logger = TrajectoryLogger(self.state_dir, self.config.to_dict())
         reference, cases = self._inputs()
         current, best_bundle, previous, best_result, best_round = self._resume_state(logger)
+        knowledge_version = resolve_knowledge_version(self.config)
+        recorded_knowledge = logger.data.get("knowledge")
+        if recorded_knowledge and recorded_knowledge != knowledge_version.to_dict():
+            raise ValueError(
+                "cannot resume with different CANN knowledge: "
+                f"recorded={recorded_knowledge}, current={knowledge_version.to_dict()}"
+            )
+        logger.save_knowledge(knowledge_version.to_dict())
+        max_api_docs, max_knowledge_chars = knowledge_limits()
 
         for round_num in range(logger.completed_rounds + 1, self.config.max_rounds + 1):
             round_dir = self.state_dir / f"round_{round_num:02d}"
             round_dir.mkdir(parents=True, exist_ok=True)
+            knowledge_prompt = build_knowledge_prompt(
+                reference_code=reference,
+                current=current,
+                previous_result=previous,
+                version=knowledge_version,
+            )
+            (round_dir / "knowledge_prompt.txt").write_text(knowledge_prompt, encoding="utf-8")
+            knowledge_response = self.provider.generate(knowledge_prompt)
+            (round_dir / "knowledge_response.txt").write_text(knowledge_response.content, encoding="utf-8")
+            logger.save_call(round_num, knowledge_response.to_dict(), call_type="knowledge_router")
+            fallback_parts = [reference, cases]
+            if current:
+                fallback_parts.extend(current.files.values())
+            if previous:
+                fallback_parts.append(json.dumps(previous.to_dict(), ensure_ascii=False))
+            selection = parse_knowledge_selection(
+                knowledge_response.content,
+                version=knowledge_version,
+                max_api_docs=max_api_docs,
+                fallback_text="\n".join(fallback_parts),
+            )
+            knowledge_context = render_knowledge(
+                selection,
+                version=knowledge_version,
+                max_chars=max_knowledge_chars,
+            )
+            (round_dir / "selected_knowledge.json").write_text(
+                json.dumps(selection.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+            (round_dir / "references.md").write_text(knowledge_context, encoding="utf-8")
             prompt = build_prompt(
                 reference_code=reference,
                 cases_text=cases,
                 current=current,
                 previous_result=previous,
                 round_num=round_num,
+                knowledge_context=knowledge_context,
             )
             (round_dir / "prompt.txt").write_text(prompt, encoding="utf-8")
             response = self.provider.generate(prompt)
             (round_dir / "response.txt").write_text(response.content, encoding="utf-8")
-            logger.save_call(round_num, response.to_dict())
+            logger.save_call(round_num, response.to_dict(), call_type="generator")
 
             try:
                 delta = parse_file_bundle(response.content)
@@ -147,6 +194,7 @@ class MultiTurnRunner:
                     "response_model": response.model,
                     "usage": response.usage,
                     "latency_seconds": response.latency_seconds,
+                    "knowledge": selection.to_dict(),
                     "candidate": f"round_{round_num:02d}/candidate.json" if (round_dir / "candidate.json").is_file() else None,
                 },
                 best_round=best_round,
@@ -155,15 +203,19 @@ class MultiTurnRunner:
         if best_bundle is not None:
             restore_bundle(self.task_dir, best_bundle)
         totals = logger.token_totals()
+        totals_by_call_type = logger.token_totals_by_call_type()
         summary = {
             "success": best_bundle is not None,
             "rounds_completed": logger.completed_rounds,
             "best_round": best_round,
             "best_score": best_result.score if best_result else None,
             "token_usage": totals,
+            "token_usage_by_call_type": totals_by_call_type,
+            "knowledge": knowledge_version.to_dict(),
             "task_dir": str(self.task_dir),
         }
-        (self.state_dir / "token_usage.json").write_text(json.dumps(totals, indent=2), encoding="utf-8")
+        usage_report = {"total": totals, "by_call_type": totals_by_call_type}
+        (self.state_dir / "token_usage.json").write_text(json.dumps(usage_report, indent=2), encoding="utf-8")
         (self.state_dir / "summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
         logger.mark_done(summary["success"])
         return summary

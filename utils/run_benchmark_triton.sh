@@ -14,6 +14,9 @@
 
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${SCRIPT_DIR}/load_env.sh"
+
 # ── 默认值 ──
 BENCHMARK_DIR=""
 LEVEL=""
@@ -24,6 +27,7 @@ NPU_LIST=""
 OUTPUT_DIR=""
 ARCH="ascend910b2"
 CLAUDE_PROJECT_DIR=""
+MODEL="${TRITON_AGENT_MODEL:-${CLAUDE_MODEL:-}}"
 
 # ── 参数解析 ──
 while [[ $# -gt 0 ]]; do
@@ -36,6 +40,7 @@ while [[ $# -gt 0 ]]; do
         --npu-list)      NPU_LIST="$2"; shift 2 ;;
         --output)        OUTPUT_DIR="$2"; shift 2 ;;
         --arch)          ARCH="$2"; shift 2 ;;
+        --model)         MODEL="$2"; shift 2 ;;
         --claude-project-dir) CLAUDE_PROJECT_DIR="$2"; shift 2 ;;
         -h|--help)
             echo "用法: bash utils/run_benchmark_triton.sh --benchmark-dir <path> --level <N> [--range <start-end> | --ids <id_list>] [--npu <id> | --npu-list <list>] --output <path>"
@@ -49,6 +54,7 @@ while [[ $# -gt 0 ]]; do
             echo "  --npu-list       多 NPU 列表，逗号分隔，如 0,1,2,3,4,5 (与 --npu 互斥，优先级更高)"
             echo "  --output         输出目录 (必填)"
             echo "  --arch           目标设备架构，默认 ascend910b2"
+            echo "  --model          Claude 模型，默认读取 TRITON_AGENT_MODEL/CLAUDE_MODEL"
             echo "  --claude-project-dir  Claude Code 项目目录，用于定位 .jsonl 会话文件"
             echo ""
             echo "示例:"
@@ -62,6 +68,11 @@ while [[ $# -gt 0 ]]; do
         *) echo "未知参数: $1"; exit 1 ;;
     esac
 done
+
+CLAUDE_MODEL_ARGS=()
+if [[ -n "$MODEL" ]]; then
+    CLAUDE_MODEL_ARGS=(--model "$MODEL")
+fi
 
 # ── 参数校验 ──
 if [[ -z "$BENCHMARK_DIR" ]]; then
@@ -221,7 +232,7 @@ if [[ "$USE_PARALLEL" == true ]]; then
                         PROMPT="生成一个基于 Triton-Ascend 框架的算子，参考${file}。目标设备架构为${ARCH}，使用NPU=${npu}，请将生成的代码文件输出至${TARGET_OP_DIR}/目录下。"
                     fi
 
-                    if claude -p "$PROMPT" \
+                    if claude "${CLAUDE_MODEL_ARGS[@]}" -p "$PROMPT" \
                         --session-id "$SID" \
                         --allowedTools 'Bash(*)' 'Read(*)' 'Write(*)' 'Edit(*)' 'Glob(*)' 'Grep(*)' 'Skill(*)' \
                         >> "${OUTPUT_DIR}/npu_${npu}.log" 2>&1; then
@@ -320,7 +331,7 @@ else
             PROMPT="生成一个基于 Triton-Ascend 框架的算子，参考${file}。目标设备架构为${ARCH}，使用NPU=${NPU_ID}，请将生成的代码文件输出至${TARGET_OP_DIR}/目录下。"
         fi
 
-        if claude -p "$PROMPT" \
+        if claude "${CLAUDE_MODEL_ARGS[@]}" -p "$PROMPT" \
             --session-id "$SID" \
             --allowedTools 'Bash(*)' 'Read(*)' 'Write(*)' 'Edit(*)' 'Glob(*)' 'Grep(*)' 'Skill(*)'; then
             END_TIME=$(date +%s)
@@ -378,5 +389,4 @@ if [[ "$USE_PARALLEL" == true ]]; then
     echo "NPU 日志目录: ${OUTPUT_DIR}/"
 fi
 echo "================================================================"
-
 

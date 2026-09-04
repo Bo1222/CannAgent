@@ -1,17 +1,7 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
-
 from .models import EvalResult, FileBundle
-
-
-REPO_ROOT = Path(__file__).resolve().parent.parent
-REFERENCE_FILES = (
-    REPO_ROOT / "skills/ascendc/ascendc-translator/references/dsl2Ascendc.md",
-    REPO_ROOT / "skills/ascendc/ascendc-translator/references/TileLang-AscendC-API-Mapping.md",
-    REPO_ROOT / "skills/ascendc/ascendc-translator/references/AscendCVerification.md",
-)
 
 OUTPUT_CONTRACT = r"""
 Return exactly one JSON object and no Markdown fence:
@@ -40,14 +30,6 @@ RULES = """
 """.strip()
 
 
-def _references() -> str:
-    chunks = []
-    for path in REFERENCE_FILES:
-        if path.is_file():
-            chunks.append(f"## {path.name}\n{path.read_text(encoding='utf-8')}")
-    return "\n\n".join(chunks)
-
-
 def _bundle_text(bundle: FileBundle | None) -> str:
     if bundle is None or not bundle.files:
         return "(no implementation exists yet)"
@@ -64,6 +46,7 @@ def build_prompt(
     current: FileBundle | None,
     previous_result: EvalResult | None,
     round_num: int,
+    knowledge_context: str,
 ) -> str:
     if previous_result is None:
         feedback = "No previous evaluation. Generate the initial implementation."
@@ -99,8 +82,8 @@ def build_prompt(
 {feedback}
 ```
 
-## AscendC references
-{_references()}
+## AscendC skill and versioned references
+{knowledge_context}
 
 ## Output contract
 {OUTPUT_CONTRACT}

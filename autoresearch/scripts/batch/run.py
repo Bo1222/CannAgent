@@ -25,6 +25,12 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
+# Root-level LLM settings are shared with the direct AscendC generator and
+# the shell benchmark entrypoints.
+OUTER_REPO_ROOT = Path(__file__).resolve().parents[3]
+sys.path.insert(0, str(OUTER_REPO_ROOT))
+from llm_config import get_env  # noqa: E402
+
 # Force UTF-8 on this script's own stdout/stderr. claude.cmd prints
 # tokens like `µs`, box-drawing rules, and Chinese rationale text;
 # on Chinese-locale Windows the default GBK codec can't encode them
@@ -723,7 +729,11 @@ def main() -> int:
     ap.add_argument("--cooldown-sec", type=int, default=batch_cooldown_sec(),
                     help="seconds to sleep between ops")
     ap.add_argument("--claude-bin", default="claude")
-    ap.add_argument("--model", default="")
+    ap.add_argument(
+        "--model",
+        default=get_env("AUTORESEARCH_MODEL", get_env("CLAUDE_MODEL", "")),
+        help="Claude model override (default: AUTORESEARCH_MODEL/CLAUDE_MODEL from .env)",
+    )
     ap.add_argument("--extra-claude-arg", action="append", default=[],
                     help="extra arg to pass to claude (repeatable)")
     args = ap.parse_args()

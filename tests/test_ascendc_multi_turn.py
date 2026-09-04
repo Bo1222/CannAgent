@@ -45,8 +45,12 @@ class RunnerTests(unittest.TestCase):
             self.assertTrue((output / "model_new_ascendc.py").is_file())
             self.assertTrue((output / "kernel" / "mock.cpp").is_file())
             self.assertTrue((output / ".llm_state" / "summary.json").is_file())
+            self.assertTrue((output / ".llm_state" / "round_01" / "selected_knowledge.json").is_file())
+            self.assertTrue((output / ".llm_state" / "round_01" / "references.md").is_file())
             calls = (output / ".llm_state" / "calls.jsonl").read_text(encoding="utf-8")
             self.assertNotIn('"content"', calls)
+            self.assertIn('"call_type": "knowledge_router"', calls)
+            self.assertIn('"call_type": "generator"', calls)
 
     def test_refuses_nonempty_output_without_resume(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

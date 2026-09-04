@@ -1,0 +1,10 @@
+{
+  "versions": {
+    "8.5.0": {
+      "source": "CANN Community Edition 8.5.0",
+      "url_version": "850",
+      "index": "api_reference/INDEX.md",
+      "pages_dir": "api_reference/pages"
+    }
+  }
+}

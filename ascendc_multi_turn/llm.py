@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import json
-import os
 import time
 import urllib.error
 import urllib.request
 from typing import Protocol
+
+from llm_config import get_env
 
 from .models import LLMResponse
 
@@ -15,7 +16,7 @@ class LLMProvider(Protocol):
 
 
 class OpenAICompatibleProvider:
-    """Small dependency-free client for DeepSeek/OpenAI-compatible chat APIs."""
+    """Client for DeepSeek and OpenAI Chat Completions APIs."""
 
     def __init__(
         self,
@@ -38,11 +39,11 @@ class OpenAICompatibleProvider:
 
     @classmethod
     def from_env(cls, config):
-        key = os.environ.get(config.api_key_env, "")
+        prefix = "DEEPSEEK" if config.provider == "deepseek" else "OPENAI"
         return cls(
             model=config.model,
             base_url=config.base_url,
-            api_key=key,
+            api_key=get_env(f"{prefix}_API_KEY"),
             temperature=config.temperature,
             max_tokens=config.max_tokens,
             timeout=config.timeout,
