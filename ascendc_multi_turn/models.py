@@ -13,6 +13,7 @@ class LLMResponse:
     usage: dict[str, Any] = field(default_factory=dict)
     latency_seconds: float = 0.0
     request_id: str | None = None
+    finish_reason: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

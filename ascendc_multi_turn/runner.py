@@ -75,6 +75,19 @@ class MultiTurnRunner:
             return False
         return best.score is None or candidate.score > best.score
 
+    @staticmethod
+    def _truncation_retry_prompt(prompt: str) -> str:
+        return f"""{prompt}
+
+## Retry after truncated output
+The previous response reached the model output-token limit. Regenerate the answer
+from scratch as exactly one compact JSON object. Do not use Markdown or prose
+outside the JSON. Remove nonessential comments and explanations. When a current
+implementation exists, return only the smallest complete file delta needed for
+this round. Every file included must still contain its complete, syntactically
+valid content. The response must fit within the configured output-token limit.
+"""
+
     def _resume_state(self, logger: TrajectoryLogger) -> tuple[FileBundle | None, FileBundle | None, EvalResult | None, EvalResult | None, int | None]:
         working = capture_bundle(self.task_dir)
         current = working if working.files else None
@@ -157,6 +170,16 @@ class MultiTurnRunner:
             response = self.provider.generate(prompt)
             (round_dir / "response.txt").write_text(response.content, encoding="utf-8")
             logger.save_call(round_num, response.to_dict(), call_type="generator")
+            generation_attempts = 1
+            truncation_seen = response.finish_reason == "length"
+            if truncation_seen:
+                retry_prompt = self._truncation_retry_prompt(prompt)
+                (round_dir / "retry_prompt.txt").write_text(retry_prompt, encoding="utf-8")
+                response = self.provider.generate(retry_prompt)
+                generation_attempts += 1
+                truncation_seen = truncation_seen or response.finish_reason == "length"
+                (round_dir / "response_retry_01.txt").write_text(response.content, encoding="utf-8")
+                logger.save_call(round_num, response.to_dict(), call_type="generator_retry")
 
             try:
                 delta = parse_file_bundle(response.content)
@@ -182,7 +205,10 @@ class MultiTurnRunner:
                     # Keep a failing first draft as repair context until a valid best exists.
                     current = candidate
             except (ValueError, json.JSONDecodeError) as error:
-                result = EvalResult(False, False, error=f"invalid LLM file bundle: {error}")
+                detail = f"invalid LLM file bundle: {error}"
+                if truncation_seen:
+                    detail += "; response reached the output-token limit and one same-round retry was attempted"
+                result = EvalResult(False, False, error=detail)
                 decision = "FORMAT_FAIL"
 
             previous = result
@@ -194,6 +220,8 @@ class MultiTurnRunner:
                     "response_model": response.model,
                     "usage": response.usage,
                     "latency_seconds": response.latency_seconds,
+                    "generation_attempts": generation_attempts,
+                    "response_finish_reason": response.finish_reason,
                     "knowledge": selection.to_dict(),
                     "candidate": f"round_{round_num:02d}/candidate.json" if (round_dir / "candidate.json").is_file() else None,
                 },

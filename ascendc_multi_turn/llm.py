@@ -79,7 +79,8 @@ class OpenAICompatibleProvider:
             raise RuntimeError(f"LLM API HTTP {error.code}: {detail[:2000]}") from error
         elapsed = time.monotonic() - started
         try:
-            content = payload["choices"][0]["message"]["content"]
+            choice = payload["choices"][0]
+            content = choice["message"]["content"]
         except (KeyError, IndexError, TypeError) as error:
             raise RuntimeError(f"invalid LLM API response: {str(payload)[:2000]}") from error
         if not isinstance(content, str) or not content.strip():
@@ -91,6 +92,7 @@ class OpenAICompatibleProvider:
             usage=usage,
             latency_seconds=elapsed,
             request_id=payload.get("id"),
+            finish_reason=str(choice["finish_reason"]) if choice.get("finish_reason") is not None else None,
         )
 
 

@@ -299,7 +299,7 @@ python -m ascendc_multi_turn \
   --op-file benchmarks/NPUKernelBench/level1/1_GELU.py \
   --output-dir outputs/1_GELU \
   --provider deepseek \
-  --model deepseek-chat \
+  --model deepseek-v4-flash \
   --base-url https://api.deepseek.com \
   --max-rounds 5 --soc-version Ascend910B3 --device 0
 ```

@@ -287,14 +287,19 @@ def check_kernel_calls_in_forward(forward_node, ext_names, wrapper_names):
     return called
 
 
-def check_forbidden_torch_ops(forward_node):
+def check_forbidden_torch_ops(forward_node, ext_names=None):
     """检查 forward 中是否使用了禁止的 torch 计算操作。
+
+    ``ext_names`` 是已经由导入检查确认的 AscendC 扩展别名。扩展导出函数
+    可以与 Tensor 方法同名（例如 ``_ext.gelu``），不能仅凭属性名判为
+    PyTorch 计算。
 
     返回违规列表 [{"line": N, "call": str, "reason": str}, ...]
     """
     violations = []
     if forward_node is None:
         return violations
+    ext_names = set(ext_names or ())
 
     for node in ast.walk(forward_node):
         # --- 检测 @ 运算符（矩阵乘法）---
@@ -314,6 +319,10 @@ def check_forbidden_torch_ops(forward_node):
             continue
 
         qual, attr = resolved
+
+        # --- 已确认的 AscendC 扩展调用 ---
+        if qual in ext_names:
+            continue
 
         # --- torch.xxx(...) ---
         if qual == "torch":
@@ -603,7 +612,7 @@ def validate(code, filepath="<unknown>"):
     result["checks"]["kernel_called_from_forward"]["passed"] = True
 
     # --- Check 3: 禁止的 torch 操作 ---
-    violations = check_forbidden_torch_ops(forward_node)
+    violations = check_forbidden_torch_ops(forward_node, valid_ext_names)
     result["checks"]["no_forbidden_torch_ops"]["violations"] = violations
 
     if violations:
@@ -699,7 +708,12 @@ def main():
                   f"{type_desc.get(rtype, '未知')}")
 
             for check_name, check_result in result["checks"].items():
-                status = "PASS" if check_result["passed"] else "FAIL"
+                if check_result["passed"]:
+                    status = "PASS"
+                elif check_result["error"] or check_result.get("violations"):
+                    status = "FAIL"
+                else:
+                    status = "SKIP"
                 print(f"  [{status}] {check_name}")
                 if check_result["error"]:
                     print(f"         {check_result['error']}")

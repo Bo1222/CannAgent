@@ -4,7 +4,7 @@ import json
 import os
 import unittest
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from ascendc_multi_turn.knowledge import (
     KnowledgeVersion,
@@ -99,6 +99,36 @@ class ProviderTests(unittest.TestCase):
             provider = OpenAICompatibleProvider.from_env(config)
         self.assertEqual(provider.api_key, "deepseek-test-key")
         self.assertEqual(provider.url, "https://api.deepseek.com/chat/completions")
+
+    def test_provider_captures_finish_reason(self) -> None:
+        provider = OpenAICompatibleProvider(
+            model="test-model",
+            base_url="https://example.invalid/v1",
+            api_key="test-key",
+        )
+        http_response = MagicMock()
+        http_response.read.return_value = json.dumps(
+            {
+                "id": "test-request",
+                "model": "served-model",
+                "choices": [
+                    {
+                        "message": {"content": "partial response"},
+                        "finish_reason": "length",
+                    }
+                ],
+                "usage": {"total_tokens": 10},
+            }
+        ).encode("utf-8")
+        context = MagicMock()
+        context.__enter__.return_value = http_response
+        context.__exit__.return_value = False
+
+        with patch("ascendc_multi_turn.llm.urllib.request.urlopen", return_value=context):
+            response = provider.generate("test prompt")
+
+        self.assertEqual(response.finish_reason, "length")
+        self.assertEqual(response.model, "served-model")
 
 
 if __name__ == "__main__":
