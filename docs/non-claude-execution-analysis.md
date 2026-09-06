@@ -54,12 +54,14 @@ flowchart TD
     F -->|是| G[检测 CANN 版本并进行知识路由]
     G --> H[构建含选中文档的本轮 Prompt]
     H --> I[调用 DeepSeek 或 OpenAI]
-    I --> J[解析 JSON 文件增量]
-    J --> K{格式和路径是否合法}
-    K -->|否| T[记录 FORMAT_FAIL]
+    I --> J[记录 served model / thinking / reasoning usage]
+    J --> K0[解析 JSON 文件增量]
+    K0 --> K{格式和路径是否合法}
+    K -->|否| X[保存编排失败 checkpoint，不计评估轮]
     K -->|是| L[合并并写入候选源码]
     L --> M[静态检查]
-    M --> N[AscendC 编译]
+    M --> M2[AscendC C++ 源码预检]
+    M2 --> N[AscendC 编译]
     N --> O[正确性验证]
     O --> P[性能测试并计算 score]
     P --> Q{是否优于 best}
@@ -83,7 +85,7 @@ export DEEPSEEK_API_KEY=<API_KEY>
 python -m ascendc_multi_turn \
   --op-file benchmarks/NPUKernelBench/level1/1_GELU.py \
   --output-dir outputs/1_GELU \
-  --model deepseek-chat \
+  --model deepseek-v4-flash \
   --base-url https://api.deepseek.com \
   --max-rounds 5 \
   --soc-version Ascend910B3 \
@@ -97,9 +99,10 @@ python -m ascendc_multi_turn \
 - `--provider`：选择 `deepseek` 或 `openai`。
 - `--model`、`--base-url`：覆盖所选 Provider 的模型和服务地址。
 - `DEEPSEEK_API_KEY` / `OPENAI_API_KEY`：按 Provider 从根目录 `.env` 加载，密钥本身不写入轨迹。
-- `--max-rounds`：最大生成和优化轮数，也是循环终止条件。
+- `--max-rounds`：实际候选评估轮数上限；API、路由和环境失败不消耗该预算。
 - `--device`、`--soc-version`：NPU 和编译目标配置。
 - `--resume`：从已有 `.llm_state/trajectory.json` 继续。
+- `--quiet`：关闭默认写入 stderr 的阶段进度、15 秒心跳和失败摘要；stdout 始终只输出最终 JSON。
 - `--mock`：不调用 API、不编译、不使用 NPU，只验证编排流程。
 
 新任务启动时，程序会：
@@ -134,10 +137,17 @@ LLM 请求是一个普通的 Chat Completions 请求：
     {"role": "system", "content": "You are an expert AscendC kernel engineer..."},
     {"role": "user", "content": "<完整的本轮 Prompt>"}
   ],
-  "temperature": 0.2,
-  "max_tokens": 8192
+  "thinking": {"type": "enabled"},
+  "reasoning_effort": "high",
+  "max_tokens": 65536,
+  "response_format": {"type": "json_object"}
 }
 ```
+
+知识路由默认关闭 thinking 并使用 4096 token；代码生成默认 high thinking、编译修复
+默认 max thinking，二者上限均为 65536。thinking 模式不发送 temperature。客户端先
+读取同级的 `reasoning_content`、`content`、usage 和 finish reason，因此 reasoning
+耗尽预算导致的空正文不再退化为无法解释的 `LLM API returned empty content`。
 
 每轮都是新的 API 请求，没有直接传递之前的 `messages[]` 会话。跨轮信息由 Python 将当前源码和最近一轮反馈重新放入 Prompt。
 
@@ -190,10 +200,13 @@ kernel/<至少一个非 pybind 的 .cpp>
 
 ```bash
 python skills/ascendc/ascendc-translator/scripts/validate_ascendc_impl.py \
-  <output-dir>/model_new_ascendc.py
+  <output-dir>/model_new_ascendc.py \
+  --pybind-file <output-dir>/kernel/pybind11.cpp
 ```
 
-用于检查生成 wrapper 是否符合 AscendC 实现要求，例如是否存在不允许的 PyTorch fallback。
+检查器以 `PYBIND11_MODULE` 声明确认真正的 AscendC 扩展，再通过 import
+来源和 Tensor 数据流检查 wrapper 是否存在不允许的 PyTorch fallback；不会仅凭
+`gelu`、`sum` 等方法名判断调用归属。
 
 ### 6.2 AscendC 编译
 
@@ -245,11 +258,11 @@ score = exp(sum(log(speedup)) / case_count)
 | 条件 | 决策 |
 |---|---|
 | 正确性失败 | `DISCARD` |
-| 尚无 best，候选正确 | `KEEP` |
-| 已有 best，但候选没有 score | `DISCARD` |
+| 编译/性能阶段报错，或候选没有有效 score | `DISCARD` |
+| 尚无 best，候选正确且具有有效 score | `KEEP` |
 | 候选 score 严格大于 best score | `KEEP` |
 | 其他情况 | `DISCARD` |
-| 模型文件包非法 | `FORMAT_FAIL` |
+| 模型文件包非法 | 保存 orchestration failure，停在当前 checkpoint，不消耗评估轮 |
 
 `KEEP` 时：
 
@@ -271,7 +284,7 @@ score = exp(sum(log(speedup)) / case_count)
 项目实现了跨轮工程状态：
 
 - `current`：下一轮使用的完整源码。
-- `previous`：最近一轮评测反馈。
+- `previous`：最近一次真实候选评测反馈；API/环境失败不会覆盖它。
 - `best_bundle`：最佳源码快照。
 - `best_result`：最佳评测结果。
 - `best_round`：最佳轮次。
@@ -300,22 +313,22 @@ score = exp(sum(log(speedup)) / case_count)
 
 原始版本没有真正实现 RAG；当前版本实现了受控的 Skill-aware、version-aware 文档选择。
 
-每轮先调用知识路由器选择 API 名称和专项资料，再由 Python allowlist 加载 CANN 版本对应的本地页面。它不使用 embedding 或向量数据库。
+首次生成调用知识路由器查看完整 API manifest，并以唯一 `doc_id` 建立任务级工作集。后续轮默认复用该工作集；只有源码或编译诊断出现新 API 时，才通过符号匹配直接扩展，或把最多 5 个候选交给路由模型增量选择。完整 manifest 在一个任务中只路由一次，重复错误也只允许候选子集增量路由。该实现不使用 embedding 或向量数据库。
 
 | 能力 | 是否存在 |
 |---|---:|
 | 外部知识注入 | 是 |
 | 固定参考文档 | 是 |
 | 根据任务选择相关 API 文档 | 是 |
-| 文档分块 | 否 |
+| 文档分块 | 是，按 API 页关键章节截取 |
 | Embedding | 否 |
 | 向量索引 | 否 |
-| BM25 / Top-K / Rerank | 否 |
-| 引用来源追踪 | 否 |
+| BM25 / Top-K / Rerank | 轻量确定性符号/词项 Top-K，无 BM25/embedding |
+| 引用来源追踪 | 是，唯一 `doc_id`、文件路径和实际渲染列表 |
 
-因此更准确的定义是 static context injection 或 prompt stuffing，而不是 Retrieval-Augmented Generation。
+因此更准确的定义是带持久工作集的轻量确定性检索与受控上下文注入，而不是向量 RAG。
 
-核心 Skill/指南始终加载，具体 API 页面限制数量和总字符预算，避免把整个知识库放入上下文。
+每轮只固定加载精简核心规则，当前相关 API 页最多 5 篇，并优先注入从安装版 CANN 公共头文件抽取的声明。工作集最多 8 篇，知识上下文默认不超过 24000 字符；完整原始文档只作为归档证据，不再每轮塞入 prompt。
 
 ## 10. 生成文件
 
@@ -341,6 +354,10 @@ outputs/1_GELU/
     │   ├── prompt.txt
     │   ├── response.txt
     │   ├── candidate.json
+    │   ├── static_validation.log
+    │   ├── build.log
+    │   ├── correctness.log
+    │   ├── performance.log
     │   └── performance.json
     └── round_NN/
         ├── prompt.txt
@@ -367,11 +384,12 @@ outputs/1_GELU/
 | `calls.jsonl` | 每次 API 调用的模型、usage、耗时和 request ID，不保存响应正文 |
 | `token_usage.json` | API 返回的 prompt/completion/total token 汇总 |
 | `best.json` | 最佳版本的完整源码快照，而不只是指标 |
-| `summary.json` | success、完成轮数、best round、best score、token 和目录 |
+| `summary.json` | success、完成轮数、best、最近一轮、结构化失败摘要、token 和目录 |
 | `DONE` | 流程正常结束标记；不代表一定成功，应同时检查 `summary.json.success` |
 | `round_NN/prompt.txt` | 该轮发送给模型的完整 Prompt |
 | `round_NN/response.txt` | 模型原始响应，格式错误时也会保留 |
 | `round_NN/candidate.json` | 该轮合并后的完整候选源码快照 |
+| `round_NN/*validation.log/build.log/correctness.log/performance.log` | 对应已执行阶段的完整输出；失败摘要中的 `details_path` 指向这里 |
 | `round_NN/performance.json` | 性能评测报告，性能阶段成功生成时存在 |
 
 ## 11. 编译产物是否保留
@@ -392,26 +410,26 @@ python utils/build_ascendc.py outputs/1_GELU -v Ascend910B3 --clean
 
 ## 12. 重要边界与潜在问题
 
-### 12.1 首个正确候选可能没有性能分数
+### 12.1 失败诊断与进度
 
-只要候选正确且当前没有 best，就会被 KEEP。若正确性通过但性能工具失败，最终可能出现：
+CLI 默认把阶段开始、结束和每 15 秒心跳写到 stderr，stdout 保持为纯 JSON。
+每轮评测输出分别保存到静态检查、编译、正确性和性能日志。`EvalResult`、
+`trajectory.json` 与 `summary.json.failure` 使用 `failure_stage`、`failure_code`、
+`error_excerpt` 和 `details_path` 区分失败位置。没有有效性能 score 或任一评测
+阶段报错的候选不会成为 best。
 
-```json
-{
-  "success": true,
-  "best_score": null
-}
-```
+### 12.2 历史反馈与知识状态
 
-所以 `success` 更接近“至少得到一个正确候选”，不保证性能测试成功。
+完整源码轨迹仍不直接检索进下一轮 Prompt，但 `knowledge_state.json` 会持久化文档工作集、已知 API 符号和最近失败指纹。首次成功的完整路由建立工作集；后续仅复用、确定性扩展或在小候选集中增量路由，重复错误不会重新打开完整索引。生成器接收当前源码和最近一次真正进入 evaluator 的评测结果，编排失败不会覆盖这份反馈。
 
-### 12.2 仅反馈最近一轮
+### 12.3 API 异常的轮级记录边界
 
-完整历史虽然保存在 `trajectory.json`，但不会被检索进下一轮 Prompt。模型可能重复更早轮次已经失败的策略。
-
-### 12.3 API 异常缺少轮级容错
-
-HTTP 错误、连接失败或空响应会直接中断，没有自动 retry、backoff、fallback 模型，也不会将 API 错误转换成正式评测轮次。
+知识路由、生成器以及响应格式等编排异常会在同一 pending checkpoint 内最多重试
+配置的 `ASCENDC_LLM_TRANSIENT_RETRIES` 次；耗尽后状态变为 `paused`，写入
+`orchestration_attempts.jsonl`，但不消耗评测轮，也不覆盖最近的真实编译反馈。
+生成响应因 token 上限截断时还会进行一次同轮紧凑重试；AscendC 源码预检或真实
+编译失败会额外进行至多一次定向 compiler repair LLM 调用，并在
+`evaluation_attempts` 中同时保留修复前后结果。当前没有 fallback 模型。
 
 ### 12.4 Token 可能在特殊中断窗口重复统计
 
@@ -427,10 +445,10 @@ HTTP 错误、连接失败或空响应会直接中断，没有自动 retry、bac
 
 ## 13. 测试情况
 
-仓库现有测试执行结果：
+仓库现有测试执行结果（2026-09-06）：
 
 ```text
-Ran 4 tests
+Ran 65 tests
 OK
 ```
 
@@ -441,13 +459,15 @@ OK
 - best 选择。
 - token 汇总。
 - 非空输出目录保护。
-- resume 从下一轮继续。
+- resume 从 pending 评测轮继续，已完成的 evaluator 轮次不会重复执行。
+- CLI 进度与 quiet 模式的 stdout/stderr 隔离。
+- 阶段日志、超时输出和结构化错误摘要。
+- LLM 异常轮级记录，以及已有 best 后末轮失败的汇总语义。
 
 尚未覆盖：
 
 - 真实 LLM API。
 - 真实 AscendC 编译和 NPU 验证。
-- 性能阶段失败。
 - API 中断恢复。
 - DISCARD 后源码恢复断言。
 - `calls.jsonl` 重复计数场景。

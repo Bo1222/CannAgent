@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+
+from .diagnostics import compact_evaluation
 from .models import EvalResult, FileBundle
 
 OUTPUT_CONTRACT = r"""
@@ -27,6 +29,18 @@ RULES = """
 - Keep PYBIND11_MODULE's literal module name consistent with the module imported by model_new_ascendc.py.
 - Cover every dtype, shape and attribute represented by the supplied cases.
 - Prefer vectorized AscendC operations, aligned transfers and bounded UB usage.
+- Before returning, check for duplicate file-scope declarations, verify every API owner
+  (for example TQue rather than TPipe for EnQue), and check every local helper call's arity.
+- Do not invent AscendC fields or overloads. When runtime header declarations are supplied,
+  they override examples and fallback-version documentation.
+""".strip()
+
+
+REPAIR_OUTPUT_CONTRACT = OUTPUT_CONTRACT + r"""
+
+For compiler repair, also include a top-level "diagnostic_fixes" array. Each entry must
+name one supplied diagnostic, the concrete source change, and the runtime-header evidence
+used. Return the smallest complete file delta; do not copy unchanged files.
 """.strip()
 
 
@@ -87,4 +101,49 @@ def build_prompt(
 
 ## Output contract
 {OUTPUT_CONTRACT}
+"""
+
+
+def build_compile_repair_prompt(
+    *,
+    reference_code: str,
+    cases_text: str,
+    candidate: FileBundle,
+    result: EvalResult,
+    round_num: int,
+    knowledge_context: str,
+) -> str:
+    feedback = json.dumps(compact_evaluation(result), ensure_ascii=False, indent=2)
+    return f"""# AscendC same-round compiler repair for round {round_num}
+
+The generated candidate failed the real AscendC build. Fix only the compiler/API
+problems demonstrated below. Check every modified API call against the supplied
+installed-runtime header declarations. Do not guess field names or overloads.
+
+## Mandatory rules
+{RULES}
+
+## Reference PyTorch model (read-only)
+```python
+{reference_code}
+```
+
+## Test cases
+```jsonl
+{cases_text}
+```
+
+## Candidate that failed compilation
+{_bundle_text(candidate)}
+
+## Compact compiler evidence
+```json
+{feedback}
+```
+
+## Targeted AscendC runtime facts and references
+{knowledge_context}
+
+## Output contract
+{REPAIR_OUTPUT_CONTRACT}
 """

@@ -55,7 +55,7 @@ extern "C" __global__ __aicore__ void kernel_custom(GM_ADDR ...inputs..., GM_ADD
 
 常见模式：
 
-- `CopyTiling(&tiling_, tilingGM)`
+- 使用生成工程中 tiling 类型对应的正式读取方式；只有该类型的公共头文件明确提供 `CopyTiling` 时才能调用它，不要把它当成任意 tiling 结构体的通用复制函数。
 - `SetGlobalBuffer(...)` 绑定 A/B/C 等 GM tensor
 - 根据 `GetBlockIdx()`、`GetSubBlockNum()` 派生 `coreIdx`
 - 初始化调度器，如 `sched_.Init(...)`

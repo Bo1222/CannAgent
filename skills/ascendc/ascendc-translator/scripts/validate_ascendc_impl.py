@@ -8,7 +8,7 @@
   Type 4: forward() 中存在逐元素 Python for 循环（标量写法退化）
 
 用法:
-    python validate_ascendc_impl.py <file_path> [--json]
+    python validate_ascendc_impl.py <file_path> [--pybind-file <path>] [--json]
 
 退出码: 0 = 通过, 1 = 检测到退化
 """
@@ -17,6 +17,7 @@ import argparse
 import json
 import re
 import sys
+from pathlib import Path
 
 
 # ---------------------------------------------------------------------------
@@ -34,6 +35,7 @@ ALLOWED_TORCH_FUNCS = {
     # 类型 / 设备
     "as_tensor",
 }
+ALLOWED_TORCH_CALLS = {f"torch.{name}" for name in ALLOWED_TORCH_FUNCS}
 
 ALLOWED_TENSOR_METHODS = {
     # 形状 / 元信息
@@ -47,6 +49,8 @@ ALLOWED_TENSOR_METHODS = {
     "type", "float", "half", "bfloat16", "int", "long", "bool", "double",
     "cpu", "npu", "cuda",
     "item", "tolist",
+    # buffer 分配
+    "new_empty", "new_empty_strided", "new_zeros", "new_ones", "new_full",
     # 原地标记
     "requires_grad_", "zero_",
     # 切片相关
@@ -55,59 +59,38 @@ ALLOWED_TENSOR_METHODS = {
     "is_npu", "is_cuda",
 }
 
-ALLOWED_BUILTIN_FUNCS = {
-    # Python 内建函数（非 tensor 方法）
-    "min", "max", "abs", "len", "range", "int", "float", "bool",
-    "list", "tuple", "str", "type", "isinstance", "print",
-    "enumerate", "zip", "map", "filter", "sorted", "reversed",
-    "hasattr", "getattr", "setattr",
-}
-
-FORBIDDEN_TENSOR_METHODS = {
-    # 归约操作
-    "sum", "mean", "max", "min", "prod", "cumsum", "cumprod",
-    "argmax", "argmin", "var", "std",
-    # 矩阵 / 线性代数
-    "matmul", "mm", "bmm", "addmm",
-    # 逐元素算术
-    "add", "sub", "mul", "div", "fmod", "remainder",
-    "add_", "sub_", "mul_", "div_",
-    # 激活函数
-    "relu", "sigmoid", "tanh", "gelu", "silu", "elu", "leaky_relu",
-    "relu_", "sigmoid_", "tanh_",
-    # 数学函数
-    "exp", "log", "log2", "log10", "sqrt", "pow", "abs",
-    "sin", "cos", "clamp", "clamp_", "ceil", "floor", "round",
-    "reciprocal", "neg", "sign",
-    # softmax
-    "softmax", "log_softmax",
-    # 范数 / 归一化
-    "norm", "layer_norm", "batch_norm", "group_norm",
-    # 卷积 / 线性
-    "conv1d", "conv2d", "conv3d", "conv_transpose2d", "linear",
-    # 其他
-    "dropout", "softplus", "hardtanh", "hardswish",
-    # 比较（用于计算，非条件判断时）
-    "eq", "ne", "lt", "gt", "le", "ge", "where",
-}
-
 # 已知的占位符导入名称（表示扩展模块未正确配置）
 PLACEHOLDER_IMPORT_NAMES = {
     "TORCH_EXTENSION_NAME",
 }
 
-# AscendC 扩展模块的命名模式
-ASCENDC_EXT_PATTERNS = [
-    re.compile(r"_\w+_ext$"),          # _xxx_ext
-    re.compile(r"\w+_ext$"),            # xxx_ext
-    re.compile(r"\w+_ascendc\w*$"),     # xxx_ascendc, xxx_ascendc_ext
-    re.compile(r"_ext$"),               # _ext
-]
+PYBIND_MODULE_PATTERN = re.compile(
+    r"PYBIND11_MODULE\s*\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*,"
+)
+
+SCALAR_ANNOTATIONS = {"str", "int", "float", "bool", "bytes", "None"}
+TENSOR_METADATA_ATTRIBUTES = {
+    "shape", "stride", "ndim", "dtype", "device", "layout", "requires_grad",
+}
+TENSOR_METADATA_METHODS = {
+    "size", "stride", "numel", "dim", "element_size", "storage_offset",
+    "is_contiguous", "data_ptr", "item", "tolist", "is_npu", "is_cuda",
+}
 
 
 # ---------------------------------------------------------------------------
 # AST 辅助函数
 # ---------------------------------------------------------------------------
+
+def _qualified_name(node):
+    """Return a dotted name for Name/Attribute nodes when statically resolvable."""
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        prefix = _qualified_name(node.value)
+        return f"{prefix}.{node.attr}" if prefix else None
+    return None
+
 
 def _resolve_call_name(node):
     """尝试从 ast.Call 节点提取被调用函数的名称字符串。
@@ -131,34 +114,73 @@ def _resolve_call_name(node):
     return None
 
 
-def _is_ext_module_name(name):
-    """检查名称是否匹配 AscendC 扩展模块的命名模式。"""
-    if name in PLACEHOLDER_IMPORT_NAMES:
-        return False
-    for pattern in ASCENDC_EXT_PATTERNS:
-        if pattern.match(name):
-            return True
-    return False
+def extract_pybind_module_names(pybind_file):
+    """Read literal extension module names from a task's pybind source."""
+    path = Path(pybind_file)
+    if not path.is_file():
+        raise ValueError(f"pybind source does not exist: {path}")
+    names = set(PYBIND_MODULE_PATTERN.findall(path.read_text(encoding="utf-8")))
+    names.difference_update(PLACEHOLDER_IMPORT_NAMES)
+    if not names:
+        raise ValueError(f"no literal PYBIND11_MODULE name found in {path}")
+    return names
+
+
+def _default_pybind_file(filepath):
+    if not filepath or filepath == "<unknown>":
+        return None
+    wrapper = Path(filepath)
+    return wrapper.parent / "kernel" / "pybind11.cpp"
+
+
+def collect_import_sources(tree):
+    """Map names bound by imports to their original module or symbol path."""
+    sources = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.asname:
+                    sources[alias.asname] = alias.name
+                else:
+                    root = alias.name.split(".", 1)[0]
+                    sources[root] = root
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            for alias in node.names:
+                if alias.name == "*":
+                    continue
+                used_name = alias.asname or alias.name
+                sources[used_name] = f"{node.module}.{alias.name}"
+    return sources
+
+
+def resolve_import_source(node, import_sources):
+    """Resolve an expression's dotted name through import aliases."""
+    qualified = _qualified_name(node)
+    if not qualified:
+        return None
+    root, *rest = qualified.split(".")
+    imported = import_sources.get(root)
+    if not imported:
+        return qualified
+    return ".".join([imported, *rest])
 
 
 # ---------------------------------------------------------------------------
 # 核心检查
 # ---------------------------------------------------------------------------
 
-def find_ascendc_extension_imports(tree):
+def find_ascendc_extension_imports(tree, expected_module_names):
     """查找所有 AscendC 扩展模块的导入信息。
 
-    检测模式：
-    1. import _xxx_ext [as alias]
-    2. import xxx_ext [as alias]
-    3. from path import _xxx_ext [as alias]
-    4. importlib 动态加载
+    扩展身份来自 pybind11.cpp 的 PYBIND11_MODULE 声明，而不是名称正则。
+    支持 import module [as alias] 和 from package import module [as alias]。
 
     返回 dict: {alias_or_name: {"name": str, "alias": str|None,
                                   "line": int, "is_placeholder": bool,
                                   "import_style": str}}
     """
     extensions = {}
+    expected_module_names = set(expected_module_names or ())
 
     for node in ast.walk(tree):
         # --- import xxx_ext [as alias] ---
@@ -167,7 +189,7 @@ def find_ascendc_extension_imports(tree):
                 actual_name = alias.name
                 used_name = alias.asname if alias.asname else alias.name
                 is_placeholder = actual_name in PLACEHOLDER_IMPORT_NAMES
-                if is_placeholder or _is_ext_module_name(actual_name):
+                if is_placeholder or actual_name in expected_module_names:
                     extensions[used_name] = {
                         "name": actual_name,
                         "alias": alias.asname,
@@ -182,32 +204,15 @@ def find_ascendc_extension_imports(tree):
                 actual_name = alias.name
                 used_name = alias.asname if alias.asname else alias.name
                 is_placeholder = actual_name in PLACEHOLDER_IMPORT_NAMES
-                if is_placeholder or _is_ext_module_name(actual_name):
+                full_name = f"{node.module}.{actual_name}" if node.module else actual_name
+                if is_placeholder or actual_name in expected_module_names or full_name in expected_module_names:
                     extensions[used_name] = {
-                        "name": actual_name,
+                        "name": full_name,
                         "alias": alias.asname,
                         "line": node.lineno,
                         "is_placeholder": is_placeholder,
                         "import_style": "from_import",
                     }
-
-    # --- importlib 动态加载检测 ---
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Assign) and len(node.targets) == 1:
-            target = node.targets[0]
-            if isinstance(target, ast.Name) and isinstance(node.value, ast.Call):
-                resolved = _resolve_call_name(node.value)
-                if resolved:
-                    qual, attr = resolved
-                    # importlib.util.module_from_spec(...)
-                    if attr == "module_from_spec":
-                        extensions[target.id] = {
-                            "name": target.id,
-                            "alias": None,
-                            "line": node.lineno,
-                            "is_placeholder": False,
-                            "import_style": "importlib",
-                        }
 
     return extensions
 
@@ -236,142 +241,402 @@ def find_model_forward(tree):
     return model_new_forward or model_forward, "ModelNew" if model_new_forward else "Model"
 
 
-def find_wrapper_functions(tree, ext_names):
-    """找到模块级别的辅助函数，这些函数内部调用了扩展模块。
-
-    返回函数名集合。
-    """
-    wrappers = set()
+def find_reachable_functions(tree, forward_node, class_name):
+    """Return forward plus local/module helper functions reachable from it."""
+    module_functions = {
+        node.name: node
+        for node in ast.iter_child_nodes(tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    class_methods = {}
     for node in ast.iter_child_nodes(tree):
-        if isinstance(node, ast.FunctionDef):
-            for child in ast.walk(node):
-                if isinstance(child, ast.Call):
-                    resolved = _resolve_call_name(child)
-                    if resolved:
-                        qual, attr = resolved
-                        if qual in ext_names:
-                            wrappers.add(node.name)
-                            break
-    return wrappers
+        if isinstance(node, ast.ClassDef) and node.name == class_name:
+            class_methods = {
+                child.name: child
+                for child in node.body
+                if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef))
+            }
+            break
+
+    reachable = []
+    queue = [forward_node]
+    visited = set()
+    while queue:
+        function = queue.pop(0)
+        identity = id(function)
+        if identity in visited:
+            continue
+        visited.add(identity)
+        reachable.append(function)
+        for child in ast.walk(function):
+            if not isinstance(child, ast.Call):
+                continue
+            resolved = _resolve_call_name(child)
+            if not resolved:
+                continue
+            qualifier, attr = resolved
+            if qualifier is None and attr in module_functions:
+                queue.append(module_functions[attr])
+            elif qualifier == "self" and attr in class_methods:
+                queue.append(class_methods[attr])
+    return reachable
 
 
-def check_kernel_calls_in_forward(forward_node, ext_names, wrapper_names):
-    """检查 forward 中是否调用了 AscendC 扩展模块的函数。
+def find_torch_module_attributes(tree, class_name, import_sources):
+    """Find self attributes initialized from torch.nn module constructors."""
+    attributes = set()
+    for node in ast.iter_child_nodes(tree):
+        if not isinstance(node, ast.ClassDef) or node.name != class_name:
+            continue
+        for method in node.body:
+            if not isinstance(method, (ast.FunctionDef, ast.AsyncFunctionDef)) or method.name != "__init__":
+                continue
+            for child in ast.walk(method):
+                if not isinstance(child, (ast.Assign, ast.AnnAssign)):
+                    continue
+                targets = child.targets if isinstance(child, ast.Assign) else [child.target]
+                value = child.value
+                if not isinstance(value, ast.Call):
+                    continue
+                source = resolve_import_source(value.func, import_sources)
+                if not source or not source.startswith("torch.nn."):
+                    continue
+                for target in targets:
+                    if (
+                        isinstance(target, ast.Attribute)
+                        and isinstance(target.value, ast.Name)
+                        and target.value.id == "self"
+                    ):
+                        attributes.add(target.attr)
+    return attributes
 
-    检测模式：
-    1. ext_module.function_name(...)  — 直接调用扩展模块方法
-    2. wrapper_func(...)              — 通过 wrapper 函数调用
-    3. self.wrapper_name(...)         — 通过类方法调用
 
-    返回被调用信息列表 [{"call": str, "line": int}, ...]
-    """
+def check_kernel_calls(function_nodes, ext_names):
+    """Find direct AscendC extension calls in forward and reachable helpers."""
     called = []
-    if forward_node is None:
-        return called
-    for node in ast.walk(forward_node):
-        if not isinstance(node, ast.Call):
-            continue
-        resolved = _resolve_call_name(node)
-        if resolved is None:
-            continue
-        qual, attr = resolved
-        # ext_module.function(...)
-        if qual in ext_names:
-            called.append({"call": f"{qual}.{attr}", "line": node.lineno})
-        # wrapper_func(...)
-        if qual is None and attr in wrapper_names:
-            called.append({"call": attr, "line": node.lineno})
-        # self.wrapper(...)
-        if qual == "self" and attr in wrapper_names:
-            called.append({"call": f"self.{attr}", "line": node.lineno})
+    for function in function_nodes:
+        for node in ast.walk(function):
+            if not isinstance(node, ast.Call):
+                continue
+            resolved = _resolve_call_name(node)
+            if resolved is None:
+                continue
+            qualifier, attr = resolved
+            if qualifier in ext_names:
+                called.append(
+                    {
+                        "call": f"{qualifier}.{attr}",
+                        "line": node.lineno,
+                        "function": function.name,
+                    }
+                )
     return called
 
 
-def check_forbidden_torch_ops(forward_node, ext_names=None):
-    """检查 forward 中是否使用了禁止的 torch 计算操作。
+def _is_scalar_annotation(annotation, import_sources):
+    source = resolve_import_source(annotation, import_sources)
+    if not source:
+        return False
+    return source in SCALAR_ANNOTATIONS or source.split(".")[-1] in SCALAR_ANNOTATIONS
 
-    ``ext_names`` 是已经由导入检查确认的 AscendC 扩展别名。扩展导出函数
-    可以与 Tensor 方法同名（例如 ``_ext.gelu``），不能仅凭属性名判为
-    PyTorch 计算。
 
-    返回违规列表 [{"line": N, "call": str, "reason": str}, ...]
-    """
+def _is_scalar_literal(node):
+    return isinstance(node, ast.Constant) and (
+        node.value is None or isinstance(node.value, (str, int, float, bool, bytes))
+    )
+
+
+class FunctionProvenance:
+    """Lightweight value provenance for one reachable Python function."""
+
+    def __init__(
+        self,
+        function,
+        import_sources,
+        ext_names,
+        *,
+        initial_kinds=None,
+        assume_unannotated_tensors=True,
+    ):
+        self.function = function
+        self.import_sources = import_sources
+        self.ext_names = set(ext_names)
+        self.kinds = dict(initial_kinds or {})
+        arguments = [*function.args.posonlyargs, *function.args.args, *function.args.kwonlyargs]
+        if function.args.vararg:
+            arguments.append(function.args.vararg)
+        if function.args.kwarg:
+            arguments.append(function.args.kwarg)
+        positional = [*function.args.posonlyargs, *function.args.args]
+        scalar_defaults = {
+            argument.arg
+            for argument, default in zip(
+                positional[-len(function.args.defaults):] if function.args.defaults else [],
+                function.args.defaults,
+            )
+            if _is_scalar_literal(default)
+        }
+        scalar_defaults.update(
+            argument.arg
+            for argument, default in zip(function.args.kwonlyargs, function.args.kw_defaults)
+            if _is_scalar_literal(default)
+        )
+        for argument in arguments:
+            if argument.arg == "self":
+                continue
+            if _is_scalar_annotation(argument.annotation, import_sources) or argument.arg in scalar_defaults:
+                self.kinds[argument.arg] = "scalar"
+            elif assume_unannotated_tensors and argument.arg not in self.kinds:
+                self.kinds[argument.arg] = "tensor"
+        self._propagate_assignments()
+
+    def expression_kind(self, node):
+        if node is None:
+            return "unknown"
+        if isinstance(node, ast.Name):
+            if node.id in self.kinds:
+                return self.kinds[node.id]
+            source = self.import_sources.get(node.id)
+            if source:
+                if source == "torch" or source.startswith("torch."):
+                    return "torch"
+                return "external"
+            return "unknown"
+        if isinstance(node, ast.Constant):
+            return "scalar"
+        if isinstance(node, (ast.List, ast.Tuple, ast.Dict, ast.Set)):
+            return "metadata"
+        if isinstance(node, ast.Attribute):
+            base = self.expression_kind(node.value)
+            if base == "tensor" and node.attr in TENSOR_METADATA_ATTRIBUTES:
+                return "metadata"
+            return base
+        if isinstance(node, ast.Subscript):
+            base = self.expression_kind(node.value)
+            return "tensor" if base == "tensor" else base
+        if isinstance(node, ast.Call):
+            qualified = _qualified_name(node.func)
+            root = qualified.split(".", 1)[0] if qualified else None
+            if root in self.ext_names:
+                return "tensor"
+            source = resolve_import_source(node.func, self.import_sources)
+            if source and (source == "torch" or source.startswith("torch.")):
+                return "tensor"
+            if isinstance(node.func, ast.Attribute):
+                receiver = self.expression_kind(node.func.value)
+                if receiver == "tensor":
+                    if node.func.attr in TENSOR_METADATA_METHODS:
+                        return "metadata"
+                    return "tensor"
+            return "unknown"
+        if isinstance(node, ast.BinOp):
+            kinds = {self.expression_kind(node.left), self.expression_kind(node.right)}
+            return "tensor" if "tensor" in kinds else "scalar"
+        if isinstance(node, ast.UnaryOp):
+            return self.expression_kind(node.operand)
+        if isinstance(node, ast.IfExp):
+            kinds = {self.expression_kind(node.body), self.expression_kind(node.orelse)}
+            return "tensor" if "tensor" in kinds else "unknown"
+        return "unknown"
+
+    def _set_target_kind(self, target, kind):
+        changed = False
+        if isinstance(target, ast.Name):
+            if self.kinds.get(target.id) != kind:
+                self.kinds[target.id] = kind
+                changed = True
+        elif isinstance(target, (ast.Tuple, ast.List)):
+            for element in target.elts:
+                changed = self._set_target_kind(element, kind) or changed
+        return changed
+
+    def _propagate_assignments(self):
+        assignments = []
+        for node in ast.walk(self.function):
+            if isinstance(node, ast.Assign):
+                assignments.append((node.targets, node.value))
+            elif isinstance(node, ast.AnnAssign) and node.value is not None:
+                assignments.append(([node.target], node.value))
+            elif isinstance(node, ast.For):
+                assignments.append(([node.target], node.iter))
+        for _ in range(len(assignments) + 1):
+            changed = False
+            for targets, value in assignments:
+                kind = self.expression_kind(value)
+                if kind == "unknown":
+                    continue
+                for target in targets:
+                    changed = self._set_target_kind(target, kind) or changed
+            if not changed:
+                break
+
+
+def build_function_provenance(function_nodes, forward_node, import_sources, ext_names):
+    """Propagate value kinds from forward call arguments into reachable helpers."""
+    by_name = {function.name: function for function in function_nodes}
+    initial_by_id = {id(forward_node): {}}
+    provenance_by_id = {}
+
+    def merge_kind(current, incoming):
+        if not current:
+            return incoming
+        if current == incoming:
+            return current
+        if "tensor" in (current, incoming):
+            return "tensor"
+        if "metadata" in (current, incoming):
+            return "metadata"
+        return current
+
+    for _ in range(len(function_nodes) + 1):
+        changed = False
+        for function in function_nodes:
+            is_forward = function is forward_node
+            provenance = FunctionProvenance(
+                function,
+                import_sources,
+                ext_names,
+                initial_kinds=initial_by_id.get(id(function)),
+                assume_unannotated_tensors=is_forward,
+            )
+            provenance_by_id[id(function)] = provenance
+            for call in ast.walk(function):
+                if not isinstance(call, ast.Call):
+                    continue
+                resolved = _resolve_call_name(call)
+                if not resolved:
+                    continue
+                qualifier, attr = resolved
+                if qualifier not in (None, "self") or attr not in by_name:
+                    continue
+                target = by_name[attr]
+                target_args = [*target.args.posonlyargs, *target.args.args]
+                target_args = [argument for argument in target_args if argument.arg != "self"]
+                incoming = dict(initial_by_id.get(id(target), {}))
+                for argument, value in zip(target_args, call.args):
+                    kind = provenance.expression_kind(value)
+                    if kind != "unknown":
+                        incoming[argument.arg] = merge_kind(incoming.get(argument.arg), kind)
+                keyword_args = {argument.arg: argument for argument in target_args}
+                for keyword in call.keywords:
+                    if keyword.arg not in keyword_args:
+                        continue
+                    kind = provenance.expression_kind(keyword.value)
+                    if kind != "unknown":
+                        incoming[keyword.arg] = merge_kind(incoming.get(keyword.arg), kind)
+                if incoming != initial_by_id.get(id(target), {}):
+                    initial_by_id[id(target)] = incoming
+                    changed = True
+        if not changed:
+            break
+    return provenance_by_id
+
+
+def check_forbidden_torch_ops(
+    function_nodes,
+    import_sources,
+    ext_names=None,
+    torch_module_attributes=None,
+    provenance_by_id=None,
+):
+    """Reject only calls/operators proven to originate from torch or Tensor values."""
     violations = []
-    if forward_node is None:
-        return violations
     ext_names = set(ext_names or ())
+    torch_module_attributes = set(torch_module_attributes or ())
+    provenance_by_id = provenance_by_id or {}
 
-    for node in ast.walk(forward_node):
-        # --- 检测 @ 运算符（矩阵乘法）---
-        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.MatMult):
-            violations.append({
-                "line": node.lineno,
-                "call": "@",
-                "reason": "矩阵乘法 @ 运算符必须在 AscendC kernel 中实现",
-            })
-            continue
+    for function in function_nodes:
+        provenance = provenance_by_id.get(id(function)) or FunctionProvenance(
+            function, import_sources, ext_names
+        )
+        for node in ast.walk(function):
+            if isinstance(node, ast.Call):
+                qualified = _qualified_name(node.func)
+                root = qualified.split(".", 1)[0] if qualified else None
+                if root in ext_names:
+                    continue
 
-        if not isinstance(node, ast.Call):
-            continue
+                source = resolve_import_source(node.func, import_sources)
+                if source and (source == "torch" or source.startswith("torch.")):
+                    leaf = source.rsplit(".", 1)[-1]
+                    if source in ALLOWED_TORCH_CALLS:
+                        continue
+                    violations.append({
+                        "line": node.lineno,
+                        "call": qualified or leaf,
+                        "source": source,
+                        "reason": f"{source} 是 PyTorch 计算操作，必须在 AscendC kernel 中实现",
+                    })
+                    continue
 
-        resolved = _resolve_call_name(node)
-        if resolved is None:
-            continue
+                if isinstance(node.func, ast.Attribute):
+                    receiver_kind = provenance.expression_kind(node.func.value)
+                    attr = node.func.attr
+                    if receiver_kind == "tensor":
+                        if attr in ALLOWED_TENSOR_METHODS:
+                            continue
+                        receiver = _qualified_name(node.func.value) or "<tensor>"
+                        violations.append({
+                            "line": node.lineno,
+                            "call": f"{receiver}.{attr}()",
+                            "source": "Tensor method",
+                            "reason": f"Tensor.{attr} 是计算操作，必须在 AscendC kernel 中实现",
+                        })
+                        continue
+                    if (
+                        isinstance(node.func.value, ast.Name)
+                        and node.func.value.id == "self"
+                        and attr in torch_module_attributes
+                    ):
+                        violations.append({
+                            "line": node.lineno,
+                            "call": f"self.{attr}(...)",
+                            "source": "torch.nn.Module",
+                            "reason": f"self.{attr} 是 torch.nn.Module，核心计算必须在 AscendC kernel 中实现",
+                        })
+                continue
 
-        qual, attr = resolved
-
-        # --- 已确认的 AscendC 扩展调用 ---
-        if qual in ext_names:
-            continue
-
-        # --- torch.xxx(...) ---
-        if qual == "torch":
-            if attr not in ALLOWED_TORCH_FUNCS:
+            if isinstance(node, ast.BinOp):
+                operand_kinds = {
+                    provenance.expression_kind(node.left),
+                    provenance.expression_kind(node.right),
+                }
+                if "tensor" not in operand_kinds:
+                    continue
+                operator = {
+                    ast.Add: "+", ast.Sub: "-", ast.Mult: "*", ast.Div: "/",
+                    ast.FloorDiv: "//", ast.Pow: "**", ast.Mod: "%", ast.MatMult: "@",
+                }.get(type(node.op), type(node.op).__name__)
                 violations.append({
                     "line": node.lineno,
-                    "call": f"torch.{attr}",
-                    "reason": f"torch.{attr} 是计算操作，必须在 AscendC kernel 中实现",
+                    "call": operator,
+                    "source": "Tensor operator",
+                    "reason": f"Tensor {operator} 运算必须在 AscendC kernel 中实现",
                 })
-            continue
-
-        # --- F.xxx(...) / functional.xxx(...) ---
-        if qual in ("F", "functional", "torch.nn.functional", "nn.functional"):
-            violations.append({
-                "line": node.lineno,
-                "call": f"{qual}.{attr}",
-                "reason": f"{qual}.{attr} 是 PyTorch 计算操作，必须在 AscendC kernel 中实现",
-            })
-            continue
-
-        # --- Python 内建函数 —— 允许 ---
-        if qual is None and attr in ALLOWED_BUILTIN_FUNCS:
-            continue
-
-        # --- tensor 方法计算操作 ---
-        if attr in FORBIDDEN_TENSOR_METHODS:
-            if qual not in ("torch", "F", "functional",
-                            "torch.nn.functional", "nn.functional"):
+            elif isinstance(node, ast.UnaryOp) and provenance.expression_kind(node.operand) == "tensor":
                 violations.append({
                     "line": node.lineno,
-                    "call": f"{qual}.{attr}()" if qual else f"{attr}()",
-                    "reason": f"{attr} 是计算操作，必须在 AscendC kernel 中实现",
+                    "call": type(node.op).__name__,
+                    "source": "Tensor operator",
+                    "reason": "Tensor 一元运算必须在 AscendC kernel 中实现",
                 })
-            continue
-
-        # --- self.layer_name(x) —— 禁止 nn.Module 调用 ---
-        if qual == "self":
-            if attr not in ("forward",):
+            elif isinstance(node, ast.Compare):
+                operands = [node.left, *node.comparators]
+                if not any(provenance.expression_kind(item) == "tensor" for item in operands):
+                    continue
                 violations.append({
                     "line": node.lineno,
-                    "call": f"self.{attr}(...)",
-                    "reason": f"self.{attr}() 疑似 nn.Module 前向调用，核心计算必须在 AscendC kernel 中实现",
+                    "call": "comparison",
+                    "source": "Tensor operator",
+                    "reason": "Tensor 比较运算必须在 AscendC kernel 中实现",
                 })
-            continue
 
     return violations
 
 
-def check_for_loops_over_tensors(forward_node):
+def check_for_loops_over_tensors(
+    function_nodes, import_sources, ext_names, provenance_by_id=None
+):
     """检查 forward 中是否存在用于计算的逐元素 Python for 循环（标量写法退化信号）。
 
     典型退化模式：
@@ -387,54 +652,51 @@ def check_for_loops_over_tensors(forward_node):
     返回违规列表 [{"line": N, "loop_var": str, "reason": str}, ...]
     """
     violations = []
-    if forward_node is None:
-        return violations
-
-    for node in ast.walk(forward_node):
-        if not isinstance(node, ast.For):
-            continue
-
-        # 检查是否是 for var in range(...)
-        if isinstance(node.iter, ast.Call):
+    provenance_by_id = provenance_by_id or {}
+    for function in function_nodes:
+        provenance = provenance_by_id.get(id(function)) or FunctionProvenance(
+            function, import_sources, ext_names
+        )
+        for node in ast.walk(function):
+            if not isinstance(node, ast.For) or not isinstance(node.iter, ast.Call):
+                continue
             resolved = _resolve_call_name(node.iter)
-            if resolved and resolved == (None, "range"):
-                loop_var = ""
-                if isinstance(node.target, ast.Name):
-                    loop_var = node.target.id
-
-                # 循环体必须同时满足两个条件才判定为退化：
-                # 1. 存在 tensor 索引操作
-                # 2. 循环体内含计算操作（禁止的 tensor 方法、torch 计算、
-                #    BinOp 算术或 @ 矩阵乘法）
-                has_tensor_indexing = _loop_has_tensor_indexing(node, loop_var)
-                has_computation = _loop_has_computation(node)
-
-                if has_tensor_indexing and has_computation:
-                    violations.append({
-                        "line": node.lineno,
-                        "loop_var": loop_var,
-                        "reason": (
-                            f"for {loop_var} in range(...) 循环中存在 tensor 索引 + 计算操作，"
-                            "这是逐元素标量写法，必须使用 AscendC kernel 的向量化操作替代"
-                        ),
-                    })
+            if not resolved or resolved != (None, "range"):
+                continue
+            loop_var = node.target.id if isinstance(node.target, ast.Name) else ""
+            has_tensor_indexing = _loop_has_tensor_indexing(node, loop_var, provenance)
+            has_computation = _loop_has_computation(
+                node, provenance, import_sources, set(ext_names)
+            )
+            if has_tensor_indexing and has_computation:
+                violations.append({
+                    "line": node.lineno,
+                    "loop_var": loop_var,
+                    "function": function.name,
+                    "reason": (
+                        f"for {loop_var} in range(...) 循环中存在 tensor 索引 + 计算操作，"
+                        "这是逐元素标量写法，必须使用 AscendC kernel 的向量化操作替代"
+                    ),
+                })
 
     return violations
 
 
-def _loop_has_tensor_indexing(for_node, loop_var):
+def _loop_has_tensor_indexing(for_node, loop_var, provenance):
     """检查 for 循环体中是否存在使用循环变量的 tensor 索引。"""
     if not loop_var:
         return False
     for child in ast.walk(for_node):
         if isinstance(child, ast.Subscript):
+            if provenance.expression_kind(child.value) != "tensor":
+                continue
             for sub_node in ast.walk(child.slice):
                 if isinstance(sub_node, ast.Name) and sub_node.id == loop_var:
                     return True
     return False
 
 
-def _loop_has_computation(for_node):
+def _loop_has_computation(for_node, provenance, import_sources, ext_names):
     """检查 for 循环体中是否包含实际的计算操作。
 
     计算操作包括：
@@ -444,52 +706,34 @@ def _loop_has_computation(for_node):
     - BinOp 算术运算符（+, -, *, /, ** 等，作用于 tensor 时）
     - @ 矩阵乘法运算符
     """
-    # 检查 BinOp（除了整数索引运算，tensor 之间的算术是计算信号）
-    arithmetic_ops = (
-        ast.Add, ast.Sub, ast.Mult, ast.Div, ast.FloorDiv,
-        ast.Pow, ast.Mod, ast.MatMult,
-    )
-    # 统计循环体内 BinOp 出现次数；少量 BinOp 可能是索引计算，大量则是退化信号
-    binop_count = 0
-
     for child in ast.walk(for_node):
-        # 检查 @ 运算符
-        if isinstance(child, ast.BinOp) and isinstance(child.op, ast.MatMult):
+        if isinstance(child, ast.BinOp):
+            if "tensor" in {
+                provenance.expression_kind(child.left),
+                provenance.expression_kind(child.right),
+            }:
+                return True
+        if isinstance(child, ast.UnaryOp) and provenance.expression_kind(child.operand) == "tensor":
             return True
-
-        # 统计算术 BinOp
-        if isinstance(child, ast.BinOp) and isinstance(child.op, arithmetic_ops):
-            binop_count += 1
-
-        # 检查函数调用
+        if isinstance(child, ast.Compare):
+            operands = [child.left, *child.comparators]
+            if any(provenance.expression_kind(item) == "tensor" for item in operands):
+                return True
         if isinstance(child, ast.Call):
-            resolved = _resolve_call_name(child)
-            if resolved is None:
-                continue
-            qual, attr = resolved
-
-            # Python 内建函数 —— 允许
-            if qual is None and attr in ALLOWED_BUILTIN_FUNCS:
-                continue
-
-            # 禁止的 tensor 方法
-            if attr in FORBIDDEN_TENSOR_METHODS:
-                if qual not in ("torch", "F", "functional",
-                                "torch.nn.functional", "nn.functional"):
+            qualified = _qualified_name(child.func)
+            root = qualified.split(".", 1)[0] if qualified else None
+            if root in ext_names:
+                return True
+            source = resolve_import_source(child.func, import_sources)
+            if source and (source == "torch" or source.startswith("torch.")):
+                if source not in ALLOWED_TORCH_CALLS:
                     return True
-
-            # torch 计算调用
-            if qual == "torch" and attr not in ALLOWED_TORCH_FUNCS:
-                return True
-
-            # F.xxx 计算调用
-            if qual in ("F", "functional", "torch.nn.functional", "nn.functional"):
-                return True
-
-    # 阈值：5 个以上算术操作视为计算密集型循环
-    # (少量 BinOp 通常是索引计算如 g+1, len(x)-2，不应触发)
-    if binop_count >= 5:
-        return True
+            if isinstance(child.func, ast.Attribute):
+                if (
+                    provenance.expression_kind(child.func.value) == "tensor"
+                    and child.func.attr not in ALLOWED_TENSOR_METHODS
+                ):
+                    return True
 
     return False
 
@@ -498,7 +742,7 @@ def _loop_has_computation(for_node):
 # 主验证逻辑
 # ---------------------------------------------------------------------------
 
-def validate(code, filepath="<unknown>"):
+def validate(code, filepath="<unknown>", expected_extension_modules=None, pybind_file=None):
     """对生成代码执行完整的退化检查。
 
     返回结构化结果 dict。
@@ -508,7 +752,7 @@ def validate(code, filepath="<unknown>"):
         "filepath": filepath,
         "checks": {
             "ascendc_ext_imported": {
-                "passed": False, "extensions": [], "error": None,
+                "passed": False, "extensions": [], "expected_modules": [], "error": None,
             },
             "kernel_called_from_forward": {
                 "passed": False, "called": [], "error": None,
@@ -534,7 +778,17 @@ def validate(code, filepath="<unknown>"):
         return result
 
     # --- Check 1: AscendC 扩展导入存在性 ---
-    extensions = find_ascendc_extension_imports(tree)
+    discovery_error = None
+    if expected_extension_modules is None:
+        selected_pybind = Path(pybind_file) if pybind_file else _default_pybind_file(filepath)
+        try:
+            expected_extension_modules = extract_pybind_module_names(selected_pybind) if selected_pybind else set()
+        except ValueError as error:
+            expected_extension_modules = set()
+            discovery_error = str(error)
+    expected_extension_modules = set(expected_extension_modules or ())
+    result["checks"]["ascendc_ext_imported"]["expected_modules"] = sorted(expected_extension_modules)
+    extensions = find_ascendc_extension_imports(tree, expected_extension_modules)
     ext_names = set(extensions.keys())
 
     result["checks"]["ascendc_ext_imported"]["extensions"] = [
@@ -549,13 +803,20 @@ def validate(code, filepath="<unknown>"):
     ]
 
     if not ext_names:
-        result["checks"]["ascendc_ext_imported"]["error"] = (
-            "未找到任何 AscendC 扩展模块导入（如 import _xxx_ext）"
-        )
+        if discovery_error:
+            error_text = f"无法从 pybind 源确认 AscendC 扩展: {discovery_error}"
+        elif not expected_extension_modules:
+            error_text = "没有提供可验证的 PYBIND11_MODULE 模块名"
+        else:
+            error_text = (
+                "Python 未导入 pybind 声明的 AscendC 扩展模块: "
+                f"expected={sorted(expected_extension_modules)}"
+            )
+        result["checks"]["ascendc_ext_imported"]["error"] = error_text
         result["regression_type"] = 1
         result["suggestion"] = (
-            "代码中没有导入 AscendC 扩展模块。model_new_ascendc.py 必须导入编译好的 "
-            "AscendC kernel 扩展（如 import _xxx_ext），并在 forward() 中调用其函数完成计算。"
+            "确保 kernel/pybind11.cpp 使用字面量 PYBIND11_MODULE(module_name, m)，"
+            "并在 model_new_ascendc.py 中导入完全相同的 module_name 后调用其函数。"
         )
         return result
 
@@ -589,10 +850,8 @@ def validate(code, filepath="<unknown>"):
         result["suggestion"] = "代码缺少 ModelNew（或 Model）类或 forward 方法。"
         return result
 
-    wrapper_names = find_wrapper_functions(tree, valid_ext_names)
-    called = check_kernel_calls_in_forward(
-        forward_node, valid_ext_names, wrapper_names
-    )
+    reachable_functions = find_reachable_functions(tree, forward_node, class_name)
+    called = check_kernel_calls(reachable_functions, valid_ext_names)
     result["checks"]["kernel_called_from_forward"]["called"] = called
 
     if not called:
@@ -603,16 +862,26 @@ def validate(code, filepath="<unknown>"):
         result["regression_type"] = 2
         result["suggestion"] = (
             f"已导入 AscendC 扩展模块 {list(valid_ext_names)} 但 "
-            f"{class_name}.forward() 中未调用。"
-            "forward() 必须通过 ext_module.function_name(...) 形式调用 kernel。"
-            f"{'也存在 wrapper 函数 ' + str(list(wrapper_names)) + ' 但 forward 也未调用它们。' if wrapper_names else ''}"
+            f"{class_name}.forward() 及其本地 helper 中未调用。"
+            "forward() 必须直接或通过可静态追踪的 helper 调用扩展函数。"
         )
         return result
 
     result["checks"]["kernel_called_from_forward"]["passed"] = True
 
     # --- Check 3: 禁止的 torch 操作 ---
-    violations = check_forbidden_torch_ops(forward_node, valid_ext_names)
+    import_sources = collect_import_sources(tree)
+    torch_module_attributes = find_torch_module_attributes(tree, class_name, import_sources)
+    provenance_by_id = build_function_provenance(
+        reachable_functions, forward_node, import_sources, valid_ext_names
+    )
+    violations = check_forbidden_torch_ops(
+        reachable_functions,
+        import_sources,
+        valid_ext_names,
+        torch_module_attributes,
+        provenance_by_id,
+    )
     result["checks"]["no_forbidden_torch_ops"]["violations"] = violations
 
     if violations:
@@ -634,7 +903,9 @@ def validate(code, filepath="<unknown>"):
     result["checks"]["no_forbidden_torch_ops"]["passed"] = True
 
     # --- Check 4: 标量 for 循环退化 ---
-    loop_violations = check_for_loops_over_tensors(forward_node)
+    loop_violations = check_for_loops_over_tensors(
+        reachable_functions, import_sources, valid_ext_names, provenance_by_id
+    )
     result["checks"]["no_scalar_for_loops"]["violations"] = loop_violations
 
     if loop_violations:
@@ -668,6 +939,11 @@ def main():
         description="检查 AscendC 生成代码是否退化为 PyTorch 原生实现（AST 静态分析）"
     )
     parser.add_argument("file", help="要检查的 Python 文件路径")
+    parser.add_argument(
+        "--pybind-file",
+        default=None,
+        help="pybind11.cpp 路径；默认使用 Python 文件同目录下的 kernel/pybind11.cpp",
+    )
     parser.add_argument("--json", action="store_true", help="JSON 格式输出")
     args = parser.parse_args()
 
@@ -681,7 +957,7 @@ def main():
             print(f"[ERROR] 文件不存在: {args.file}")
         sys.exit(1)
 
-    result = validate(code, filepath=args.file)
+    result = validate(code, filepath=args.file, pybind_file=args.pybind_file)
 
     if args.json:
         print(json.dumps(result, ensure_ascii=False, indent=2))

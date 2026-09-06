@@ -24,7 +24,7 @@
   - `GM -> UB`：`DataCopyPad(local, global, copyParams, padParams)`，需要 4 参数，并传入 `DataCopyPadExtParams<T>`。
   - `UB -> GM`：`DataCopyPad(global, local, copyParams)`，只需要 3 参数，不传 `padParams`。
 - `DataCopyExtParams` 常用字段为 `blockCount, blockLen, srcStride, dstStride, rsv`；其中 `blockLen` 单位是字节，`srcStride`/`dstStride` 的单位随 GM 或 Local 位置变化。
-- `DataCopyPadExtParams<T>` 常用字段为 `isPad, leftPadding, rightPadding, padValue`；`isPad` 属于 `DataCopyPadExtParams<T>`，不要写进 `DataCopyExtParams`。
+- `DataCopyPadExtParams<T>` 的字段名随 CANN 版本变化；CANN 8.5.2 公共头文件使用 `isPad, leftPadding, rightPadding, paddingValue`。必须以当前安装版本的公共头文件为准，也可以按头文件声明顺序使用聚合初始化；不要凭旧文档写 `padValue`。`isPad` 属于 `DataCopyPadExtParams<T>`，不要写进 `DataCopyExtParams`。
 - 参与 `GM <-> UB` 搬运的 UB buffer 优先映射为 `TQue` 分配的 `LocalTensor`，并按方向配合 `AllocTensor`/`EnQue` 或 `DeQue`/`FreeTensor`；不要把直接参与 `DataCopy` / `DataCopyPad` 的 buffer 映射为普通 `TBuf`。
 - 连续且 32B 对齐的搬运优先用 `DataCopy`；非对齐、尾块或需要补齐时再用 `DataCopyPad`。
 - 矩阵二维子 tile 或带 stride 的搬运应显式构造 `DataCopyParams` / `DataCopyExtParams`。

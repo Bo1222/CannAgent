@@ -8,11 +8,11 @@ from typing import Protocol
 
 from llm_config import get_env
 
-from .models import LLMResponse
+from .models import LLMCallConfig, LLMResponse
 
 
 class LLMProvider(Protocol):
-    def generate(self, prompt: str) -> LLMResponse: ...
+    def generate(self, prompt: str, *, call_config: LLMCallConfig | None = None) -> LLMResponse: ...
 
 
 class OpenAICompatibleProvider:
@@ -25,8 +25,9 @@ class OpenAICompatibleProvider:
         base_url: str,
         api_key: str,
         temperature: float = 0.2,
-        max_tokens: int = 8192,
+        max_tokens: int = 65536,
         timeout: int = 600,
+        provider: str = "deepseek",
     ):
         if not api_key:
             raise ValueError("LLM API key is empty")
@@ -36,6 +37,7 @@ class OpenAICompatibleProvider:
         self.temperature = temperature
         self.max_tokens = max_tokens
         self.timeout = timeout
+        self.provider = provider
 
     @classmethod
     def from_env(cls, config):
@@ -45,22 +47,56 @@ class OpenAICompatibleProvider:
             base_url=config.base_url,
             api_key=get_env(f"{prefix}_API_KEY"),
             temperature=config.temperature,
-            max_tokens=config.max_tokens,
+            max_tokens=(
+                getattr(config, "generator_max_tokens", None)
+                or getattr(config, "max_tokens", None)
+                or 65536
+            ),
             timeout=config.timeout,
+            provider=config.provider,
         )
 
-    def generate(self, prompt: str) -> LLMResponse:
-        body = json.dumps(
-            {
-                "model": self.model,
-                "messages": [
-                    {"role": "system", "content": "You are an expert AscendC kernel engineer. Follow the requested JSON schema exactly."},
-                    {"role": "user", "content": prompt},
-                ],
-                "temperature": self.temperature,
-                "max_tokens": self.max_tokens,
-            }
-        ).encode("utf-8")
+    def generate(self, prompt: str, *, call_config: LLMCallConfig | None = None) -> LLMResponse:
+        effective = call_config or LLMCallConfig(
+            call_type="generator",
+            max_tokens=self.max_tokens,
+            thinking="disabled",
+        )
+        request_body: dict[str, object] = {
+            "model": self.model,
+            "messages": [
+                {
+                    "role": "system",
+                    "content": (
+                        "You are an expert AscendC kernel engineer. "
+                        "Return exactly one valid JSON object matching the requested schema."
+                    ),
+                },
+                {"role": "user", "content": prompt},
+            ],
+            "max_tokens": effective.max_tokens,
+            "response_format": {"type": effective.response_format},
+        }
+        request_options: dict[str, object] = {
+            "call_type": effective.call_type,
+            "max_tokens": effective.max_tokens,
+            "response_format": effective.response_format,
+            "thinking_requested": effective.thinking,
+            "reasoning_effort_requested": effective.reasoning_effort,
+        }
+        if self.provider == "deepseek":
+            request_body["thinking"] = {"type": effective.thinking}
+            if effective.thinking == "enabled" and effective.reasoning_effort:
+                request_body["reasoning_effort"] = effective.reasoning_effort
+            else:
+                request_body["temperature"] = self.temperature
+        else:
+            # DeepSeek's thinking wire fields are not portable to generic
+            # OpenAI-compatible endpoints.
+            request_body["temperature"] = self.temperature
+            request_options["thinking_requested"] = "not_sent"
+            request_options["reasoning_effort_requested"] = None
+        body = json.dumps(request_body).encode("utf-8")
         request = urllib.request.Request(
             self.url,
             data=body,
@@ -80,11 +116,13 @@ class OpenAICompatibleProvider:
         elapsed = time.monotonic() - started
         try:
             choice = payload["choices"][0]
-            content = choice["message"]["content"]
+            message = choice["message"]
+            content = message.get("content") or ""
+            reasoning_content = message.get("reasoning_content") or ""
         except (KeyError, IndexError, TypeError) as error:
             raise RuntimeError(f"invalid LLM API response: {str(payload)[:2000]}") from error
-        if not isinstance(content, str) or not content.strip():
-            raise RuntimeError("LLM API returned empty content")
+        if not isinstance(content, str) or not isinstance(reasoning_content, str):
+            raise RuntimeError(f"invalid LLM message content: {str(message)[:2000]}")
         usage = payload.get("usage") if isinstance(payload.get("usage"), dict) else {}
         return LLMResponse(
             content=content,
@@ -93,6 +131,10 @@ class OpenAICompatibleProvider:
             latency_seconds=elapsed,
             request_id=payload.get("id"),
             finish_reason=str(choice["finish_reason"]) if choice.get("finish_reason") is not None else None,
+            reasoning_content=reasoning_content,
+            system_fingerprint=payload.get("system_fingerprint"),
+            requested_model=self.model,
+            request_options=request_options,
         )
 
 
@@ -100,7 +142,7 @@ class MockProvider:
     def __init__(self):
         self.calls = 0
 
-    def generate(self, prompt: str) -> LLMResponse:
+    def generate(self, prompt: str, *, call_config: LLMCallConfig | None = None) -> LLMResponse:
         self.calls += 1
         module = "_mock_ascendc_ext"
         payload = {
@@ -136,5 +178,12 @@ class MockProvider:
                 "prompt_tokens": prompt_tokens,
                 "completion_tokens": completion_tokens,
                 "total_tokens": prompt_tokens + completion_tokens,
+            },
+            requested_model="mock",
+            request_options={
+                "call_type": call_config.call_type if call_config else "generator",
+                "max_tokens": call_config.max_tokens if call_config else None,
+                "thinking_requested": call_config.thinking if call_config else "disabled",
+                "reasoning_effort_requested": call_config.reasoning_effort if call_config else None,
             },
         )

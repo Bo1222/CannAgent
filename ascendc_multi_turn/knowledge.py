@@ -9,6 +9,7 @@ from typing import Any
 
 from llm_config import get_env
 
+from .diagnostics import compact_evaluation, extract_api_symbols
 from .models import EvalResult, FileBundle
 
 
@@ -17,12 +18,10 @@ TRANSLATOR_ROOT = REPO_ROOT / "skills/ascendc/ascendc-translator"
 REFERENCES_ROOT = TRANSLATOR_ROOT / "references"
 KNOWLEDGE_ROOT = REFERENCES_ROOT / "AscendC_knowledge"
 CATALOG_PATH = KNOWLEDGE_ROOT / "knowledge_catalog.json"
+MANIFEST_PATH = KNOWLEDGE_ROOT / "api_reference/manifest.json"
 
 CORE_DOCUMENTS = (
-    TRANSLATOR_ROOT / "SKILL.md",
-    REFERENCES_ROOT / "dsl2Ascendc.md",
-    REFERENCES_ROOT / "TileLang-AscendC-API-Mapping.md",
-    REFERENCES_ROOT / "AscendCVerification.md",
+    REFERENCES_ROOT / "direct_llm_core.md",
 )
 
 SUPPLEMENT_DOCUMENTS = {
@@ -59,6 +58,48 @@ class KnowledgeSelection:
     reason: str
     selected_files: list[str]
     fallback: bool = False
+    mode: str = "initial_full"
+    doc_ids: list[str] | None = None
+    added_doc_ids: list[str] | None = None
+    removed_doc_ids: list[str] | None = None
+    rendered_doc_ids: list[str] | None = None
+    runtime_fact_symbols: list[str] | None = None
+    conflicts: list[str] | None = None
+
+    def __post_init__(self) -> None:
+        for name in (
+            "doc_ids",
+            "added_doc_ids",
+            "removed_doc_ids",
+            "rendered_doc_ids",
+            "runtime_fact_symbols",
+            "conflicts",
+        ):
+            if getattr(self, name) is None:
+                setattr(self, name, [])
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
+class KnowledgeState:
+    runtime_version: str
+    knowledge_version: str
+    initialized: bool = False
+    working_doc_ids: list[str] | None = None
+    supplements: list[str] | None = None
+    known_symbols: list[str] | None = None
+    failure_fingerprints: list[str] | None = None
+    full_route_count: int = 0
+    incremental_route_count: int = 0
+    last_round: int = 0
+    migrated: bool = False
+
+    def __post_init__(self) -> None:
+        for name in ("working_doc_ids", "supplements", "known_symbols", "failure_fingerprints"):
+            if getattr(self, name) is None:
+                setattr(self, name, [])
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -136,11 +177,16 @@ def select_knowledge_version(runtime_version: str) -> KnowledgeVersion:
     )
 
 
-def _index_entries(version: KnowledgeVersion) -> list[dict[str, str]]:
+def _index_entries(version: KnowledgeVersion) -> list[dict[str, Any]]:
     metadata = _read_catalog()["versions"][version.knowledge_version]
     index_path = KNOWLEDGE_ROOT / metadata["index"]
+    if MANIFEST_PATH.is_file():
+        payload = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
+        documents = payload.get("documents", [])
+        if isinstance(documents, list) and documents:
+            return [entry for entry in documents if isinstance(entry, dict)]
     text = index_path.read_text(encoding="utf-8")
-    entries: list[dict[str, str]] = []
+    entries: list[dict[str, Any]] = []
     current_title = ""
     for line in text.splitlines():
         if line.startswith("- 标题: "):
@@ -150,9 +196,11 @@ def _index_entries(version: KnowledgeVersion) -> list[dict[str, str]]:
             if match:
                 entries.append(
                     {
+                        "doc_id": Path(match.group(1)).stem,
                         "name": current_title.split("-", 1)[0].strip(),
                         "title": current_title,
                         "path": match.group(1),
+                        "symbols": [],
                     }
                 )
             current_title = ""
@@ -165,22 +213,32 @@ def build_knowledge_prompt(
     current: FileBundle | None,
     previous_result: EvalResult | None,
     version: KnowledgeVersion,
+    mode: str = "initial_full",
+    candidate_doc_ids: list[str] | None = None,
+    working_doc_ids: list[str] | None = None,
 ) -> str:
     entries = _index_entries(version)
-    compact_index = "\n".join(f"- {entry['name']}: {entry['title']}" for entry in entries)
+    if candidate_doc_ids is not None:
+        allowed = set(candidate_doc_ids)
+        entries = [entry for entry in entries if entry["doc_id"] in allowed]
+    compact_index = "\n".join(
+        f"- {entry['doc_id']} | {entry['name']} | {entry.get('family', '')}" for entry in entries
+    )
     current_paths = sorted(current.files) if current else []
-    previous = previous_result.to_dict() if previous_result else None
+    previous = compact_evaluation(previous_result)
     supplements = ", ".join(sorted(SUPPLEMENT_DOCUMENTS))
     return f"""Select the AscendC skill knowledge required for the next implementation round.
-Return exactly one JSON object with keys: skill, topics, api_names, supplements, reason.
-skill must be \"ascendc-translator\". api_names must use names from the index below.
+Return exactly one JSON object with keys: skill, topics, doc_ids, supplements, reason.
+skill must be \"ascendc-translator\". doc_ids must use exact IDs from the index below.
 supplements may only use these file names: {supplements}.
 Choose only directly relevant material; do not return file paths.
 
+Routing mode: {mode}
 Runtime CANN: {version.runtime_version}
 Knowledge CANN: {version.knowledge_version} ({version.status})
 Current source files: {json.dumps(current_paths)}
-Previous evaluation: {json.dumps(previous, ensure_ascii=False)[:12000]}
+Current working document IDs: {json.dumps(working_doc_ids or [])}
+Previous evaluation: {json.dumps(previous, ensure_ascii=False)}
 
 Reference model:
 ```python
@@ -224,27 +282,37 @@ def parse_knowledge_selection(
     fallback_text: str,
 ) -> KnowledgeSelection:
     entries = _index_entries(version)
-    by_name: dict[str, list[dict[str, str]]] = {}
+    by_name: dict[str, list[dict[str, Any]]] = {}
+    by_id = {entry["doc_id"]: entry for entry in entries}
     for entry in entries:
         by_name.setdefault(entry["name"].lower(), []).append(entry)
     try:
         payload = _json_object(text)
         if payload.get("skill") != "ascendc-translator":
             raise ValueError("unsupported skill")
-        requested = _string_list(payload, "api_names")
+        requested_ids = _string_list(payload, "doc_ids") if "doc_ids" in payload else []
+        requested = _string_list(payload, "api_names") if "api_names" in payload else []
         supplements = _string_list(payload, "supplements")[:2]
         if any(name not in SUPPLEMENT_DOCUMENTS for name in supplements):
             raise ValueError("unknown supplement")
-        selected_entries: list[dict[str, str]] = []
-        for name in requested:
-            for entry in by_name.get(name.lower(), []):
-                if entry not in selected_entries:
+        selected_entries: list[dict[str, Any]] = []
+        if requested_ids:
+            for doc_id in requested_ids:
+                entry = by_id.get(doc_id)
+                if entry is not None and entry not in selected_entries:
                     selected_entries.append(entry)
+                if len(selected_entries) >= max_api_docs:
                     break
-            if len(selected_entries) >= max_api_docs:
-                break
-        if requested and not selected_entries:
-            raise ValueError("no requested API name exists in the selected index")
+        else:
+            for name in requested:
+                for entry in by_name.get(name.lower(), []):
+                    if entry not in selected_entries:
+                        selected_entries.append(entry)
+                        break
+                if len(selected_entries) >= max_api_docs:
+                    break
+        if (requested_ids or requested) and not selected_entries:
+            raise ValueError("no requested API document exists in the selected index")
         return KnowledgeSelection(
             skill="ascendc-translator",
             topics=_string_list(payload, "topics"),
@@ -252,16 +320,19 @@ def parse_knowledge_selection(
             supplements=supplements,
             reason=str(payload.get("reason", "")),
             selected_files=[entry["path"] for entry in selected_entries],
+            mode=str(payload.get("mode", "initial_full")),
+            doc_ids=[entry["doc_id"] for entry in selected_entries],
         )
     except (ValueError, json.JSONDecodeError, TypeError):
-        lowered = fallback_text.lower()
-        selected_entries = []
-        for entry in entries:
-            name = entry["name"]
-            if len(name) >= 3 and re.search(rf"\b{re.escape(name.lower())}\b", lowered):
-                selected_entries.append(entry)
-            if len(selected_entries) >= max_api_docs:
-                break
+        fallback_ids = [
+            doc_id
+            for doc_id, _score in candidate_doc_ids(
+                fallback_text,
+                version=version,
+                limit=max_api_docs,
+            )
+        ]
+        selected_entries = [by_id[doc_id] for doc_id in fallback_ids if doc_id in by_id]
         return KnowledgeSelection(
             skill="ascendc-translator",
             topics=["deterministic-fallback"],
@@ -270,7 +341,221 @@ def parse_knowledge_selection(
             reason="Router output was invalid or unmatched; selected APIs from task and source text.",
             selected_files=[entry["path"] for entry in selected_entries],
             fallback=True,
+            doc_ids=[entry["doc_id"] for entry in selected_entries],
         )
+
+
+def load_knowledge_state(
+    path: Path,
+    *,
+    version: KnowledgeVersion,
+    legacy_selection: dict[str, Any] | None = None,
+) -> KnowledgeState:
+    if path.is_file():
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        state = KnowledgeState(**payload)
+        if (state.runtime_version, state.knowledge_version) != (
+            version.runtime_version,
+            version.knowledge_version,
+        ):
+            raise ValueError("knowledge state version does not match the selected CANN knowledge")
+        return state
+    state = KnowledgeState(version.runtime_version, version.knowledge_version)
+    if legacy_selection:
+        entries = _index_entries(version)
+        by_path = {entry["path"]: entry["doc_id"] for entry in entries}
+        state.working_doc_ids = [
+            by_path[path]
+            for path in legacy_selection.get("selected_files", [])
+            if path in by_path
+        ]
+        state.supplements = [
+            item for item in legacy_selection.get("supplements", []) if item in SUPPLEMENT_DOCUMENTS
+        ]
+        state.initialized = True
+        state.migrated = True
+    return state
+
+
+def save_knowledge_state(path: Path, state: KnowledgeState) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(state.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def candidate_doc_ids(
+    evidence: str,
+    *,
+    version: KnowledgeVersion,
+    exclude: list[str] | None = None,
+    limit: int = 5,
+) -> list[tuple[str, int]]:
+    excluded = set(exclude or [])
+    lowered = evidence.lower()
+    symbols = {symbol.lower() for symbol in extract_api_symbols(evidence)}
+    ranked: list[tuple[str, int]] = []
+    for entry in _index_entries(version):
+        if entry["doc_id"] in excluded:
+            continue
+        name = str(entry["name"])
+        primary_name = name.split("(", 1)[0].strip().lower()
+        score = 0
+        if primary_name in symbols:
+            score += 120
+        elif len(primary_name) >= 4 and re.search(
+            rf"(?<![a-z0-9_]){re.escape(primary_name)}(?![a-z0-9_])", lowered
+        ):
+            score += 80
+        entry_symbols = {str(item).lower() for item in entry.get("symbols", [])}
+        score += min(180, 60 * len(symbols & entry_symbols))
+        family = str(entry.get("family", "")).lower()
+        if family and len(family) >= 4 and family in lowered:
+            score += 5
+        if score:
+            ranked.append((entry["doc_id"], score))
+    ranked.sort(key=lambda item: (-item[1], item[0]))
+    return ranked[:limit]
+
+
+def apply_selection_to_state(
+    state: KnowledgeState,
+    selection: KnowledgeSelection,
+    *,
+    max_docs: int,
+    preferred_doc_ids: list[str] | None = None,
+) -> None:
+    before = list(state.working_doc_ids)
+    preferred = list(dict.fromkeys(preferred_doc_ids or selection.doc_ids or []))
+    combined = list(dict.fromkeys([*preferred, *selection.doc_ids, *before]))
+    state.working_doc_ids = combined[:max_docs]
+    state.supplements = list(dict.fromkeys([*selection.supplements, *state.supplements]))[:2]
+    selection.added_doc_ids = [item for item in state.working_doc_ids if item not in before]
+    selection.removed_doc_ids = [item for item in before if item not in state.working_doc_ids]
+    state.initialized = True
+
+
+def active_doc_ids(
+    state: KnowledgeState,
+    evidence: str,
+    *,
+    version: KnowledgeVersion,
+    preferred_doc_ids: list[str] | None = None,
+    limit: int = 5,
+) -> list[str]:
+    preferred = [item for item in preferred_doc_ids or [] if item in state.working_doc_ids]
+    ranked = candidate_doc_ids(evidence, version=version, limit=len(_index_entries(version)))
+    scores = dict(ranked)
+    remaining = sorted(
+        (item for item in state.working_doc_ids if item not in preferred),
+        key=lambda item: (-scores.get(item, 0), state.working_doc_ids.index(item)),
+    )
+    return list(dict.fromkeys([*preferred, *remaining]))[:limit]
+
+
+def selection_from_state(
+    state: KnowledgeState,
+    *,
+    version: KnowledgeVersion,
+    mode: str,
+    active_ids: list[str] | None = None,
+    reason: str = "Reused the task-level knowledge working set.",
+) -> KnowledgeSelection:
+    by_id = {entry["doc_id"]: entry for entry in _index_entries(version)}
+    doc_ids = [item for item in (active_ids or state.working_doc_ids) if item in by_id]
+    entries = [by_id[item] for item in doc_ids]
+    return KnowledgeSelection(
+        skill="ascendc-translator",
+        topics=[mode],
+        api_names=[entry["name"] for entry in entries],
+        supplements=list(state.supplements),
+        reason=reason,
+        selected_files=[entry["path"] for entry in entries],
+        mode=mode,
+        doc_ids=doc_ids,
+    )
+
+
+_API_SECTION = re.compile(
+    r"^#{1,6}\s+.*(?:功能说明|函数原型|参数说明|约束说明|调用示例|返回值说明).*$",
+    re.MULTILINE,
+)
+
+
+def _api_excerpt(content: str, *, max_chars: int = 3000) -> str:
+    matches = list(_API_SECTION.finditer(content))
+    if not matches:
+        excerpt = content[:max_chars]
+    else:
+        pieces: list[str] = []
+        for match in matches:
+            next_heading = re.search(r"^#{1,6}\s+", content[match.end() :], re.MULTILINE)
+            end = match.end() + next_heading.start() if next_heading else len(content)
+            piece = content[match.start() : end].strip()
+            if sum(len(item) + 2 for item in pieces) + len(piece) > max_chars:
+                continue
+            pieces.append(piece)
+        excerpt = "\n\n".join(pieces) or content[:max_chars]
+    if len(excerpt) > max_chars:
+        excerpt = excerpt[:max_chars]
+    if len(excerpt) == max_chars and "\n" in excerpt:
+        excerpt = excerpt.rsplit("\n", 1)[0]
+    return excerpt
+
+
+def render_knowledge_with_metadata(
+    selection: KnowledgeSelection,
+    *,
+    version: KnowledgeVersion,
+    max_chars: int,
+    runtime_facts: str = "",
+    conflicts: list[str] | None = None,
+) -> tuple[str, list[str]]:
+    metadata = _read_catalog()["versions"][version.knowledge_version]
+    index_dir = (KNOWLEDGE_ROOT / metadata["index"]).parent.resolve()
+    by_id = {entry["doc_id"]: entry for entry in _index_entries(version)}
+    chunks = [
+        "# AscendC task knowledge",
+        f"Runtime CANN: {version.runtime_version}",
+        f"Fallback documentation: CANN {version.knowledge_version} ({version.status})",
+        "Priority: compiler diagnostics and installed public headers override fallback documentation.",
+    ]
+    if version.warning:
+        chunks.append(f"WARNING: {version.warning}")
+    if conflicts:
+        chunks.append("\n## Runtime/document conflicts\n" + "\n".join(f"- {item}" for item in conflicts))
+    if runtime_facts:
+        chunks.append("\n## Runtime public-header facts\n" + runtime_facts)
+    for path in CORE_DOCUMENTS:
+        if path.is_file():
+            chunk = f"\n## Core rules: {path.name}\n{path.read_text(encoding='utf-8')}"
+            if len("\n".join([*chunks, chunk])) <= max_chars:
+                chunks.append(chunk)
+    rendered: list[str] = []
+    for doc_id in selection.doc_ids:
+        entry = by_id.get(doc_id)
+        if entry is None:
+            continue
+        path = (index_dir / entry["path"]).resolve()
+        path.relative_to(index_dir)
+        if not path.is_file():
+            continue
+        excerpt = _api_excerpt(path.read_text(encoding="utf-8", errors="replace"))
+        chunk = f"\n## API {entry['name']} [{doc_id}]\n{excerpt}"
+        if len("\n".join([*chunks, chunk])) > max_chars:
+            continue
+        chunks.append(chunk)
+        rendered.append(doc_id)
+    for name in selection.supplements:
+        path = SUPPLEMENT_DOCUMENTS.get(name)
+        if path and path.is_file():
+            chunk = f"\n## Supplement: {name}\n{path.read_text(encoding='utf-8')[:2500]}"
+            if len("\n".join([*chunks, chunk])) <= max_chars:
+                chunks.append(chunk)
+    text = "\n".join(chunks)
+    if len(text) > max_chars:
+        text = text[:max_chars]
+        if "\n" in text:
+            text = text.rsplit("\n", 1)[0]
+    return text, rendered
 
 
 def render_knowledge(
@@ -278,36 +563,18 @@ def render_knowledge(
     *,
     version: KnowledgeVersion,
     max_chars: int,
+    runtime_facts: str = "",
+    conflicts: list[str] | None = None,
 ) -> str:
-    metadata = _read_catalog()["versions"][version.knowledge_version]
-    index_dir = (KNOWLEDGE_ROOT / metadata["index"]).parent
-    documents = list(CORE_DOCUMENTS)
-    documents.extend(SUPPLEMENT_DOCUMENTS[name] for name in selection.supplements)
-    for relative in selection.selected_files:
-        candidate = (index_dir / relative).resolve()
-        candidate.relative_to(index_dir.resolve())
-        documents.append(candidate)
-
-    chunks = [
-        "# AscendC skill and versioned knowledge",
-        f"Runtime CANN: {version.runtime_version}",
-        f"Knowledge CANN: {version.knowledge_version} ({version.status})",
-    ]
-    if version.warning:
-        chunks.append(f"WARNING: {version.warning}")
-    used = sum(len(chunk) for chunk in chunks)
-    for path in documents:
-        if not path.is_file():
-            continue
-        content = path.read_text(encoding="utf-8")
-        header = f"\n\n## {path.name}\n"
-        available = max_chars - used - len(header)
-        if available <= 0:
-            break
-        excerpt = content[:available]
-        chunks.append(header + excerpt)
-        used += len(header) + len(excerpt)
-    return "\n".join(chunks)
+    text, rendered = render_knowledge_with_metadata(
+        selection,
+        version=version,
+        max_chars=max_chars,
+        runtime_facts=runtime_facts,
+        conflicts=conflicts,
+    )
+    selection.rendered_doc_ids = rendered
+    return text
 
 
 def resolve_knowledge_version(config) -> KnowledgeVersion:
@@ -318,5 +585,5 @@ def resolve_knowledge_version(config) -> KnowledgeVersion:
 def knowledge_limits() -> tuple[int, int]:
     return (
         int(get_env("ASCENDC_KNOWLEDGE_MAX_API_DOCS", "8")),
-        int(get_env("ASCENDC_KNOWLEDGE_MAX_CHARS", "60000")),
+        int(get_env("ASCENDC_KNOWLEDGE_MAX_CHARS", "24000")),
     )

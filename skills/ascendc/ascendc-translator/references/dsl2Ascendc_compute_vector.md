@@ -45,7 +45,7 @@ extern "C" __global__ __aicore__ void kernel_custom(GM_ADDR x, GM_ADDR y, GM_ADD
 
 常见模式：
 
-- `CopyTiling(&tiling_, tilingGM)`
+- 使用生成工程中 tiling 类型对应的正式读取方式；只有该类型的公共头文件明确提供 `CopyTiling` 时才能调用它。普通 POD tiling 可按工程 ABI 从 GM 读取并逐字段保存，不要假设任意结构体都支持 `CopyTiling`。
 - `SetGlobalBuffer(...)` 绑定输入 / 输出 GM tensor
 - 从 tiling 派生本核要用的运行时参数，如 `tileM`、`tileN`、`tileSize`
 

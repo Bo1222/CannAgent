@@ -120,18 +120,21 @@ flowchart TD
 
 ### AscendC 多轮生成器流程
 
-`ascendc_multi_turn/` 由 `MultiTurnRunner`（`runner.py:15`）实现一个显式的 Python 循环（第 99 行 `for round_num in ...`），完全不依赖任何 agent runtime：
+`ascendc_multi_turn/` 由 `MultiTurnRunner` 实现显式 Python 状态循环，完全不依赖任何 agent runtime：
 
 ```mermaid
 flowchart TD
     R0[读取 reference model.py + cases] --> P{迭代 round_num ≤ max_rounds}
-    P -->|是| B[检测 CANN 版本并路由 Skill/API 文档]
-    B --> C0[构建 prompt: knowledge + reference + current + feedback]
+    P -->|是| B[检测 CANN 版本; 首轮全量路由/后续复用或增量路由]
+    B --> H[抽取安装版 CANN 公共头文件事实]
+    H --> C0[构建 prompt: targeted knowledge + reference + current + feedback]
     C0 --> L[调用 DeepSeek 或 OpenAI, 返回 files/delete 增量]
     L --> F{解析文件包, 路径/完整性校验}
-    F -->|FORMAT_FAIL| E
+    F -->|格式/API/环境失败| X[保存 checkpoint; 不消耗评估轮; resume]
     F -->|ok| A[写回 task_dir]
-    A --> C[evaluator: 静态检查 → AscendC 编译 → 正确性验证 → 性能测试]
+    A --> C[evaluator: wrapper 检查 → C++ 源码预检 → 编译 → 正确性 → 性能]
+    C -->|编译失败| CR[同轮一次 compiler repair LLM + 重编译]
+    CR --> D
     C --> D{_is_better? 正确且分数更高}
     D -->|KEEP| K[记录 best.json, 更新 current]
     D -->|DISCARD| G[回滚到 best, current=best]
@@ -144,12 +147,13 @@ flowchart TD
 
 关键实现位置：
 
-- **循环**：`runner.py:99` — `for round_num in range(...)`，`max_rounds` 即终止条件。
+- **循环**：`runner.py` 的 `MultiTurnRunner.run()` 分开维护 evaluation round 与 physical attempt ID；`max_rounds` 限制真正进入 evaluator 的候选数量。
 - **每轮输入**：`prompts.py:60`（`build_prompt`）把 `reference_code + cases + current(FileBundle) + previous_result(EvalResult)` 组装进 prompt —— 上一轮评测反馈以 JSON 形式回灌给下一轮，用于 repair / optimize。
-- **KEEP/DISCARD**：`runner.py:62`（`_is_better`）—— 只有正确（`correctness`）且分数严格优于已存 best 才 KEEP，否则 DISCARD 回滚到 best；首个正确候选直接成为 best。
+- **KEEP/DISCARD**：`runner.py` 的 `_is_better()` 只接受正确且具有有效性能分数的候选；之后只有严格优于已存 best 才 KEEP，否则 DISCARD 回滚到 best。
 - **文件协议与安全**：`bundle.py` —— 模型只能返回 `model_new_ascendc.py` 和 `kernel/` 下的源码（`validate_relative_path` 阻止绝对路径 / `..` 穿越 / build 文件），`validate_initial_bundle` 强制首轮必须包含完整 wrapper + pybind + kernel cpp。
 - **评测反馈**：`evaluator.py:42`（`LocalAscendEvaluator`）——依次跑 `validate_ascendc_impl.py` → `utils/build_ascendc.py` → `utils/verification_ascendc.py` → 性能分析；几何平均 speedup 作为分数。
-- **状态保存**：每轮写入 `.llm_state/round_NN/{prompt,response,candidate.json}`，`trajectory.json`、`calls.jsonl`、`token_usage.json`、`best.json`、`summary.json`；中断后用 `--resume` 从下一轮继续（`runner.py:71` `_resume_state`）。
+- **知识控制**：首次完整路由建立任务级工作集；后续稳定轮不调用路由模型，新 API 仅在最多 5 个候选中增量选择。安装版 CANN 公共头文件优先于回退版本文档，实际注入默认限制为 24000 字符。
+- **状态保存**：每次尝试写入 `.llm_state/round_NN/`，并保存 `knowledge_state.json`、`trajectory.json`、`calls.jsonl`、`orchestration_attempts.jsonl`、`run_state.json`、`token_usage.json`、`best.json` 和 `summary.json`；中断或编排失败后用 `--resume` 重试未完成的评测轮，只有真正进入 evaluator 的候选才消耗 `max_rounds`。
 - **终止与退出**：达到 `max_rounds` 后，若存在 best 则还原并报告 success，否则失败。
 
 ## Claude 的真实位置
@@ -307,6 +311,16 @@ python -m ascendc_multi_turn \
 使用 OpenAI/GPT 测试时，在 `.env` 填写 `OPENAI_API_KEY`、`OPENAI_MODEL`、
 `OPENAI_BASE_URL`，并改用 `--provider openai`。每轮会先通过
 `ascendc-translator` Skill 选择与 CANN 版本匹配的 API 文档，再执行代码生成和评测。
+命令默认在 stderr 显示当前轮次、各阶段和每 15 秒心跳，stdout 只保留最终
+JSON；需要静默运行时增加 `--quiet`。每轮完整的静态检查、编译、正确性与性能
+输出保存在 `.llm_state/round_NN/*.log`，最终 JSON 的 `failure.details_path` 会指向
+失败阶段日志。
+
+DeepSeek V4 默认按调用类型分配输出预算：知识路由 4096 token 且关闭 thinking，
+代码生成 65536 token 且使用 `high` thinking，编译修复 65536 token 且使用
+`max` thinking。终端和 `calls.jsonl` 会同时记录请求模型、服务端实际模型、thinking、
+effort、reasoning token 和结束原因。`--max-rounds` 只统计实际进入评测链路的候选；
+API、知识选择或本地环境失败会停在当前 checkpoint，修复后 `--resume` 不会浪费一轮。
 
 无 NPU 验证编排：
 ```bash

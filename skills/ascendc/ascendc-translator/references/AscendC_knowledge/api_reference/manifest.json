@@ -1,0 +1,1586 @@
+{
+  "schema_version": 2,
+  "source_index": "INDEX.md",
+  "duplicate_names": {
+    "Axpy": [
+      "atlasascendc_api_07_0063",
+      "atlasascendc_api_07_0585",
+      "atlasascendc_api_07_0053",
+      "atlasascendc_api_07_0584"
+    ],
+    "Cast": [
+      "atlasascendc_api_07_0073",
+      "atlasascendc_api_07_0072"
+    ],
+    "ClampMax": [
+      "atlasascendc_api_07_0576",
+      "atlasascendc_api_07_0575"
+    ],
+    "Compare": [
+      "atlasascendc_api_07_0066",
+      "atlasascendc_api_07_0065"
+    ],
+    "Cos": [
+      "atlasascendc_api_07_0508",
+      "atlasascendc_api_07_0507"
+    ],
+    "DataCopy简介": [
+      "atlasascendc_api_07_0101",
+      "atlasascendc_api_07_0100"
+    ],
+    "Duplicate": [
+      "atlasascendc_api_07_0088",
+      "atlasascendc_api_07_0087"
+    ],
+    "Exp": [
+      "atlasascendc_api_07_0025",
+      "atlasascendc_api_07_0589",
+      "atlasascendc_api_07_0024",
+      "atlasascendc_api_07_0588"
+    ],
+    "Gather": [
+      "atlasascendc_api_07_0092",
+      "atlasascendc_api_07_0091"
+    ],
+    "Load2D": [
+      "atlasascendc_api_07_0238",
+      "atlasascendc_api_07_00169"
+    ],
+    "Mmad": [
+      "atlasascendc_api_07_0249",
+      "atlasascendc_api_07_00172"
+    ],
+    "MrgSort": [
+      "atlasascendc_api_07_0847",
+      "atlasascendc_api_07_0232"
+    ],
+    "Not": [
+      "atlasascendc_api_07_0031",
+      "atlasascendc_api_07_0034"
+    ],
+    "ReduceMax": [
+      "atlasascendc_api_07_10055",
+      "atlasascendc_api_07_0076",
+      "atlasascendc_api_07_0075",
+      "atlasascendc_api_07_10049"
+    ],
+    "ReduceMin": [
+      "atlasascendc_api_07_0077",
+      "atlasascendc_api_07_10056",
+      "atlasascendc_api_07_10050"
+    ],
+    "ReduceSum": [
+      "atlasascendc_api_07_10018",
+      "atlasascendc_api_07_0078",
+      "atlasascendc_api_07_10017"
+    ],
+    "Select": [
+      "atlasascendc_api_07_0859",
+      "atlasascendc_api_07_0070",
+      "atlasascendc_api_07_0861"
+    ],
+    "Sin": [
+      "atlasascendc_api_07_0500",
+      "atlasascendc_api_07_0499"
+    ],
+    "Transpose": [
+      "atlasascendc_api_07_0199",
+      "atlasascendc_api_07_0865",
+      "atlasascendc_api_07_0198",
+      "atlasascendc_api_07_0864"
+    ],
+    "Xor": [
+      "atlasascendc_api_07_0601",
+      "atlasascendc_api_07_0600"
+    ],
+    "max": [
+      "atlasascendc_api_07_10053",
+      "atlasascendc_api_07_10226"
+    ]
+  },
+  "documents": [
+    {
+      "doc_id": "atlasascendc_api_07_0265",
+      "name": "DataCopyPad(ISASI)",
+      "title": "DataCopyPad(ISASI)-数据搬运-基础API-Ascend C算子开发接口-API-CANN社区版8.5.0开发文档-昇腾社区",
+      "path": "pages/atlasascendc_api_07_0265.md",
+      "family": "数据搬运",
+      "symbols": [
+        "CopyParams",
+        "DataCopyExtParams",
+        "DataCopyExtParamscopyParams",
+        "DataCopyPad",
+        "DataCopyPadExtParams",
+        "DataCopyPadParams",
+        "DataCopyParams",
+        "Nd2NzParams"
+      ],
+      "signatures": []
+    },
+    {
+      "doc_id": "atlasascendc_api_07_0079",
+      "name": "WholeReduceMax",
+      "title": "WholeReduceMax-归约计算-矢量计算-基础API-Ascend C算子开发接口-API-CANN社区版8.5.0开发文档-昇腾社区",
+      "path": "pages/atlasascendc_api_07_0079.md",
+      "family": "归约计算",
+      "symbols": [
+        "WholeReduceMax"
+      ],
+      "signatures": [
+        "- tensor高维切分计算样例-mask连续模式123456// dstLocal,srcLocal均为half类型，srcLocal的计算数据量为512，连续排布，计算结果也需要连续排布，使用tensor高维切分计算接口，设定mask为最多的128个全部元素参与计算// 根据以上信息，推断出repeatTime为4，dstRepStride为1，srcBlkStride为1，srcRepStride为8// 若求最大值及索引，并且需要存储顺序为[value, index]的结果，可以使用默认order，接口示例为：AscendC::WholeReduceMax<half>(dstLocal,srcLocal,128,4,1,1,8);// 若求最大值及索引，并且需要存储顺序为[index, value]的结果，接口示例为：AscendC::WholeReduceMax<half>(dstLocal,srcLocal,128,4,1,1,8,AscendC::ReduceOrder::ORDER_INDEX_VALUE);",
+        "- tensor高维切分计算样例-mask逐bit模式12345// dstLocal,srcLocal均为half类型，srcLocal的计算数据量为512，连续排布，计算结果也需要连续排布，使用tensor高维切分计算接口，设定mask为最多的128个全部元素参与计算// 根据以上信息，推断出repeatTime为4，dstRepStride为1，srcBlkStride为1，srcRepStride为8// 若求最大值及索引，并且需要存储顺序为[value, index]的结果，使用默认order，接口示例为：uint64_tmask[2]={0xFFFFFFFFFFFFFFFF,0xFFFFFFFFFFFFFFFF};AscendC::WholeReduceMax<half>(dstLocal,srcLocal,mask,4,1,1,8);"
+      ]
+    },
+    {
+      "doc_id": "atlasascendc_api_07_0082",
+      "name": "BlockReduceMax",
+      "title": "BlockReduceMax-归约计算-矢量计算-基础API-Ascend C算子开发接口-API-CANN社区版8.5.0开发文档-昇腾社区",
+      "path": "pages/atlasascendc_api_07_0082.md",
+      "family": "归约计算",
+      "symbols": [
+        "BlockReduceMax"
+      ],
+      "signatures": [
+        "- BlockReduceMax-tensor高维切分计算样例-mask连续模式123456int32_tmask=256/sizeof(half);intrepeat=1;// repeat = 1, 128 elements one repeat, 128 elements total// srcBlkStride = 1, no gap between blocks in one repeat// dstRepStride = 1, srcRepStride = 8, no gap between repeatsAscendC::BlockReduceMax<half>(dstLocal,srcLocal,repeat,mask,1,1,8);",
+        "- BlockReduceMax-tensor高维切分计算样例-mask逐bit模式123456uint64_tmask[2]={UINT64_MAX,UINT64_MAX};intrepeat=1;// repeat = 1, 128 elements one repeat, 128 elements total// srcBlkStride = 1, no gap between blocks in one repeat// dstRepStride = 1, srcRepStride = 8, no gap between repeatsAscendC::BlockReduceMax<half>(dstLocal,srcLocal,repeat,mask,1,1,8);"
+      ]
+    },
+    {
+      "doc_id": "atlasascendc_api_07_10054",
+      "name": "min",
+      "title": "min-算法-C++标准库-Utils API-Ascend C算子开发接口-API-CANN社区版8.5.0开发文档-昇腾社区",
+      "path": "pages/atlasascendc_api_07_10054.md",
+      "family": "算法",
+      "symbols": [],
+      "signatures": []
+    },
+    {
+      "doc_id": "atlasascendc_api_07_0035",
+      "name": "Add",
+      "title": "Add-基础算术-矢量计算-基础API-Ascend C算子开发接口-API-CANN社区版8.5.0开发文档-昇腾社区",
+      "path": "pages/atlasascendc_api_07_0035.md",
+      "family": "基础算术",
+      "symbols": [
+        "Add",
+        "BinaryRepeatParams"
+      ],
+      "signatures": [
+        "- tensor前n个数据计算样例1AscendC::Add(dstLocal,src0Local,src1Local,512);"
+      ]
+    },
+    {
+      "doc_id": "atlasascendc_api_07_10018",
+      "name": "ReduceSum",
+      "title": "ReduceSum-ReduceSum接口-归约操作-高阶API-Ascend C算子开发接口-API-CANN社区版8.5.0开发文档-昇腾社区",
+      "path": "pages/atlasascendc_api_07_10018.md",
+      "family": "ReduceSum接口",
+      "symbols": [
+        "ReduceSum"
+      ],
+      "signatures": []
+    },
+    {
+      "doc_id": "atlasascendc_api_07_0054",
+      "name": "Adds",
+      "title": "Adds-基础算术-矢量计算-基础API-Ascend C算子开发接口-API-CANN社区版8.5.0开发文档-昇腾社区",
+      "path": "pages/atlasascendc_api_07_0054.md",
+      "family": "基础算术",
+      "symbols": [
+        "Adds",
+        "UnaryRepeatParams"
+      ],
+      "signatures": [
+        "- tensor前n个数据计算样例12int16_tscalar=2;AscendC::Adds(dstLocal,srcLocal,scalar,512);"
+      ]
+    },
+    {
+      "doc_id": "atlasascendc_api_07_10055",
+      "name": "ReduceMax",
+      "title": "ReduceMax-ReduceMax接口-归约操作-高阶API-Ascend C算子开发接口-API-CANN社区版8.5.0开发文档-昇腾社区",
+      "path": "pages/atlasascendc_api_07_10055.md",
+      "family": "ReduceMax接口",
+      "symbols": [
+        "ReduceMax"
+      ],
+      "signatures": []
+    },
+    {
+      "doc_id": "atlasascendc_api_07_0037",
+      "name": "Mul",
+      "title": "Mul-基础算术-矢量计算-基础API-Ascend C算子开发接口-API-CANN社区版8.5.0开发文档-昇腾社区",
+      "path": "pages/atlasascendc_api_07_0037.md",
+      "family": "基础算术",
+      "symbols": [
+        "BinaryRepeatParams",
+        "Mul"
+      ],
+      "signatures": [
+        "- tensor前n个数据计算样例1AscendC::Mul(dstLocal,src0Local,src1Local,512);"
+      ]
+    },
+    {
+      "doc_id": "atlasascendc_api_07_0029",
+      "name": "Sqrt",
+      "title": "Sqrt-基础算术-矢量计算-基础API-Ascend C算子开发接口-API-CANN社区版8.5.0开发文档-昇腾社区",
+      "path": "pages/atlasascendc_api_07_0029.md",
+      "family": "基础算术",
+      "symbols": [
+        "Sqrt",
+        "UnaryRepeatParams"
+      ],
+      "signatures": [
+        "- tensor前n个数据计算样例1AscendC::Sqrt(dstLocal,srcLocal,512);"
+      ]
+    },
+    {
+      "doc_id": "atlasascendc_api_07_0101",
+      "name": "DataCopy简介",
+      "title": "DataCopy简介-DataCopy-数据搬运-基础API-Ascend C算子开发接口-API-CANN社区版8.5.0开发文档-昇腾社区",
+      "path": "pages/atlasascendc_api_07_0101.md",
+      "family": "DataCopy",
+      "symbols": [],
+      "signatures": []
+    },
+    {
+      "doc_id": "atlasascendc_api_07_0847",
+      "name": "MrgSort",
+      "title": "MrgSort-排序操作-高阶API-Ascend C算子开发接口-API-CANN社区版8.5.0开发文档-昇腾社区",
+      "path": "pages/atlasascendc_api_07_0847.md",
+      "family": "排序操作",
+      "symbols": [
+        "MrgSort"
+      ],
+      "signatures": []
+    },
+    {
+      "doc_id": "atlasascendc_api_07_0249",
+      "name": "Mmad",
+      "title": "Mmad-矩阵计算-矩阵计算（ISASI）-基础API-Ascend C算子开发接口-API-CANN社区版8.5.0开发文档-昇腾社区",
+      "path": "pages/atlasascendc_api_07_0249.md",
+      "family": "矩阵计算",
+      "symbols": [
+        "Mmad",
+        "MmadParams"
+      ],
+      "signatures": []
+    },
+    {
+      "doc_id": "atlasascendc_api_07_0032",
+      "name": "Relu",
+      "title": "Relu-基础算术-矢量计算-基础API-Ascend C算子开发接口-API-CANN社区版8.5.0开发文档-昇腾社区",
+      "path": "pages/atlasascendc_api_07_0032.md",
+      "family": "基础算术",
+      "symbols": [
+        "Relu",
+        "UnaryRepeatParams"
+      ],
+      "signatures": [
+        "- tensor前n个数据计算样例1AscendC::Relu(dstLocal,srcLocal,512);"
+      ]
+    },
+    {
+      "doc_id": "atlasascendc_api_07_0576",
+      "name": "ClampMax",
+      "title": "ClampMax-Clamp接口-数学计算-高阶API-Ascend C算子开发接口-API-CANN社区版8.5.0开发文档-昇腾社区",
+      "path": "pages/atlasascendc_api_07_0576.md",
+      "family": "Clamp接口",
+      "symbols": [
+        "ClampMax"
+      ],
+      "signatures": []
+    },
+    {
+      "doc_id": "atlasascendc_api_07_0232",
+      "name": "MrgSort",
+      "title": "MrgSort-排序组合（ISASI）-矢量计算-基础API-Ascend C算子开发接口-API-CANN社区版8.5.0开发文档-昇腾社区",
+      "path": "pages/atlasascendc_api_07_0232.md",
+      "family": "排序组合（ISASI）",
+      "symbols": [
+        "MrgSort"
+      ],
+      "signatures": []
+    },
+    {
+      "doc_id": "atlasascendc_api_07_0025",
+      "name": "Exp",
+      "title": "Exp-基础算术-矢量计算-基础API-Ascend C算子开发接口-API-CANN社区版8.5.0开发文档-昇腾社区",
+      "path": "pages/atlasascendc_api_07_0025.md",
+      "family": "基础算术",
+      "symbols": [
+        "Exp",
+        "UnaryRepeatParams"
+      ],
+      "signatures": [
+        "- tensor前n个数据计算接口样例1AscendC::Exp(dstLocal,srcLocal,512);"
+      ]
+    },
+    {
+      "doc_id": "atlasascendc_api_07_0081",
+      "name": "WholeReduceSum",
+      "title": "WholeReduceSum-归约计算-矢量计算-基础API-Ascend C算子开发接口-API-CANN社区版8.5.0开发文档-昇腾社区",
+      "path": "pages/atlasascendc_api_07_0081.md",
+      "family": "归约计算",
+      "symbols": [
+        "WholeReduceSum"
+      ],
+      "signatures": [
+        "- tensor高维切分计算样例-mask连续模式123// dstLocal,srcLocal均为half类型,srcLocal的计算数据量为512，连续排布，计算结果也需要连续排布，使用tensor高维切分计算接口，设定mask为最多的128个全部元素参与计算// 根据以上信息，推断出repeatTime为4，dstRepStride为1，srcBlkStride为1，srcRepStride为8AscendC::WholeReduceSum<half>(dstLocal,srcLocal,128,4,1,1,8);"
+      ]
+    },
+    {
+      "doc_id": "atlasascendc_api_07_0041",
+      "name": "And",
+      "title": "And-逻辑计算-矢量计算-基础API-Ascend C算子开发接口-API-CANN社区版8.5.0开发文档-昇腾社区",
+      "path": "pages/atlasascendc_api_07_0041.md",
+      "family": "逻辑计算",
+      "symbols": [
+        "And",
+        "BinaryRepeatParams"
+      ],
+      "signatures": [
+        "- tensor前n个数据计算样例1AscendC::And(dstLocal,src0Local,src1Local,512);"
+      ]
+    },
+    {
+      "doc_id": "atlasascendc_api_07_0063",
+      "name": "Axpy",
+      "title": "Axpy-复合计算-矢量计算-基础API-Ascend C算子开发接口-API-CANN社区版8.5.0开发文档-昇腾社区",
+      "path": "pages/atlasascendc_api_07_0063.md",
+      "family": "复合计算",
+      "symbols": [
+        "Axpy",
+        "UnaryRepeatParams"
+      ],
+      "signatures": []
+    },
+    {
+      "doc_id": "atlasascendc_api_07_0028",
+      "name": "Reciprocal",
+      "title": "Reciprocal-基础算术-矢量计算-基础API-Ascend C算子开发接口-API-CANN社区版8.5.0开发文档-昇腾社区",
+      "path": "pages/atlasascendc_api_07_0028.md",
+      "family": "基础算术",
+      "symbols": [
+        "Reciprocal",
+        "UnaryRepeatParams"
+      ],
+      "signatures": [
+        "- tensor前n个数据计算样例1AscendC::Reciprocal(dstLocal,srcLocal,512);"
+      ]
+    },
+    {
+      "doc_id": "atlasascendc_api_07_0088",
+      "name": "Duplicate",
+      "title": "Duplicate-数据填充-矢量计算-基础API-Ascend C算子开发接口-API-CANN社区版8.5.0开发文档-昇腾社区",
+      "path": "pages/atlasascendc_api_07_0088.md",
+      "family": "数据填充",
+      "symbols": [
+        "Duplicate"
+      ],
+      "signatures": [
+        "- tensor高维切分计算样例-mask连续模式123456uint64_tmask=128;halfscalar=18.0;// repeatTime = 2, 128 elements one repeat, 256 elements total// dstBlkStride = 1, no gap between blocks in one repeat// dstRepStride = 8, no gap between repeatsAscendC::Duplicate(dstLocal,scalar,mask,2,1,8);",
+        "- tensor高维切分计算样例-mask逐bit模式123456uint64_tmask[2]={UINT64_MAX,UINT64_MAX};halfscalar=18.0;// repeatTime = 2, 128 elements one repeat, 256 elements total// dstBlkStride = 1, no gap between blocks in one repeat// dstRepStride = 8, no gap between repeatsAscendC::Duplicate(dstLocal,scalar,mask,2,1,8);",
+        "- tensor前n个数据计算样例，源操作数为标量12halfinputVal(18.0);AscendC::Duplicate<half>(dstLocal,inputVal,srcDataSize);"
+      ]
+    },
+    {
+      "doc_id": "atlasascendc_api_07_0055",
+      "name": "Muls",
+      "title": "Muls-基础算术-矢量计算-基础API-Ascend C算子开发接口-API-CANN社区版8.5.0开发文档-昇腾社区",
+      "path": "pages/atlasascendc_api_07_0055.md",
+      "family": "基础算术",
+      "symbols": [
+        "Muls",
+        "UnaryRepeatParams"
+      ],
+      "signatures": [
+        "- Tensor前n个数据计算样例12int16_tscalar=2;AscendC::Muls(dstLocal,srcLocal,scalar,512);"
+      ]
+    },
+    {
+      "doc_id": "atlasascendc_api_07_0251",
+      "name": "Fixpipe",
+      "title": "Fixpipe-数据搬运-矩阵计算（ISASI）-基础API-Ascend C算子开发接口-API-CANN社区版8.5.0开发文档-昇腾社区",
+      "path": "pages/atlasascendc_api_07_0251.md",
+      "family": "数据搬运",
+      "symbols": [
+        "CopyA1Params",
+        "CopyB1Params",
+        "DataParams",
+        "Fixpipe",
+        "FixpipeParams",
+        "FixpipeParamsV220fixpipeParams",
+        "L0AParams",
+        "LoadData2dParamsloadL0AParams",
+        "LoadData2dTransposeParamsloadDataParams",
+        "MmadParamsmmadParams",
+        "Nd2NzParamsdataCopyA1Params",
+        "Nd2NzParamsdataCopyB1Params"
+      ],
+      "signatures": []
+    },
+    {
+      "doc_id": "atlasascendc_api_07_0039",
+      "name": "Max",
+      "title": "Max-基础算术-矢量计算-基础API-Ascend C算子开发接口-API-CANN社区版8.5.0开发文档-昇腾社区",
+      "path": "pages/atlasascendc_api_07_0039.md",
+      "family": "基础算术",
+      "symbols": [
+        "BinaryRepeatParams",
+        "Max"
+      ],
+      "signatures": [
+        "- tensor前n个数据计算样例1AscendC::Max(dstLocal,src0Local,src1Local,512);"
+      ]
+    },
+    {
+      "doc_id": "atlasascendc_api_07_0090",
+      "name": "CreateVecIndex",
+      "title": "CreateVecIndex-数据填充-矢量计算-基础API-Ascend C算子开发接口-API-CANN社区版8.5.0开发文档-昇腾社区",
+      "path": "pages/atlasascendc_api_07_0090.md",
+      "family": "数据填充",
+      "symbols": [
+        "CreateVecIndex",
+        "CreateVecIndexTesttemplate"
+      ],
+      "signatures": [
+        "- tensor高维切分计算样例-mask连续模式12345uint64_tmask=128;// repeatTime = 1// dstBlkStride = 1, 单次迭代内数据连续写入// dstRepStride = 8, 相邻迭代内数据连续写入AscendC::CreateVecIndex(dstLocal,(T)0,mask,repeatTime,dstBlkStride,dstRepStride);",
+        "- tensor高维切分计算样例-mask逐bit模式12345uint64_tmask[2]={UINT64_MAX,UINT64_MAX};// repeatTime = 1// dstBlkStride = 1, 单次迭代内数据连续写入// dstRepStride = 8, 相邻迭代内数据连续写入AscendC::CreateVecIndex(dstLocal,(T)0,mask,repeatTime,dstBlkStride,dstRepStride);",
+        "- tensor前n个数据计算样例1AscendC::CreateVecIndex(dstLocal,(T)0,128);"
+      ]
+    },
+    {
+      "doc_id": "atlasascendc_api_07_0068",
+      "name": "CompareScalar",
+      "title": "CompareScalar-比较与选择-矢量计算-基础API-Ascend C算子开发接口-API-CANN社区版8.5.0开发文档-昇腾社区",
+      "path": "pages/atlasascendc_api_07_0068.md",
+      "family": "比较与选择",
+      "symbols": [
+        "CompareScalar",
+        "UnaryRepeatParams",
+        "UnaryRepeatParamsrepeatParams"
+      ],
+      "signatures": [
+        "- tensor前n个数据计算接口样例1AscendC::CompareScalar(dstLocal,src0Local,src1Scalar,AscendC::CMPMODE::LT,srcDataSize);",
+        "- tensor高维切分计算-mask连续模式1234567uint64_tmask=256/sizeof(float);// 256为每个迭代处理的字节数intrepeat=4;AscendC::UnaryRepeatParamsrepeatParams={1,1,8,8};// repeat = 4, 64 elements one repeat, 256 elements total// dstBlkStride, srcBlkStride = 1, no gap between blocks in one repeat// dstRepStride, srcRepStride = 8, no gap between repeatsAscendC::CompareScalar(dstLocal,src0Local,src1Scalar,AscendC::CMPMODE::LT,mask,repeat,repeatParams);",
+        "- tensor高维切分计算-mask逐bit模式1234567uint64_tmask[2]={UINT64_MAX,0};intrepeat=4;AscendC::UnaryRepeatParamsrepeatParams={1,1,8,8};// repeat = 4, 64 elements one repeat, 256 elements total// srcBlkStride, = 1, no gap between blocks in one repeat// dstRepStride, srcRepStride = 8, no gap between repeatsAscendC::CompareScalar(dstLocal,src0Local,src1Scalar,AscendC::CMPMODE::LT,mask,repeat,repeatParams);"
+      ]
+    },
+    {
+      "doc_id": "atlasascendc_api_07_0073",
+      "name": "Cast",
+      "title": "Cast-类型转换-矢量计算-基础API-Ascend C算子开发接口-API-CANN社区版8.5.0开发文档-昇腾社区",
+      "path": "pages/atlasascendc_api_07_0073.md",
+      "family": "类型转换",
+      "symbols": [
+        "Cast",
+        "UnaryRepeatParams"
+      ],
+      "signatures": [
+        "- tensor前n个数据计算样例1AscendC::Cast(dstLocal,srcLocal,AscendC::RoundMode::CAST_CEIL,512);"
+      ]
+    },
+    {
+      "doc_id": "atlasascendc_api_07_0508",
+      "name": "Cos",
+      "title": "Cos-Cos接口-数学计算-高阶API-Ascend C算子开发接口-API-CANN社区版8.5.0开发文档-昇腾社区",
+      "path": "pages/atlasascendc_api_07_0508.md",
+      "family": "Cos接口",
+      "symbols": [
+        "Cos"
+      ],
+      "signatures": []
+    },
+    {
+      "doc_id": "atlasascendc_api_07_0092",
+      "name": "Gather",
+      "title": "Gather-离散与聚合-矢量计算-基础API-Ascend C算子开发接口-API-CANN社区版8.5.0开发文档-昇腾社区",
+      "path": "pages/atlasascendc_api_07_0092.md",
+      "family": "离散与聚合",
+      "symbols": [
+        "Gather",
+        "GatherTestextern"
+      ],
+      "signatures": []
+    },
+    {
+      "doc_id": "atlasascendc_api_07_0030",
+      "name": "Rsqrt",
+      "title": "Rsqrt-基础算术-矢量计算-基础API-Ascend C算子开发接口-API-CANN社区版8.5.0开发文档-昇腾社区",
+      "path": "pages/atlasascendc_api_07_0030.md",
+      "family": "基础算术",
+      "symbols": [
+        "Rsqrt",
+        "UnaryRepeatParams"
+      ],
+      "signatures": [
+        "- tensor前n个数据计算样例1AscendC::Rsqrt(dstLocal,srcLocal,512);"
+      ]
+    },
+    {
+      "doc_id": "atlasascendc_api_07_0057",
+      "name": "Mins",
+      "title": "Mins-基础算术-矢量计算-基础API-Ascend C算子开发接口-API-CANN社区版8.5.0开发文档-昇腾社区",
+      "path": "pages/atlasascendc_api_07_0057.md",
+      "family": "基础算术",
+      "symbols": [
+        "Mins",
+        "UnaryRepeatParams"
+      ],
+      "signatures": [
+        "- tensor前n个数据计算样例12int16_tscalar=2;AscendC::Mins(dstLocal,srcLocal,scalar,512);"
+      ]
+    },
+    {
+      "doc_id": "atlasascendc_api_07_00130",
+      "name": "随路量化激活搬运",
+      "title": "随路量化激活搬运-DataCopy-数据搬运-基础API-Ascend C算子开发接口-API-CANN社区版8.5.0开发文档-昇腾社区",
+      "path": "pages/atlasascendc_api_07_00130.md",
+      "family": "DataCopy",
+      "symbols": [
+        "CopyParams",
+        "DataCopyCO12DstParams",
+        "DataCopyCO12DstParamsintriParams",
+        "DataCopyParams"
+      ],
+      "signatures": []
+    },
+    {
+      "doc_id": "atlasascendc_api_07_0080",
+      "name": "WholeReduceMin",
+      "title": "WholeReduceMin-归约计算-矢量计算-基础API-Ascend C算子开发接口-API-CANN社区版8.5.0开发文档-昇腾社区",
+      "path": "pages/atlasascendc_api_07_0080.md",
+      "family": "归约计算",
+      "symbols": [
+        "WholeReduceMin"
+      ],
+      "signatures": []
+    },
+    {
+      "doc_id": "atlasascendc_api_07_0077",
+      "name": "ReduceMin",
+      "title": "ReduceMin-归约计算-矢量计算-基础API-Ascend C算子开发接口-API-CANN社区版8.5.0开发文档-昇腾社区",
+      "path": "pages/atlasascendc_api_07_0077.md",
+      "family": "归约计算",
+      "symbols": [
+        "ReduceMin"
+      ],
+      "signatures": [
+        "- tensor高维切分计算样例-mask连续模式123// dstLocal,srcLocal和sharedTmpBuffer均为half类型,srcLocal的计算数据量为8320,并且连续排布，需要索引值，使用tensor高维切分计算接口，设定repeatTime为65，mask为全部元素参与计算int32_tmask=128;AscendC::ReduceMin<half>(dstLocal,srcLocal,sharedTmpBuffer,mask,65,8,true);",
+        "- tensor高维切分计算样例-mask逐bit模式123// dstLocal,srcLocal和sharedTmpBuffer均为half类型,srcLocal的计算数据量为8320,并且连续排布，需要索引值，使用tensor高维切分计算接口，设定repeatTime为65,mask为全部元素参与计算uint64_tmask[2]={0xFFFFFFFFFFFFFFFF,0xFFFFFFFFFFFFFFFF};AscendC::ReduceMin<half>(dstLocal,srcLocal,sharedTmpBuffer,mask,65,8,true);",
+        "- tensor前n个数据计算样例12// dstLocal,srcLocal和sharedTmpBuffer均为half类型,srcLocal的计算数据量为8320,并且连续排布，需要索引值，使用tensor前n个数据计算接口AscendC::ReduceMin<half>(dstLocal,srcLocal,sharedTmpBuffer,8320,true);"
+      ]
+    },
+    {
+      "doc_id": "atlasascendc_api_07_0038",
+      "name": "Div",
+      "title": "Div-基础算术-矢量计算-基础API-Ascend C算子开发接口-API-CANN社区版8.5.0开发文档-昇腾社区",
+      "path": "pages/atlasascendc_api_07_0038.md",
+      "family": "基础算术",
+      "symbols": [
+        "BinaryRepeatParams",
+        "Div"
+      ],
+      "signatures": [
+        "- tensor前n个数据计算样例1AscendC::Div(dstLocal,src0Local,src1Local,512);"
+      ]
+    },
+    {
+      "doc_id": "atlasascendc_api_07_0577",
+      "name": "ClampMin",
+      "title": "ClampMin-Clamp接口-数学计算-高阶API-Ascend C算子开发接口-API-CANN社区版8.5.0开发文档-昇腾社区",
+      "path": "pages/atlasascendc_api_07_0577.md",
+      "family": "Clamp接口",
+      "symbols": [
+        "ClampMin"
+      ],
+      "signatures": []
+    },
+    {
+      "doc_id": "atlasascendc_api_07_0199",
+      "name": "Transpose",
+      "title": "Transpose-数据转换-矢量计算-基础API-Ascend C算子开发接口-API-CANN社区版8.5.0开发文档-昇腾社区",
+      "path": "pages/atlasascendc_api_07_0199.md",
+      "family": "数据转换",
+      "symbols": [
+        "Transpose",
+        "TransposeParams",
+        "TransposeParamsExttransposeParams"
+      ],
+      "signatures": []
+    },
+    {
+      "doc_id": "atlasascendc_api_07_0078",
+      "name": "ReduceSum",
+      "title": "ReduceSum-归约计算-矢量计算-基础API-Ascend C算子开发接口-API-CANN社区版8.5.0开发文档-昇腾社区",
+      "path": "pages/atlasascendc_api_07_0078.md",
+      "family": "归约计算",
+      "symbols": [
+        "ReduceSum"
+      ],
+      "signatures": [
+        "- tensor高维切分计算样例-mask连续模式123// dstLocal,srcLocal和sharedTmpBuffer均为half类型,srcLocal的计算数据量为8320,并且连续排布，使用tensor高维切分计算接口，设定repeatTime为65，mask为全部元素参与计算int32_tmask=128;AscendC::ReduceSum<half>(dstLocal,srcLocal,sharedTmpBuffer,mask,65,8);",
+        "- tensor高维切分计算样例-mask逐bit模式123// dstLocal,srcLocal和sharedTmpBuffer均为half类型,srcLocal的计算数据量为8320,并且连续排布，使用tensor高维切分计算接口，设定repeatTime为65，mask为全部元素参与计算uint64_tmask[2]={0xFFFFFFFFFFFFFFFF,0xFFFFFFFFFFFFFFFF};AscendC::ReduceSum<half>(dstLocal,srcLocal,sharedTmpBuffer,mask,65,8);",
+        "- tensor前n个数据计算样例12// dstLocal,srcLocal和sharedTmpBuffer均为half类型,srcLocal的计算数据量为8320,并且连续排布，使用tensor前n个数据计算接口AscendC::ReduceSum<half>(dstLocal,srcLocal,sharedTmpBuffer,8320);"
+      ]
+    },
+    {
+      "doc_id": "atlasascendc_api_07_0859",
+      "name": "Select",
+      "title": "Select-数据过滤-高阶API-Ascend C算子开发接口-API-CANN社区版8.5.0开发文档-昇腾社区",
+      "path": "pages/atlasascendc_api_07_0859.md",
+      "family": "数据过滤",
+      "symbols": [
+        "Select"
+      ],
+      "signatures": []
+    },
+    {
+      "doc_id": "atlasascendc_api_07_0071",
+      "name": "GatherMask",
+      "title": "GatherMask-比较与选择-矢量计算-基础API-Ascend C算子开发接口-API-CANN社区版8.5.0开发文档-昇腾社区",
+      "path": "pages/atlasascendc_api_07_0071.md",
+      "family": "比较与选择",
+      "symbols": [
+        "GatherMask",
+        "GatherMaskParams",
+        "MaskParams"
+      ],
+      "signatures": []
+    },
+    {
+      "doc_id": "atlasascendc_api_07_0865",
+      "name": "Transpose",
+      "title": "Transpose-张量变换-高阶API-Ascend C算子开发接口-API-CANN社区版8.5.0开发文档-昇腾社区",
+      "path": "pages/atlasascendc_api_07_0865.md",
+      "family": "张量变换",
+      "symbols": [
+        "ConfusionTransposeTiling",
+        "Transpose"
+      ],
+      "signatures": []
+    },
+    {
+      "doc_id": "atlasascendc_api_07_0500",
+      "name": "Sin",
+      "title": "Sin-Sin接口-数学计算-高阶API-Ascend C算子开发接口-API-CANN社区版8.5.0开发文档-昇腾社区",
+      "path": "pages/atlasascendc_api_07_0500.md",
+      "family": "Sin接口",
+      "symbols": [
+        "Sin"
+      ],
+      "signatures": []
+    },
+    {
+      "doc_id": "atlasascendc_api_07_10053",
+      "name": "max",
+      "title": "max-算法-C++标准库-Utils API-Ascend C算子开发接口-API-CANN社区版8.5.0开发文档-昇腾社区",
+      "path": "pages/atlasascendc_api_07_10053.md",
+      "family": "算法",
+      "symbols": [],
+      "signatures": []
+    },
+    {
+      "doc_id": "atlasascendc_api_07_0076",
+      "name": "ReduceMax",
+      "title": "ReduceMax-归约计算-矢量计算-基础API-Ascend C算子开发接口-API-CANN社区版8.5.0开发文档-昇腾社区",
+      "path": "pages/atlasascendc_api_07_0076.md",
+      "family": "归约计算",
+      "symbols": [
+        "ReduceMax"
+      ],
+      "signatures": [
+        "- tensor高维切分计算样例-mask连续模式123// dstLocal,srcLocal和sharedTmpBuffer均为half类型,srcLocal的计算数据量为8320,并且连续排布，需要索引值，使用tensor高维切分计算接口，设定repeatTime为65，mask为全部元素参与计算int32_tmask=128;AscendC::ReduceMax<half>(dstLocal,srcLocal,sharedTmpBuffer,mask,65,8,true);",
+        "- tensor高维切分计算样例-mask逐bit模式123// dstLocal,srcLocal和sharedTmpBuffer均为half类型,srcLocal的计算数据量为8320,并且连续排布，需要索引值，使用tensor高维切分计算接口，设定repeatTime为65,mask为全部元素参与计算uint64_tmask[2]={0xFFFFFFFFFFFFFFFF,0xFFFFFFFFFFFFFFFF};AscendC::ReduceMax<half>(dstLocal,srcLocal,sharedTmpBuffer,mask,65,8,true);",
+        "- tensor前n个数据计算样例12// dstLocal,srcLocal和sharedTmpBuffer均为half类型,srcLocal的计算数据量为8320,并且连续排布，需要索引值，使用tensor前n个数据计算接口AscendC::ReduceMax<half>(dstLocal,srcLocal,sharedTmpBuffer,8320,true);"
+      ]
+    },
+    {
+      "doc_id": "atlasascendc_api_07_0589",
+      "name": "Exp",
+      "title": "Exp-Exp接口-数学计算-高阶API-Ascend C算子开发接口-API-CANN社区版8.5.0开发文档-昇腾社区",
+      "path": "pages/atlasascendc_api_07_0589.md",
+      "family": "Exp接口",
+      "symbols": [
+        "Exp"
+      ],
+      "signatures": []
+    },
+    {
+      "doc_id": "atlasascendc_api_07_0040",
+      "name": "Min",
+      "title": "Min-基础算术-矢量计算-基础API-Ascend C算子开发接口-API-CANN社区版8.5.0开发文档-昇腾社区",
+      "path": "pages/atlasascendc_api_07_0040.md",
+      "family": "基础算术",
+      "symbols": [
+        "BinaryRepeatParams",
+        "Min"
+      ],
+      "signatures": [
+        "- tensor前n个数据计算样例1AscendC::Min(dstLocal,src0Local,src1Local,512);"
+      ]
+    },
+    {
+      "doc_id": "atlasascendc_api_07_0067",
+      "name": "Compare（结果存入寄存器）",
+      "title": "Compare（结果存入寄存器）-比较与选择-矢量计算-基础API-Ascend C算子开发接口-API-CANN社区版8.5.0开发文档-昇腾社区",
+      "path": "pages/atlasascendc_api_07_0067.md",
+      "family": "比较与选择",
+      "symbols": [
+        "BinaryRepeatParams",
+        "BinaryRepeatParamsrepeatParams",
+        "Compare"
+      ],
+      "signatures": []
+    },
+    {
+      "doc_id": "atlasascendc_api_07_0056",
+      "name": "Maxs",
+      "title": "Maxs-基础算术-矢量计算-基础API-Ascend C算子开发接口-API-CANN社区版8.5.0开发文档-昇腾社区",
+      "path": "pages/atlasascendc_api_07_0056.md",
+      "family": "基础算术",
+      "symbols": [
+        "Maxs",
+        "UnaryRepeatParams"
+      ],
+      "signatures": [
+        "- tensor前n个数据计算样例12int16_tscalar=2;AscendC::Maxs(dstLocal,srcLocal,scalar,512);"
+      ]
+    },
+    {
+      "doc_id": "atlasascendc_api_07_0238",
+      "name": "Load2D",
+      "title": "Load2D-LoadData-数据搬运-矩阵计算（ISASI）-基础API-Ascend C算子开发接口-API-CANN社区版8.5.0开发文档-昇腾社区",
+      "path": "pages/atlasascendc_api_07_0238.md",
+      "family": "LoadData",
+      "symbols": [
+        "CopyParams",
+        "DataCopyEnhancedParamsenhancedParams",
+        "DataCopyParamsdataCopyParams",
+        "DataParams",
+        "Load2D",
+        "LoadData2DParams"
+      ],
+      "signatures": []
+    },
+    {
+      "doc_id": "atlasascendc_api_07_0026",
+      "name": "Ln",
+      "title": "Ln-基础算术-矢量计算-基础API-Ascend C算子开发接口-API-CANN社区版8.5.0开发文档-昇腾社区",
+      "path": "pages/atlasascendc_api_07_0026.md",
+      "family": "基础算术",
+      "symbols": [
+        "Ln",
+        "UnaryRepeatParams"
+      ],
+      "signatures": [
+        "- tensor前n个数据计算样例1AscendC::Ln(dstLocal,srcLocal,512);"
+      ]
+    },
+    {
+      "doc_id": "atlasascendc_api_07_0601",
+      "name": "Xor",
+      "title": "Xor-Xor接口-数学计算-高阶API-Ascend C算子开发接口-API-CANN社区版8.5.0开发文档-昇腾社区",
+      "path": "pages/atlasascendc_api_07_0601.md",
+      "family": "Xor接口",
+      "symbols": [
+        "GetRawTiling",
+        "SetTiling",
+        "StatusTiling",
+        "Xor",
+        "XorCustomTiling"
+      ],
+      "signatures": []
+    },
+    {
+      "doc_id": "atlasascendc_api_07_0042",
+      "name": "Or",
+      "title": "Or-逻辑计算-矢量计算-基础API-Ascend C算子开发接口-API-CANN社区版8.5.0开发文档-昇腾社区",
+      "path": "pages/atlasascendc_api_07_0042.md",
+      "family": "逻辑计算",
+      "symbols": [
+        "BinaryRepeatParams",
+        "Or"
+      ],
+      "signatures": [
+        "- tensor前n个数据计算样例1AscendC::Or(dstLocal,src0Local,src1Local,512);"
+      ]
+    },
+    {
+      "doc_id": "atlasascendc_api_07_0842",
+      "name": "Sort",
+      "title": "Sort-排序操作-高阶API-Ascend C算子开发接口-API-CANN社区版8.5.0开发文档-昇腾社区",
+      "path": "pages/atlasascendc_api_07_0842.md",
+      "family": "排序操作",
+      "symbols": [
+        "Sort"
+      ],
+      "signatures": []
+    },
+    {
+      "doc_id": "atlasascendc_api_07_0084",
+      "name": "BlockReduceSum",
+      "title": "BlockReduceSum-归约计算-矢量计算-基础API-Ascend C算子开发接口-API-CANN社区版8.5.0开发文档-昇腾社区",
+      "path": "pages/atlasascendc_api_07_0084.md",
+      "family": "归约计算",
+      "symbols": [
+        "BlockReduceSum"
+      ],
+      "signatures": []
+    },
+    {
+      "doc_id": "atlasascendc_api_07_0070",
+      "name": "Select",
+      "title": "Select-比较与选择-矢量计算-基础API-Ascend C算子开发接口-API-CANN社区版8.5.0开发文档-昇腾社区",
+      "path": "pages/atlasascendc_api_07_0070.md",
+      "family": "比较与选择",
+      "symbols": [
+        "BinaryRepeatParams",
+        "BinaryRepeatParamsrepeatParams",
+        "Select"
+      ],
+      "signatures": [
+        "- Select-tensor高维切分计算样例（模式2）1234567uint64_tmask=256/sizeof(float);intrepeat=4;AscendC::BinaryRepeatParamsrepeatParams={1,1,1,8,8,8};// repeat = 4, 64 elements one repeat, 256 elements total// dstBlkStride, src0BlkStride, src1BlkStride = 1, no gap between blocks in one repeat// dstRepStride, src0RepStride, src1RepStride = 8, no gap between repeatsAscendC::Select(dstLocal,maskLocal,src0Local,src1Local,AscendC::SELMODE::VSEL_TENSOR_TENSOR_MODE,mask,repeat,repeatParams);",
+        "- Select-tensor前n个数据计算样例（模式1）1AscendC::Select(dstLocal,maskLocal,src0Local,static_cast<float>(0),AscendC::SELMODE::VSEL_TENSOR_SCALAR_MODE,dataSize);",
+        "- Select-tensor前n个数据计算样例（模式0，每轮repeat迭代中，maskLocal只有前64bit生效）1AscendC::Select(dstLocal,maskLocal,src0Local,src1Local,AscendC::SELMODE::VSEL_CMPMASK_SPR,dataSize);",
+        "- Select-tensor高维切分计算样例-mask逐bit模式（每轮repeat迭代中，maskLocal只有前64bit生效）1234567uint64_tmask[2]={UINT64_MAX,0};intrepeat=4;AscendC::BinaryRepeatParamsrepeatParams={1,1,1,8,8,8};// repeat = 4, 64 elements one repeat, 256 elements total// srcBlkStride, = 1, no gap between blocks in one repeat// dstRepStride, srcRepStride = 8, no gap between repeatsAscendC::Select(dstLocal,maskLocal,src0Local,src1Local,AscendC::SELMODE::VSEL_CMPMASK_SPR,mask,repeat,repeatParams);"
+      ]
+    },
+    {
+      "doc_id": "atlasascendc_api_07_0066",
+      "name": "Compare",
+      "title": "Compare-比较与选择-矢量计算-基础API-Ascend C算子开发接口-API-CANN社区版8.5.0开发文档-昇腾社区",
+      "path": "pages/atlasascendc_api_07_0066.md",
+      "family": "比较与选择",
+      "symbols": [
+        "BinaryRepeatParams",
+        "Compare"
+      ],
+      "signatures": [
+        "- tensor前n个数据计算1AscendC::Compare(dstLocal,src0Local,src1Local,AscendC::CMPMODE::LT,srcDataSize);"
+      ]
+    },
+    {
+      "doc_id": "atlasascendc_api_07_0036",
+      "name": "Sub",
+      "title": "Sub-基础算术-矢量计算-基础API-Ascend C算子开发接口-API-CANN社区版8.5.0开发文档-昇腾社区",
+      "path": "pages/atlasascendc_api_07_0036.md",
+      "family": "基础算术",
+      "symbols": [
+        "BinaryRepeatParams",
+        "Sub"
+      ],
+      "signatures": [
+        "- tensor前n个数据计算样例1AscendC::Sub(dstLocal,src0Local,src1Local,512);"
+      ]
+    },
+    {
+      "doc_id": "atlasascendc_api_07_0058",
+      "name": "ShiftLeft",
+      "title": "ShiftLeft-逻辑计算-矢量计算-基础API-Ascend C算子开发接口-API-CANN社区版8.5.0开发文档-昇腾社区",
+      "path": "pages/atlasascendc_api_07_0058.md",
+      "family": "逻辑计算",
+      "symbols": [
+        "ShiftLeft",
+        "UnaryRepeatParams"
+      ],
+      "signatures": [
+        "- tensor前n个数据计算样例12int16_tscalar=2;AscendC::ShiftLeft(dstLocal,srcLocal,scalar,512);"
+      ]
+    },
+    {
+      "doc_id": "atlasascendc_api_07_0059",
+      "name": "ShiftRight",
+      "title": "ShiftRight-逻辑计算-矢量计算-基础API-Ascend C算子开发接口-API-CANN社区版8.5.0开发文档-昇腾社区",
+      "path": "pages/atlasascendc_api_07_0059.md",
+      "family": "逻辑计算",
+      "symbols": [
+        "ShiftRight",
+        "UnaryRepeatParams"
+      ],
+      "signatures": [
+        "- tensor前n个数据计算样例12int16_tscalar=2;AscendC::ShiftRight(dstLocal,srcLocal,scalar,512);"
+      ]
+    },
+    {
+      "doc_id": "atlasascendc_api_07_0585",
+      "name": "Axpy",
+      "title": "Axpy-Axpy接口-数学计算-高阶API-Ascend C算子开发接口-API-CANN社区版8.5.0开发文档-昇腾社区",
+      "path": "pages/atlasascendc_api_07_0585.md",
+      "family": "Axpy接口",
+      "symbols": [
+        "Axpy"
+      ],
+      "signatures": []
+    },
+    {
+      "doc_id": "atlasascendc_api_07_0239",
+      "name": "LoadDataWithTranspose",
+      "title": "LoadDataWithTranspose-数据搬运-矩阵计算（ISASI）-基础API-Ascend C算子开发接口-API-CANN社区版8.5.0开发文档-昇腾社区",
+      "path": "pages/atlasascendc_api_07_0239.md",
+      "family": "数据搬运",
+      "symbols": [
+        "CopyA1Params",
+        "CopyB1Params",
+        "DataParams",
+        "FixpipeParamsV220fixpipeParams",
+        "L0AParams",
+        "LoadData2DParamsloadL0AParams",
+        "LoadData2dTransposeParams",
+        "LoadData2dTransposeParamsloadDataParams",
+        "LoadDataWithTranspose",
+        "MmadParamsmmadParams",
+        "Nd2NzParamsdataCopyA1Params",
+        "Nd2NzParamsdataCopyB1Params"
+      ],
+      "signatures": []
+    },
+    {
+      "doc_id": "atlasascendc_api_07_0031",
+      "name": "Not",
+      "title": "Not-逻辑计算-矢量计算-基础API-Ascend C算子开发接口-API-CANN社区版8.5.0开发文档-昇腾社区",
+      "path": "pages/atlasascendc_api_07_0031.md",
+      "family": "逻辑计算",
+      "symbols": [
+        "Not",
+        "UnaryRepeatParams"
+      ],
+      "signatures": [
+        "- tensor前n个数据计算样例1AscendC::Not(dstLocal,srcLocal,512);"
+      ]
+    },
+    {
+      "doc_id": "atlasascendc_api_07_0060",
+      "name": "LeakyRelu",
+      "title": "LeakyRelu-基础算术-矢量计算-基础API-Ascend C算子开发接口-API-CANN社区版8.5.0开发文档-昇腾社区",
+      "path": "pages/atlasascendc_api_07_0060.md",
+      "family": "基础算术",
+      "symbols": [
+        "LeakyRelu",
+        "UnaryRepeatParams"
+      ],
+      "signatures": [
+        "- tensor前n个数据计算样例12halfscalar=2;AscendC::LeakyRelu(dstLocal,srcLocal,scalar,512);"
+      ]
+    },
+    {
+      "doc_id": "atlasascendc_api_07_10056",
+      "name": "ReduceMin",
+      "title": "ReduceMin-ReduceMin接口-归约操作-高阶API-Ascend C算子开发接口-API-CANN社区版8.5.0开发文档-昇腾社区",
+      "path": "pages/atlasascendc_api_07_10056.md",
+      "family": "ReduceMin接口",
+      "symbols": [
+        "ReduceMin"
+      ],
+      "signatures": []
+    },
+    {
+      "doc_id": "atlasascendc_api_07_0027",
+      "name": "Abs",
+      "title": "Abs-基础算术-矢量计算-基础API-Ascend C算子开发接口-API-CANN社区版8.5.0开发文档-昇腾社区",
+      "path": "pages/atlasascendc_api_07_0027.md",
+      "family": "基础算术",
+      "symbols": [
+        "Abs",
+        "UnaryRepeatParams"
+      ],
+      "signatures": []
+    },
+    {
+      "doc_id": "atlasascendc_api_07_0083",
+      "name": "BlockReduceMin",
+      "title": "BlockReduceMin-归约计算-矢量计算-基础API-Ascend C算子开发接口-API-CANN社区版8.5.0开发文档-昇腾社区",
+      "path": "pages/atlasascendc_api_07_0083.md",
+      "family": "归约计算",
+      "symbols": [
+        "BlockReduceMin"
+      ],
+      "signatures": [
+        "- BlockReduceMin-tensor高维切分计算样例-mask连续模式123456int32_tmask=256/sizeof(half);intrepeat=1;// repeatTime = 1, 128 elements one repeat, 128 elements total// srcBlkStride = 1, no gap between blocks in one repeat// dstRepStride = 1, srcRepStride = 8, no gap between repeatsAscendC::BlockReduceMin<half>(dstLocal,srcLocal,repeat,mask,1,1,8);",
+        "- BlockReduceMin-tensor高维切分计算样例-mask逐bit模式123456uint64_tmask[2]={UINT64_MAX,UINT64_MAX};intrepeat=1;// repeatTime = 1, 128 elements one repeat, 128 elements total// srcBlkStride = 1, no gap between blocks in one repeat// dstRepStride = 1, srcRepStride = 8, no gap between repeatsAscendC::BlockReduceMin<half>(dstLocal,srcLocal,repeat,mask,1,1,8);"
+      ]
+    },
+    {
+      "doc_id": "atlasascendc_api_07_0053",
+      "name": "Axpy",
+      "title": "Axpy-复合计算-矢量计算-基础API-Ascend C算子开发接口-API-CANN社区版8.5.0开发文档-昇腾社区",
+      "path": "pages/atlasascendc_api_07_0053.md",
+      "family": "复合计算",
+      "symbols": [
+        "Axpy",
+        "UnaryRepeatParams"
+      ],
+      "signatures": []
+    },
+    {
+      "doc_id": "atlasascendc_api_07_0100",
+      "name": "DataCopy简介",
+      "title": "DataCopy简介-DataCopy-数据搬运-基础API-Ascend C算子开发接口-API-CANN社区版8.5.0开发文档-昇腾社区",
+      "path": "pages/atlasascendc_api_07_0100.md",
+      "family": "DataCopy",
+      "symbols": [],
+      "signatures": []
+    },
+    {
+      "doc_id": "atlasascendc_api_07_00127",
+      "name": "随路转换ND2NZ搬运",
+      "title": "随路转换ND2NZ搬运-DataCopy-数据搬运-基础API-Ascend C算子开发接口-API-CANN社区版8.5.0开发文档-昇腾社区",
+      "path": "pages/atlasascendc_api_07_00127.md",
+      "family": "DataCopy",
+      "symbols": [
+        "Nd2NzParams",
+        "Nd2NzParamsintriParams"
+      ],
+      "signatures": []
+    },
+    {
+      "doc_id": "atlasascendc_api_07_0075",
+      "name": "ReduceMax",
+      "title": "ReduceMax-归约计算-矢量计算-基础API-Ascend C算子开发接口-API-CANN社区版8.5.0开发文档-昇腾社区",
+      "path": "pages/atlasascendc_api_07_0075.md",
+      "family": "归约计算",
+      "symbols": [
+        "ReduceMax"
+      ],
+      "signatures": [
+        "- tensor高维切分计算样例-mask连续模式123// dstLocal,srcLocal和sharedTmpBuffer均为half类型,srcLocal的计算数据量为8320,并且连续排布，需要索引值，使用tensor高维切分计算接口，设定repeatTime为65，mask为全部元素参与计算int32_tmask=128;AscendC::ReduceMax<half>(dstLocal,srcLocal,sharedTmpBuffer,mask,65,8,true);",
+        "- tensor高维切分计算样例-mask逐bit模式123// dstLocal,srcLocal和sharedTmpBuffer均为half类型,srcLocal的计算数据量为8320,并且连续排布，需要索引值，使用tensor高维切分计算接口，设定repeatTime为65,mask为全部元素参与计算uint64_tmask[2]={0xFFFFFFFFFFFFFFFF,0xFFFFFFFFFFFFFFFF};AscendC::ReduceMax<half>(dstLocal,srcLocal,sharedTmpBuffer,mask,65,8,true);",
+        "- tensor前n个数据计算样例12// dstLocal,srcLocal和sharedTmpBuffer均为half类型,srcLocal的计算数据量为8320,并且连续排布，需要索引值，使用tensor前n个数据计算接口AscendC::ReduceMax<half>(dstLocal,srcLocal,sharedTmpBuffer,8320,true);"
+      ]
+    },
+    {
+      "doc_id": "atlasascendc_api_07_10226",
+      "name": "max",
+      "title": "max-算法-C++标准库-Utils API-Ascend C算子开发接口-API-CANN社区版8.5.0开发文档-昇腾社区",
+      "path": "pages/atlasascendc_api_07_10226.md",
+      "family": "算法",
+      "symbols": [],
+      "signatures": []
+    },
+    {
+      "doc_id": "atlasascendc_api_07_0198",
+      "name": "Transpose",
+      "title": "Transpose-数据转换-矢量计算-基础API-Ascend C算子开发接口-API-CANN社区版8.5.0开发文档-昇腾社区",
+      "path": "pages/atlasascendc_api_07_0198.md",
+      "family": "数据转换",
+      "symbols": [
+        "Transpose",
+        "TransposeParams",
+        "TransposeParamsExttransposeParams"
+      ],
+      "signatures": []
+    },
+    {
+      "doc_id": "atlasascendc_api_07_0024",
+      "name": "Exp",
+      "title": "Exp-基础算术-矢量计算-基础API-Ascend C算子开发接口-API-CANN社区版8.5.0开发文档-昇腾社区",
+      "path": "pages/atlasascendc_api_07_0024.md",
+      "family": "基础算术",
+      "symbols": [
+        "Exp",
+        "UnaryRepeatParams"
+      ],
+      "signatures": [
+        "- tensor前n个数据计算接口样例1AscendC::Exp(dstLocal,srcLocal,512);"
+      ]
+    },
+    {
+      "doc_id": "atlasascendc_api_07_00172",
+      "name": "Mmad",
+      "title": "Mmad-矩阵计算-矩阵计算（ISASI）-基础API-Ascend C算子开发接口-API-CANN社区版8.5.0开发文档-昇腾社区",
+      "path": "pages/atlasascendc_api_07_00172.md",
+      "family": "矩阵计算",
+      "symbols": [
+        "Mmad",
+        "MmadParams"
+      ],
+      "signatures": []
+    },
+    {
+      "doc_id": "atlasascendc_api_07_00170",
+      "name": "Load3D",
+      "title": "Load3D-LoadData-数据搬运-矩阵计算（ISASI）-基础API-Ascend C算子开发接口-API-CANN社区版8.5.0开发文档-昇腾社区",
+      "path": "pages/atlasascendc_api_07_00170.md",
+      "family": "LoadData",
+      "symbols": [
+        "CopyParams",
+        "DataCopyEnhancedParamsenhancedParams",
+        "DataCopyParamsdataCopyParams",
+        "DataParams",
+        "Load3D",
+        "LoadData3DParams"
+      ],
+      "signatures": []
+    },
+    {
+      "doc_id": "atlasascendc_api_07_10017",
+      "name": "ReduceSum",
+      "title": "ReduceSum-ReduceSum接口-归约操作-高阶API-Ascend C算子开发接口-API-CANN社区版8.5.0开发文档-昇腾社区",
+      "path": "pages/atlasascendc_api_07_10017.md",
+      "family": "ReduceSum接口",
+      "symbols": [
+        "ReduceSum"
+      ],
+      "signatures": []
+    },
+    {
+      "doc_id": "atlasascendc_api_07_10160",
+      "name": "GetReduceSumMaxMinTmpSize",
+      "title": "GetReduceSumMaxMinTmpSize-ReduceSum接口-归约操作-高阶API-Ascend C算子开发接口-API-CANN社区版8.5.0开发文档-昇腾社区",
+      "path": "pages/atlasascendc_api_07_10160.md",
+      "family": "ReduceSum接口",
+      "symbols": [
+        "GetReduceSumMaxMinTmpSize"
+      ],
+      "signatures": []
+    },
+    {
+      "doc_id": "atlasascendc_api_07_10147",
+      "name": "GetReduceMaxMaxMinTmpSize",
+      "title": "GetReduceMaxMaxMinTmpSize-ReduceMax接口-归约操作-高阶API-Ascend C算子开发接口-API-CANN社区版8.5.0开发文档-昇腾社区",
+      "path": "pages/atlasascendc_api_07_10147.md",
+      "family": "ReduceMax接口",
+      "symbols": [
+        "GetReduceMaxMaxMinTmpSize"
+      ],
+      "signatures": []
+    },
+    {
+      "doc_id": "atlasascendc_api_07_10049",
+      "name": "ReduceMax",
+      "title": "ReduceMax-ReduceMax接口-归约操作-高阶API-Ascend C算子开发接口-API-CANN社区版8.5.0开发文档-昇腾社区",
+      "path": "pages/atlasascendc_api_07_10049.md",
+      "family": "ReduceMax接口",
+      "symbols": [
+        "ReduceMax"
+      ],
+      "signatures": []
+    },
+    {
+      "doc_id": "atlasascendc_api_07_0864",
+      "name": "Transpose",
+      "title": "Transpose-张量变换-高阶API-Ascend C算子开发接口-API-CANN社区版8.5.0开发文档-昇腾社区",
+      "path": "pages/atlasascendc_api_07_0864.md",
+      "family": "张量变换",
+      "symbols": [
+        "ConfusionTransposeTiling",
+        "Transpose"
+      ],
+      "signatures": []
+    },
+    {
+      "doc_id": "atlasascendc_api_07_0103",
+      "name": "基础数据搬运",
+      "title": "基础数据搬运-DataCopy-数据搬运-基础API-Ascend C算子开发接口-API-CANN社区版8.5.0开发文档-昇腾社区",
+      "path": "pages/atlasascendc_api_07_0103.md",
+      "family": "DataCopy",
+      "symbols": [
+        "DataCopyParams"
+      ],
+      "signatures": []
+    },
+    {
+      "doc_id": "atlasascendc_api_07_00128",
+      "name": "随路转换NZ2ND搬运",
+      "title": "随路转换NZ2ND搬运-DataCopy-数据搬运-基础API-Ascend C算子开发接口-API-CANN社区版8.5.0开发文档-昇腾社区",
+      "path": "pages/atlasascendc_api_07_00128.md",
+      "family": "DataCopy",
+      "symbols": [
+        "Nz2NdParams",
+        "Nz2NdParamsFullintriParams"
+      ],
+      "signatures": []
+    },
+    {
+      "doc_id": "atlasascendc_api_07_0105",
+      "name": "切片数据搬运",
+      "title": "切片数据搬运-DataCopy-数据搬运-基础API-Ascend C算子开发接口-API-CANN社区版8.5.0开发文档-昇腾社区",
+      "path": "pages/atlasascendc_api_07_0105.md",
+      "family": "DataCopy",
+      "symbols": [],
+      "signatures": []
+    },
+    {
+      "doc_id": "atlasascendc_api_07_0104",
+      "name": "增强数据搬运",
+      "title": "增强数据搬运-DataCopy-数据搬运-基础API-Ascend C算子开发接口-API-CANN社区版8.5.0开发文档-昇腾社区",
+      "path": "pages/atlasascendc_api_07_0104.md",
+      "family": "DataCopy",
+      "symbols": [
+        "DataCopyEnhancedParams",
+        "DataCopyEnhancedParamsenhancedParams",
+        "DataCopyParams",
+        "DataCopyParamsintriParams"
+      ],
+      "signatures": []
+    },
+    {
+      "doc_id": "atlasascendc_api_07_0087",
+      "name": "Duplicate",
+      "title": "Duplicate-数据填充-矢量计算-基础API-Ascend C算子开发接口-API-CANN社区版8.5.0开发文档-昇腾社区",
+      "path": "pages/atlasascendc_api_07_0087.md",
+      "family": "数据填充",
+      "symbols": [
+        "Duplicate"
+      ],
+      "signatures": [
+        "- tensor高维切分计算样例-mask连续模式123456uint64_tmask=128;halfscalar=18.0;// repeatTime = 2, 128 elements one repeat, 256 elements total// dstBlkStride = 1, no gap between blocks in one repeat// dstRepStride = 8, no gap between repeatsAscendC::Duplicate(dstLocal,scalar,mask,2,1,8);",
+        "- tensor高维切分计算样例-mask逐bit模式123456uint64_tmask[2]={UINT64_MAX,UINT64_MAX};halfscalar=18.0;// repeatTime = 2, 128 elements one repeat, 256 elements total// dstBlkStride = 1, no gap between blocks in one repeat// dstRepStride = 8, no gap between repeatsAscendC::Duplicate(dstLocal,scalar,mask,2,1,8);",
+        "- tensor前n个数据计算样例，源操作数为标量12halfinputVal(18.0);AscendC::Duplicate<half>(dstLocal,inputVal,srcDataSize);"
+      ]
+    },
+    {
+      "doc_id": "atlasascendc_api_07_0575",
+      "name": "ClampMax",
+      "title": "ClampMax-Clamp接口-数学计算-高阶API-Ascend C算子开发接口-API-CANN社区版8.5.0开发文档-昇腾社区",
+      "path": "pages/atlasascendc_api_07_0575.md",
+      "family": "Clamp接口",
+      "symbols": [
+        "ClampMax"
+      ],
+      "signatures": []
+    },
+    {
+      "doc_id": "atlasascendc_api_07_0065",
+      "name": "Compare",
+      "title": "Compare-比较与选择-矢量计算-基础API-Ascend C算子开发接口-API-CANN社区版8.5.0开发文档-昇腾社区",
+      "path": "pages/atlasascendc_api_07_0065.md",
+      "family": "比较与选择",
+      "symbols": [
+        "BinaryRepeatParams",
+        "Compare"
+      ],
+      "signatures": [
+        "- tensor前n个数据计算1AscendC::Compare(dstLocal,src0Local,src1Local,AscendC::CMPMODE::LT,srcDataSize);"
+      ]
+    },
+    {
+      "doc_id": "atlasascendc_api_07_0861",
+      "name": "Select",
+      "title": "Select-数据过滤-高阶API-Ascend C算子开发接口-API-CANN社区版8.5.0开发文档-昇腾社区",
+      "path": "pages/atlasascendc_api_07_0861.md",
+      "family": "数据过滤",
+      "symbols": [
+        "Select"
+      ],
+      "signatures": []
+    },
+    {
+      "doc_id": "atlasascendc_api_07_0034",
+      "name": "Not",
+      "title": "Not-逻辑计算-矢量计算-基础API-Ascend C算子开发接口-API-CANN社区版8.5.0开发文档-昇腾社区",
+      "path": "pages/atlasascendc_api_07_0034.md",
+      "family": "逻辑计算",
+      "symbols": [
+        "Not",
+        "UnaryRepeatParams"
+      ],
+      "signatures": [
+        "- tensor前n个数据计算样例1AscendC::Not(dstLocal,srcLocal,512);"
+      ]
+    },
+    {
+      "doc_id": "atlasascendc_api_07_0091",
+      "name": "Gather",
+      "title": "Gather-离散与聚合-矢量计算-基础API-Ascend C算子开发接口-API-CANN社区版8.5.0开发文档-昇腾社区",
+      "path": "pages/atlasascendc_api_07_0091.md",
+      "family": "离散与聚合",
+      "symbols": [
+        "Gather",
+        "GatherTestextern"
+      ],
+      "signatures": []
+    },
+    {
+      "doc_id": "atlasascendc_api_07_0072",
+      "name": "Cast",
+      "title": "Cast-类型转换-矢量计算-基础API-Ascend C算子开发接口-API-CANN社区版8.5.0开发文档-昇腾社区",
+      "path": "pages/atlasascendc_api_07_0072.md",
+      "family": "类型转换",
+      "symbols": [
+        "Cast",
+        "UnaryRepeatParams"
+      ],
+      "signatures": [
+        "- tensor前n个数据计算样例1AscendC::Cast(dstLocal,srcLocal,AscendC::RoundMode::CAST_CEIL,512);"
+      ]
+    },
+    {
+      "doc_id": "atlasascendc_api_07_0509",
+      "name": "GetCosMaxMinTmpSize",
+      "title": "GetCosMaxMinTmpSize-Cos接口-数学计算-高阶API-Ascend C算子开发接口-API-CANN社区版8.5.0开发文档-昇腾社区",
+      "path": "pages/atlasascendc_api_07_0509.md",
+      "family": "Cos接口",
+      "symbols": [
+        "GetCosMaxMinTmpSize"
+      ],
+      "signatures": []
+    },
+    {
+      "doc_id": "atlasascendc_api_07_0507",
+      "name": "Cos",
+      "title": "Cos-Cos接口-数学计算-高阶API-Ascend C算子开发接口-API-CANN社区版8.5.0开发文档-昇腾社区",
+      "path": "pages/atlasascendc_api_07_0507.md",
+      "family": "Cos接口",
+      "symbols": [
+        "Cos"
+      ],
+      "signatures": []
+    },
+    {
+      "doc_id": "atlasascendc_api_07_0866",
+      "name": "Transpose Tiling",
+      "title": "Transpose Tiling-张量变换-高阶API-Ascend C算子开发接口-API-CANN社区版8.5.0开发文档-昇腾社区",
+      "path": "pages/atlasascendc_api_07_0866.md",
+      "family": "张量变换",
+      "symbols": [
+        "ConfusionTransposeTiling",
+        "GetConfusionTransposeOnlyTiling",
+        "GetConfusionTransposeTiling",
+        "GetRawTiling",
+        "GetTransposeTiling",
+        "SetTiling",
+        "StatusTiling",
+        "Tiling",
+        "Tiling1voidGetTransposeTiling",
+        "Transpose",
+        "TransposeTiling"
+      ],
+      "signatures": []
+    },
+    {
+      "doc_id": "atlasascendc_api_07_0501",
+      "name": "GetSinMaxMinTmpSize",
+      "title": "GetSinMaxMinTmpSize-Sin接口-数学计算-高阶API-Ascend C算子开发接口-API-CANN社区版8.5.0开发文档-昇腾社区",
+      "path": "pages/atlasascendc_api_07_0501.md",
+      "family": "Sin接口",
+      "symbols": [
+        "GetSinMaxMinTmpSize"
+      ],
+      "signatures": []
+    },
+    {
+      "doc_id": "atlasascendc_api_07_0499",
+      "name": "Sin",
+      "title": "Sin-Sin接口-数学计算-高阶API-Ascend C算子开发接口-API-CANN社区版8.5.0开发文档-昇腾社区",
+      "path": "pages/atlasascendc_api_07_0499.md",
+      "family": "Sin接口",
+      "symbols": [
+        "Sin"
+      ],
+      "signatures": []
+    },
+    {
+      "doc_id": "atlasascendc_api_07_0590",
+      "name": "GetExpMaxMinTmpSize",
+      "title": "GetExpMaxMinTmpSize-Exp接口-数学计算-高阶API-Ascend C算子开发接口-API-CANN社区版8.5.0开发文档-昇腾社区",
+      "path": "pages/atlasascendc_api_07_0590.md",
+      "family": "Exp接口",
+      "symbols": [
+        "GetExpMaxMinTmpSize"
+      ],
+      "signatures": []
+    },
+    {
+      "doc_id": "atlasascendc_api_07_0588",
+      "name": "Exp",
+      "title": "Exp-Exp接口-数学计算-高阶API-Ascend C算子开发接口-API-CANN社区版8.5.0开发文档-昇腾社区",
+      "path": "pages/atlasascendc_api_07_0588.md",
+      "family": "Exp接口",
+      "symbols": [
+        "Exp"
+      ],
+      "signatures": []
+    },
+    {
+      "doc_id": "atlasascendc_api_07_00169",
+      "name": "Load2D",
+      "title": "Load2D-LoadData-数据搬运-矩阵计算（ISASI）-基础API-Ascend C算子开发接口-API-CANN社区版8.5.0开发文档-昇腾社区",
+      "path": "pages/atlasascendc_api_07_00169.md",
+      "family": "LoadData",
+      "symbols": [
+        "CopyParams",
+        "DataCopyEnhancedParamsenhancedParams",
+        "DataCopyParamsdataCopyParams",
+        "DataParams",
+        "Load2D",
+        "LoadData2DParams"
+      ],
+      "signatures": []
+    },
+    {
+      "doc_id": "atlasascendc_api_07_0600",
+      "name": "Xor",
+      "title": "Xor-Xor接口-数学计算-高阶API-Ascend C算子开发接口-API-CANN社区版8.5.0开发文档-昇腾社区",
+      "path": "pages/atlasascendc_api_07_0600.md",
+      "family": "Xor接口",
+      "symbols": [
+        "GetRawTiling",
+        "SetTiling",
+        "StatusTiling",
+        "Xor",
+        "XorCustomTiling"
+      ],
+      "signatures": []
+    },
+    {
+      "doc_id": "atlasascendc_api_07_0602",
+      "name": "GetXorMaxMinTmpSize",
+      "title": "GetXorMaxMinTmpSize-Xor接口-数学计算-高阶API-Ascend C算子开发接口-API-CANN社区版8.5.0开发文档-昇腾社区",
+      "path": "pages/atlasascendc_api_07_0602.md",
+      "family": "Xor接口",
+      "symbols": [
+        "GetXorMaxMinTmpSize"
+      ],
+      "signatures": []
+    },
+    {
+      "doc_id": "atlasascendc_api_07_0586",
+      "name": "GetAxpyMaxMinTmpSize",
+      "title": "GetAxpyMaxMinTmpSize-Axpy接口-数学计算-高阶API-Ascend C算子开发接口-API-CANN社区版8.5.0开发文档-昇腾社区",
+      "path": "pages/atlasascendc_api_07_0586.md",
+      "family": "Axpy接口",
+      "symbols": [
+        "GetAxpyMaxMinTmpSize"
+      ],
+      "signatures": []
+    },
+    {
+      "doc_id": "atlasascendc_api_07_0584",
+      "name": "Axpy",
+      "title": "Axpy-Axpy接口-数学计算-高阶API-Ascend C算子开发接口-API-CANN社区版8.5.0开发文档-昇腾社区",
+      "path": "pages/atlasascendc_api_07_0584.md",
+      "family": "Axpy接口",
+      "symbols": [
+        "Axpy"
+      ],
+      "signatures": []
+    },
+    {
+      "doc_id": "atlasascendc_api_07_10148",
+      "name": "GetReduceMinMaxMinTmpSize",
+      "title": "GetReduceMinMaxMinTmpSize-ReduceMin接口-归约操作-高阶API-Ascend C算子开发接口-API-CANN社区版8.5.0开发文档-昇腾社区",
+      "path": "pages/atlasascendc_api_07_10148.md",
+      "family": "ReduceMin接口",
+      "symbols": [
+        "GetReduceMinMaxMinTmpSize"
+      ],
+      "signatures": []
+    },
+    {
+      "doc_id": "atlasascendc_api_07_10050",
+      "name": "ReduceMin",
+      "title": "ReduceMin-ReduceMin接口-归约操作-高阶API-Ascend C算子开发接口-API-CANN社区版8.5.0开发文档-昇腾社区",
+      "path": "pages/atlasascendc_api_07_10050.md",
+      "family": "ReduceMin接口",
+      "symbols": [
+        "ReduceMin"
+      ],
+      "signatures": []
+    },
+    {
+      "doc_id": "atlasascendc_api_07_0089",
+      "name": "Brcb",
+      "title": "Brcb-数据填充-矢量计算-基础API-Ascend C算子开发接口-API-CANN社区版8.5.0开发文档-昇腾社区",
+      "path": "pages/atlasascendc_api_07_0089.md",
+      "family": "数据填充",
+      "symbols": [
+        "Brcb",
+        "BrcbRepeatParams"
+      ],
+      "signatures": []
+    },
+    {
+      "doc_id": "atlasascendc_api_07_0222",
+      "name": "BilinearInterpolation(ISASI)",
+      "title": "BilinearInterpolation(ISASI)-基础算术-矢量计算-基础API-Ascend C算子开发接口-API-CANN社区版8.5.0开发文档-昇腾社区",
+      "path": "pages/atlasascendc_api_07_0222.md",
+      "family": "基础算术",
+      "symbols": [
+        "BilinearInterpolation"
+      ],
+      "signatures": [
+        "- 接口样例-mask连续模式123456789101112AscendC::LocalTensor<half>dstLocal,src0Local,src1Local;AscendC::LocalTensor<uint32_t>src0OffsetLocal;AscendC::LocalTensor<uint8_t>tmpLocal;uint64_tmask=128;// mask连续模式uint8_thRepeat=2;// 水平迭代2次boolrepeatMode=false;// 迭代模式uint16_tdstBlkStride=1;// 单次迭代内数据连续写入uint16_tvROffset=128;// 相邻迭代间数据连续写入uint8_tvRepeat=2;// 垂直迭代2次AscendC::BilinearInterpolation(dstLocal,src0Local,src0OffsetLocal,src1Local,mask,hRepeat,repeatMode,dstBlkStride,vROffset,vRepeat,tmpLocal);"
+      ]
+    },
+    {
+      "doc_id": "atlasascendc_api_07_0231",
+      "name": "Sort32",
+      "title": "Sort32-排序组合（ISASI）-矢量计算-基础API-Ascend C算子开发接口-API-CANN社区版8.5.0开发文档-昇腾社区",
+      "path": "pages/atlasascendc_api_07_0231.md",
+      "family": "排序组合（ISASI）",
+      "symbols": [
+        "Sort32"
+      ],
+      "signatures": [
+        "- 接口使用样例12// repeatTime = 4, 对128个数分成4组进行排序，每次完成1组32个数的排序AscendC::Sort32<float>(dstLocal,srcLocal0,srcLocal1,4);"
+      ]
+    },
+    {
+      "doc_id": "atlasascendc_api_07_0234",
+      "name": "Gatherb(ISASI)",
+      "title": "Gatherb(ISASI)-离散与聚合-矢量计算-基础API-Ascend C算子开发接口-API-CANN社区版8.5.0开发文档-昇腾社区",
+      "path": "pages/atlasascendc_api_07_0234.md",
+      "family": "离散与聚合",
+      "symbols": [
+        "GatherRepeatParams",
+        "Gatherb"
+      ],
+      "signatures": []
+    },
+    {
+      "doc_id": "atlasascendc_api_07_0520",
+      "name": "Power",
+      "title": "Power-Power接口-数学计算-高阶API-Ascend C算子开发接口-API-CANN社区版8.5.0开发文档-昇腾社区",
+      "path": "pages/atlasascendc_api_07_0520.md",
+      "family": "Power接口",
+      "symbols": [
+        "Power"
+      ],
+      "signatures": []
+    },
+    {
+      "doc_id": "atlasascendc_api_07_0581",
+      "name": "昇腾社区官网",
+      "title": "昇腾社区官网-昇腾万里 让智能无所不及",
+      "path": "pages/atlasascendc_api_07_0581.md",
+      "family": "昇腾万里 让智能无所不及",
+      "symbols": [],
+      "signatures": []
+    },
+    {
+      "doc_id": "atlasascendc_api_07_0793",
+      "name": "Sigmoid",
+      "title": "Sigmoid-Sigmoid接口-激活函数-高阶API-Ascend C算子开发接口-API-CANN社区版8.5.0开发文档-昇腾社区",
+      "path": "pages/atlasascendc_api_07_0793.md",
+      "family": "Sigmoid接口",
+      "symbols": [
+        "Sigmoid"
+      ],
+      "signatures": []
+    },
+    {
+      "doc_id": "atlasascendc_api_07_0853",
+      "name": "Broadcast",
+      "title": "Broadcast-张量变换-高阶API-Ascend C算子开发接口-API-CANN社区版8.5.0开发文档-昇腾社区",
+      "path": "pages/atlasascendc_api_07_0853.md",
+      "family": "张量变换",
+      "symbols": [
+        "Broadcast"
+      ],
+      "signatures": []
+    },
+    {
+      "doc_id": "atlasascendc_api_07_0192",
+      "name": "DumpTensor",
+      "title": "DumpTensor-上板打印-调试接口-基础API-Ascend C算子开发接口-API-CANN社区版8.5.0开发文档-昇腾社区",
+      "path": "pages/atlasascendc_api_07_0192.md",
+      "family": "上板打印",
+      "symbols": [
+        "DumpTensor"
+      ],
+      "signatures": [
+        "- 无Tensor shape的打印1AscendC::DumpTensor(srcLocal,5,dataLen);"
+      ]
+    }
+  ]
+}
