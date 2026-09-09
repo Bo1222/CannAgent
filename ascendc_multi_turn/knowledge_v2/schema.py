@@ -175,6 +175,38 @@ class ResolvedApiCall:
         return asdict(self)
 
 
+@dataclass(frozen=True)
+class IncidentRecord:
+    incident_id: str
+    attempt_id: int
+    failure: dict[str, Any] | None
+    hypothesis: dict[str, Any] | None
+    code_diff: str
+    resolved_fact_ids: list[str]
+    result: dict[str, Any]
+    failure_disappeared: bool
+    schema_version: int = SCHEMA_VERSION
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class ConfirmedExperience:
+    experience_id: str
+    incident_id: str
+    failure: dict[str, Any]
+    hypothesis: dict[str, Any] | None
+    repair_diff: str
+    resolved_fact_ids: list[str]
+    result: dict[str, Any]
+    authority: str = "CONFIRMED_EXPERIENCE"
+    schema_version: int = SCHEMA_VERSION
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
 @dataclass
 class NormalizedDocument:
     document_id: str

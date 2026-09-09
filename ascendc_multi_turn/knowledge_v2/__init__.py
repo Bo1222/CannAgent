@@ -10,14 +10,18 @@ from .query import FactQuery
 from .router import KnowledgeRouterV2, SnapshotView, locate_snapshot, render_bundle
 from .call_semantics import CallSemanticsResolver
 from .semantic_validator import SemanticIssue, SemanticValidator
+from .experience import build_incident, persist_incident, promote_confirmed_experience
+from .frontier import FrontierDecision, FrontierManager, reached_frontier
 from .schema import (
     ApiCard,
     AtomicFact,
     CodeCandidate,
     FailureCard,
+    ConfirmedExperience,
     HeadingNode,
     KnowledgeBundle,
     KnowledgeContext,
+    IncidentRecord,
     NormalizedDocument,
     Paragraph,
     PatternCard,
@@ -37,9 +41,13 @@ __all__ = [
     "FactExtractor",
     "FactQuery",
     "FailureCard",
+    "ConfirmedExperience",
+    "FrontierDecision",
+    "FrontierManager",
     "HeadingNode",
     "KnowledgeBundle",
     "KnowledgeContext",
+    "IncidentRecord",
     "KnowledgeRouterV2",
     "MarkdownNormalizer",
     "NormalizedDocument",
@@ -57,4 +65,8 @@ __all__ = [
     "TableNode",
     "locate_snapshot",
     "render_bundle",
+    "build_incident",
+    "persist_incident",
+    "promote_confirmed_experience",
+    "reached_frontier",
 ]

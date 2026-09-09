@@ -30,10 +30,13 @@ from .knowledge import (
 )
 from .llm import LLMProvider
 from .knowledge_v2 import (
+    FrontierManager,
     KnowledgeContext,
     KnowledgeRouterV2,
     SnapshotView,
+    build_incident,
     locate_snapshot,
+    persist_incident,
     render_bundle,
 )
 from .logging import TrajectoryLogger
@@ -316,6 +319,9 @@ file delta and no Markdown. The response must fit within the output-token limit.
         candidate_path: str,
         plan_item: dict[str, Any] | None,
         fingerprint: str | None,
+        frontier: dict[str, Any],
+        incident_id: str,
+        confirmed_experience_id: str | None,
     ) -> dict[str, Any]:
         return {
             "round": attempt_id,
@@ -339,7 +345,21 @@ file delta and no Markdown. The response must fit within the output-token limit.
             "plan_item": plan_item,
             "failure_fingerprint": fingerprint,
             "structured_failure": result.structured_failure,
+            "frontier": frontier,
+            "incident_id": incident_id,
+            "confirmed_experience_id": confirmed_experience_id,
         }
+
+    @staticmethod
+    def _resolved_fact_ids(selection: Any) -> list[str]:
+        facts = getattr(selection, "relevant_facts", [])
+        return sorted(
+            {
+                str(fact["fact_id"])
+                for fact in facts
+                if isinstance(fact, dict) and fact.get("fact_id")
+            }
+        )
 
     def _migrate_trajectory(self, logger: TrajectoryLogger) -> None:
         records = [item for item in logger.data.get("rounds", []) if isinstance(item, dict)]
@@ -873,6 +893,9 @@ file delta and no Markdown. The response must fit within the output-token limit.
 
         reference, cases = self._inputs()
         current, best_bundle, previous, best_result, best_round = self._resume_state(logger)
+        frontier_manager = FrontierManager(self.state_dir)
+        if frontier_manager.highest_bundle() is None and best_bundle is not None and best_result is not None:
+            frontier_manager.observe(best_bundle, best_result, int(best_round or 0))
         workflow = logger.data.setdefault("workflow", {})
         baseline_round = workflow.get("baseline_round")
         baseline_score = workflow.get("baseline_score")
@@ -1138,6 +1161,7 @@ file delta and no Markdown. The response must fit within the output-token limit.
                 final_status = "paused"
                 break
 
+            frontier = frontier_manager.observe(candidate, result, attempt_id)
             valid = self._is_valid_result(result)
             if baseline_round is None:
                 if valid:
@@ -1149,7 +1173,8 @@ file delta and no Markdown. The response must fit within the output-token limit.
                     self._write_bundle(self.state_dir / "best.json", candidate)
                 else:
                     decision = "FAIL"
-                    current = candidate
+                    current = frontier.rollback
+                    restore_bundle(self.task_dir, current or FileBundle(files={}))
             elif valid and self._is_better(result, best_result):
                 decision = "KEEP"
                 best_bundle, best_result, best_round = candidate, result, attempt_id
@@ -1165,6 +1190,18 @@ file delta and no Markdown. The response must fit within the output-token limit.
                 if best_bundle:
                     restore_bundle(self.task_dir, best_bundle)
                     current = best_bundle
+
+            addressed_failure = previous.structured_failure if previous and previous.error else None
+            incident = build_incident(
+                attempt_id=attempt_id,
+                failure=addressed_failure or result.structured_failure,
+                hypothesis=dict(active_item) if active_item else None,
+                before=base_bundle,
+                after=candidate,
+                resolved_fact_ids=self._resolved_fact_ids(selection),
+                result=result,
+            )
+            confirmed_experience = persist_incident(self.state_dir, incident)
 
             fingerprint = None
             if result.error:
@@ -1194,6 +1231,15 @@ file delta and no Markdown. The response must fit within the output-token limit.
                     candidate_path=candidate_path,
                     plan_item=dict(active_item) if active_item else None,
                     fingerprint=fingerprint,
+                    frontier={
+                        "reached": frontier.reached,
+                        "advanced": frontier.advanced,
+                        "highest": frontier.highest,
+                    },
+                    incident_id=incident.incident_id,
+                    confirmed_experience_id=(
+                        confirmed_experience.experience_id if confirmed_experience else None
+                    ),
                 ),
                 best_round=best_round,
             )

@@ -685,6 +685,16 @@ class RunnerTests(unittest.TestCase):
             ]
             self.assertNotIn("compile_repair", calls)
             self.assertIn("planner", calls)
+            incidents = list((output / ".llm_state" / "incidents").glob("*.json"))
+            experiences = list(
+                (output / ".llm_state" / "experience_candidates").glob("*.json")
+            )
+            self.assertEqual(len(incidents), 3)
+            self.assertGreaterEqual(len(experiences), 1)
+            self.assertEqual(
+                json.loads(experiences[0].read_text(encoding="utf-8"))["authority"],
+                "CONFIRMED_EXPERIENCE",
+            )
 
     def test_bootstrap_budget_exhaustion_is_blocked_and_resumable(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -734,6 +744,22 @@ class RunnerTests(unittest.TestCase):
             self.assertEqual(summary["optimization_rounds_completed"], 0)
             self.assertEqual(summary["total_rounds_limit"], 2)
             self.assertFalse((output / ".llm_state" / "DONE").exists())
+            frontier = json.loads(
+                (output / ".llm_state" / "frontiers" / "manifest.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            self.assertEqual(frontier["highest"], "source")
+            self.assertEqual(frontier["entries"]["source"]["attempt_id"], 1)
+            stable = json.loads(
+                (output / ".llm_state" / "frontiers" / "source.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            self.assertEqual(
+                (output / "kernel" / "mock.cpp").read_text(encoding="utf-8"),
+                stable["files"]["kernel/mock.cpp"],
+            )
 
     def test_total_round_budget_spans_bootstrap_and_optimization(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

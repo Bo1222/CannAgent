@@ -7,6 +7,7 @@ Secrets must never be included.
 
 ### Changes
 
+- Added the M5 experiment knowledge loop with incident records, bounded repair diffs, resolved-fact links, correctness-and-signal-gated confirmed experience candidates, persistent evaluation frontiers, and automatic rollback of non-advancing candidates.
 - Added the M4 CallSemanticsResolver and semantic source validator, including exact API/structure/overload binding, provenance-bearing resolved calls, generic unit/alignment/project-contract checks, and a pre-compile semantic evaluation stage for semantic mode.
 - Added the M3 StructuredFailure schema and deterministic MTE/AI Core/ACL/compiler/runtime diagnostic parsing, persisted structured failures in evaluations and trajectories, connected them to semantic retrieval, and removed local details paths from LLM-facing compact evidence.
 - Added the M2 context-aware semantic router, snapshot view, phase-specific knowledge bundle and trace schemas, exact API isolation, supplemental metadata/lexical/vector ranking, semantic runtime artifacts, and opt-in `--knowledge-mode semantic` while preserving legacy routing.
@@ -24,6 +25,8 @@ Secrets must never be included.
 
 ### Analysis
 
+- A failed candidate is useful only when it proves a deeper evaluation capability. Frontier rank therefore controls the repair baseline independently from correctness/performance best selection; repeated failure at the same rank restores the earlier stable candidate.
+- Runtime experiments produce evidence under `CONFIRMED_EXPERIENCE`, never new official API truth. Promotion requires both a passing correctness result and disappearance of the addressed structured failure signature.
 - A field name alone cannot define its unit: semantic validation now selects facts through API identity and parameter structure before comparing a source expression, and unresolved calls do not borrow constraints from similarly named APIs.
 - Local `details_path` values remain useful for audit but cannot be a model's primary diagnostic input; semantic routing now consumes persisted failure fields and related API symbols instead.
 - API identity must be resolved before similarity retrieval: prefix-related names such as DataCopy, DataCopyPad, and DataCopyExt are explicitly rejected when only a different exact source symbol is present.
@@ -35,6 +38,7 @@ Secrets must never be included.
 
 ### Validation
 
+- Validated M5 frontier advancement, implied frontier materialization, no-frontier source rejection, same-stage rollback, score-gated performance replacement, incident persistence, and confirmed-experience authority isolation in unit and end-to-end runner tests.
 - Validated DataCopyPad overload and source-fact resolution without DataCopy contamination, pre-compile `blockLen` unit rejection, and generic required/forbidden project-contract enforcement.
 - Validated MTE illegal-configuration extraction with runtime code, core/block IDs and DataCopyPad symbols, compile/ACL classification, structured trajectory data, and omission of private log paths from compact model evidence.
 - Validated semantic snapshot disambiguation, exact similar-name rejection, context-filtered facts, retrieval traces, and a mock multi-turn run whose call log contains no knowledge-router LLM request.
