@@ -7,6 +7,7 @@ Secrets must never be included.
 
 ### Changes
 
+- Deleted the legacy standalone `ascendc_multi_turn/knowledge.py` layout, replaced it with the `ascendc_multi_turn/knowledge/` package, and exposed the documented `python -m ascendc_multi_turn.knowledge.build` snapshot CLI; repository history is the record of the removed layout.
 - Added the M5 experiment knowledge loop with incident records, bounded repair diffs, resolved-fact links, correctness-and-signal-gated confirmed experience candidates, persistent evaluation frontiers, and automatic rollback of non-advancing candidates.
 - Added the M4 CallSemanticsResolver and semantic source validator, including exact API/structure/overload binding, provenance-bearing resolved calls, generic unit/alignment/project-contract checks, and a pre-compile semantic evaluation stage for semantic mode.
 - Added the M3 StructuredFailure schema and deterministic MTE/AI Core/ACL/compiler/runtime diagnostic parsing, persisted structured failures in evaluations and trajectories, connected them to semantic retrieval, and removed local details paths from LLM-facing compact evidence.
@@ -38,6 +39,7 @@ Secrets must never be included.
 
 ### Validation
 
+- Validated the stable knowledge-build module entry point with `--help` and reran all runtime imports after replacing the standalone knowledge module.
 - Validated M5 frontier advancement, implied frontier materialization, no-frontier source rejection, same-stage rollback, score-gated performance replacement, incident persistence, and confirmed-experience authority isolation in unit and end-to-end runner tests.
 - Validated DataCopyPad overload and source-fact resolution without DataCopy contamination, pre-compile `blockLen` unit rejection, and generic required/forbidden project-contract enforcement.
 - Validated MTE illegal-configuration extraction with runtime code, core/block IDs and DataCopyPad symbols, compile/ACL classification, structured trajectory data, and omission of private log paths from compact model evidence.

@@ -9,11 +9,11 @@ from typing import Any
 
 from llm_config import get_env
 
-from .diagnostics import compact_evaluation, extract_api_symbols
-from .models import EvalResult, FileBundle
+from ..diagnostics import compact_evaluation, extract_api_symbols
+from ..models import EvalResult, FileBundle
 
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
+REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 SHARED_ASCENDC_ROOT = REPO_ROOT / "skills/ascendc/ascendc-translator"
 REFERENCES_ROOT = SHARED_ASCENDC_ROOT / "references"
 KNOWLEDGE_ROOT = REFERENCES_ROOT / "AscendC_knowledge"

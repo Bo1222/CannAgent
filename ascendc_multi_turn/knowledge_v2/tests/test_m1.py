@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -16,6 +18,17 @@ DOC = """# DataCopyPad-API-CANN\n**页面ID:** datacopy_pad\n**来源:** https:/
 
 
 class SnapshotBuilderTests(unittest.TestCase):
+    def test_public_build_cli_is_available(self) -> None:
+        completed = subprocess.run(
+            [sys.executable, "-m", "ascendc_multi_turn.knowledge.build", "--help"],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertIn("--source", completed.stdout)
+
     def test_snapshot_is_loadable_complete_and_reproducible(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
