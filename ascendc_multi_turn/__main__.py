@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 
 from llm_config import get_env
 
@@ -22,7 +23,24 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--provider", choices=("deepseek", "openai"), default=provider)
     result.add_argument("--model", default=None, help="override the selected provider's model")
     result.add_argument("--base-url", default=None, help="override the selected provider's base URL")
-    result.add_argument("--max-rounds", type=int, default=3)
+    result.add_argument(
+        "--max-rounds",
+        type=int,
+        default=3,
+        help="candidate evaluations after a correct, benchmarked baseline exists",
+    )
+    result.add_argument(
+        "--max-bootstrap-rounds",
+        type=int,
+        default=8,
+        help="candidate attempts allowed while establishing a correct benchmarked baseline",
+    )
+    result.add_argument(
+        "--max-total-rounds",
+        type=int,
+        default=None,
+        help="optional cap on all completed candidate evaluations across bootstrap and optimization",
+    )
     result.add_argument("--temperature", type=float, default=float(get_env("ASCENDC_LLM_TEMPERATURE", "0.2")))
     result.add_argument(
         "--max-tokens",
@@ -32,6 +50,7 @@ def parser() -> argparse.ArgumentParser:
     )
     result.add_argument("--router-max-tokens", type=int, default=None)
     result.add_argument("--generator-max-tokens", type=int, default=None)
+    result.add_argument("--planner-max-tokens", type=int, default=None)
     result.add_argument("--repair-max-tokens", type=int, default=None)
     result.add_argument(
         "--router-thinking", choices=("enabled", "disabled"),
@@ -42,12 +61,20 @@ def parser() -> argparse.ArgumentParser:
         default=get_env("ASCENDC_GENERATOR_THINKING", "enabled"),
     )
     result.add_argument(
+        "--planner-thinking", choices=("enabled", "disabled"),
+        default=get_env("ASCENDC_PLANNER_THINKING", "disabled"),
+    )
+    result.add_argument(
         "--repair-thinking", choices=("enabled", "disabled"),
         default=get_env("ASCENDC_REPAIR_THINKING", "enabled"),
     )
     result.add_argument(
         "--generator-reasoning-effort", choices=("low", "high", "max"),
         default=get_env("ASCENDC_GENERATOR_REASONING_EFFORT", "high"),
+    )
+    result.add_argument(
+        "--planner-reasoning-effort", choices=("low", "high", "max"),
+        default=get_env("ASCENDC_PLANNER_REASONING_EFFORT", "low"),
     )
     result.add_argument(
         "--repair-reasoning-effort", choices=("low", "high", "max"),
@@ -71,6 +98,10 @@ def main() -> int:
     args = parser().parse_args()
     if args.max_rounds < 1:
         raise SystemExit("--max-rounds must be at least 1")
+    if args.max_bootstrap_rounds < 1:
+        raise SystemExit("--max-bootstrap-rounds must be at least 1")
+    if args.max_total_rounds is not None and args.max_total_rounds < 1:
+        raise SystemExit("--max-total-rounds must be at least 1")
     prefix = "DEEPSEEK" if args.provider == "deepseek" else "OPENAI"
     model = args.model or get_env(
         f"{prefix}_MODEL", "deepseek-v4-flash" if prefix == "DEEPSEEK" else "gpt-4.1"
@@ -86,15 +117,20 @@ def main() -> int:
         model=model,
         base_url=base_url,
         max_rounds=args.max_rounds,
+        max_bootstrap_rounds=args.max_bootstrap_rounds,
+        max_total_rounds=args.max_total_rounds,
         temperature=args.temperature,
         max_tokens=args.max_tokens,
         router_max_tokens=args.router_max_tokens,
         generator_max_tokens=args.generator_max_tokens,
+        planner_max_tokens=args.planner_max_tokens,
         repair_max_tokens=args.repair_max_tokens,
         router_thinking=args.router_thinking,
         generator_thinking=args.generator_thinking,
+        planner_thinking=args.planner_thinking,
         repair_thinking=args.repair_thinking,
         generator_reasoning_effort=args.generator_reasoning_effort,
+        planner_reasoning_effort=args.planner_reasoning_effort,
         repair_reasoning_effort=args.repair_reasoning_effort,
         llm_transient_retries=args.llm_transient_retries,
         timeout=args.timeout,
@@ -104,6 +140,14 @@ def main() -> int:
         evaluator="mock" if args.mock else "local",
         resume=args.resume,
         mock=args.mock,
+    )
+    config.deprecated_repair_options_active = any(
+        option in sys.argv[1:]
+        for option in (
+            "--repair-max-tokens",
+            "--repair-thinking",
+            "--repair-reasoning-effort",
+        )
     )
     if not args.mock:
         prefix = "DEEPSEEK" if config.provider == "deepseek" else "OPENAI"

@@ -21,7 +21,8 @@ class TrajectoryLogger:
         self.data.setdefault("config", config)
         self.data.setdefault("rounds", [])
         self.data.setdefault("best_round", None)
-        self.data.setdefault("schema_version", 2)
+        self.data.setdefault("schema_version", 3)
+        self.data.setdefault("workflow", {})
         self._save()
 
     @staticmethod
@@ -136,11 +137,14 @@ class TrajectoryLogger:
         temporary.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
         os.replace(temporary, self.run_state_path)
 
-    def begin_pending(self, evaluation_round: int) -> int:
+    def begin_pending(self, evaluation_round: int, *, phase: str = "EDIT") -> int:
         state = self._load_run_state()
         if state.get("pending_evaluation_round") == evaluation_round and isinstance(
             state.get("attempt_id"), int
         ):
+            if state.get("pending_phase") != phase:
+                state["pending_phase"] = phase
+                self._save_run_state(state)
             return int(state["attempt_id"])
         historical = [
             int(item.get("round", 0))
@@ -156,15 +160,22 @@ class TrajectoryLogger:
         attempt_id = max(historical, default=0) + 1
         self._save_run_state(
             {
-                "schema_version": 2,
+                "schema_version": 3,
                 "pending_evaluation_round": evaluation_round,
                 "attempt_id": attempt_id,
+                "pending_phase": phase,
             }
         )
         return attempt_id
 
+    def update_pending_phase(self, phase: str) -> None:
+        state = self._load_run_state()
+        if state:
+            state["pending_phase"] = phase
+            self._save_run_state(state)
+
     def complete_pending(self) -> None:
-        self._save_run_state({"schema_version": 2})
+        self._save_run_state({"schema_version": 3})
 
     def pending_state(self) -> dict[str, Any]:
         return self._load_run_state()
@@ -192,6 +203,21 @@ class TrajectoryLogger:
     def mark_paused(self, success: bool) -> None:
         self.data["success"] = success
         self.data["status"] = "paused"
+        self._save()
+
+    def mark_blocked(self, success: bool) -> None:
+        self.data["success"] = success
+        self.data["status"] = "blocked"
+        self._save()
+        try:
+            self.done_path.unlink()
+        except FileNotFoundError:
+            pass
+
+    def update_workflow(self, **values: Any) -> None:
+        workflow = self.data.setdefault("workflow", {})
+        workflow.update(values)
+        self.data["schema_version"] = 3
         self._save()
 
     def save_knowledge(self, knowledge: dict[str, Any]) -> None:

@@ -16,13 +16,13 @@ CannAgent 包含三类执行路径：
 python -m ascendc_multi_turn
 ```
 
-该路径是一套由 Python 显式实现的 `generate → evaluate → select` 循环，不依赖 Claude Agent SDK、Claude Code hooks、LangChain 或其他 Agent 框架。
+该路径是一套由 Python 显式实现的 `AscendC knowledge → PLAN → generate → evaluate → select` 循环，不依赖 Claude Agent SDK、Claude Code hooks、LangChain 或其他 Agent 框架。
 
 核心判断如下：
 
 - 已实现跨轮状态、上一轮反馈、最佳版本保存和断点续跑，可视为“短期工作记忆/工程状态记忆”。
 - 没有 embedding、向量数据库、跨任务经验库等独立长期 Memory 系统。
-- 初始实现只会全量注入三份固定 AscendC 文档；2026-09-05 起已升级为版本感知的 Skill/API 文档选择流程。
+- 初始实现只会全量注入三份固定文档；当前已升级为版本感知的 AscendC API 文档选择流程，并从直接路径排除 TileLang/DSL 转译资料。
 - 当前非 Claude 的完整直接 LLM 路径只覆盖 AscendC，没有发现对等的 Triton 直接 LLM 多轮入口。
 
 ## 2. 非 Claude 执行架构
@@ -34,7 +34,7 @@ python -m ascendc_multi_turn
 | `ascendc_multi_turn/__main__.py` | 命令行入口、参数解析、Provider 和 Evaluator 选择 |
 | `ascendc_multi_turn/runner.py` | 多轮主循环、KEEP/DISCARD、恢复与最终汇总 |
 | `ascendc_multi_turn/llm.py` | DeepSeek/OpenAI `/chat/completions` 客户端 |
-| `ascendc_multi_turn/knowledge.py` | CANN 版本检测、Skill/API 文档路由和受控上下文装载 |
+| `ascendc_multi_turn/knowledge.py` | CANN 版本检测、AscendC API 文档路由和受控上下文装载 |
 | `ascendc_multi_turn/prompts.py` | 组合参考模型、用例、当前源码、反馈和知识文档 |
 | `ascendc_multi_turn/bundle.py` | 解析模型返回、校验路径、写入和恢复源码 |
 | `ascendc_multi_turn/evaluator.py` | 静态检查、编译、正确性验证和性能测试 |
@@ -52,9 +52,11 @@ flowchart TD
     D --> E
     E --> F{round <= max_rounds}
     F -->|是| G[检测 CANN 版本并进行知识路由]
-    G --> H[构建含选中文档的本轮 Prompt]
-    H --> I[调用 DeepSeek 或 OpenAI]
-    I --> J[记录 served model / thinking / reasoning usage]
+    G --> H{是否需要 PLAN}
+    H -->|是| H1[基于同一 AscendC 知识创建计划]
+    H -->|否| I[构建生成 Prompt]
+    H1 --> I
+    I --> J[调用 DeepSeek 或 OpenAI 生成 AscendC]
     J --> K0[解析 JSON 文件增量]
     K0 --> K{格式和路径是否合法}
     K -->|否| X[保存编排失败 checkpoint，不计评估轮]
@@ -99,7 +101,9 @@ python -m ascendc_multi_turn \
 - `--provider`：选择 `deepseek` 或 `openai`。
 - `--model`、`--base-url`：覆盖所选 Provider 的模型和服务地址。
 - `DEEPSEEK_API_KEY` / `OPENAI_API_KEY`：按 Provider 从根目录 `.env` 加载，密钥本身不写入轨迹。
-- `--max-rounds`：实际候选评估轮数上限；API、路由和环境失败不消耗该预算。
+- `--max-bootstrap-rounds`：获得首个正确且已测速 baseline 前的候选评估上限。
+- `--max-rounds`：baseline 之后的性能候选评估上限；API、路由、规划和环境失败不消耗两类预算。
+- `--max-total-rounds`：可选的 bootstrap 与优化候选统一总上限；达到上限时由 `stop_reason` 明确记录终止原因。
 - `--device`、`--soc-version`：NPU 和编译目标配置。
 - `--resume`：从已有 `.llm_state/trajectory.json` 继续。
 - `--quiet`：关闭默认写入 stderr 的阶段进度、15 秒心跳和失败摘要；stdout 始终只输出最终 JSON。
@@ -122,10 +126,7 @@ python -m ascendc_multi_turn \
 2. 同名 JSON 测试用例。
 3. 当前完整 AscendC 实现。
 4. 最近一轮 `EvalResult`，包括编译、正确性、性能和错误输出。
-5. 由 `ascendc-translator` Skill 路由器选出的版本化 AscendC/CANN 资料：
-   - `dsl2Ascendc.md`
-   - `TileLang-AscendC-API-Mapping.md`
-   - `AscendCVerification.md`
+5. 由直接知识路由器选出的版本化 AscendC/CANN 资料：精简核心规则、相关 API 页、安装版公共头文件声明，以及纯 AscendC 专项资料；不包含 TileLang 或 `dsl2Ascendc_*` 转译指南。
 6. 模型必须遵守的 JSON 输出协议和文件约束。
 
 LLM 请求是一个普通的 Chat Completions 请求：
@@ -144,8 +145,8 @@ LLM 请求是一个普通的 Chat Completions 请求：
 }
 ```
 
-知识路由默认关闭 thinking 并使用 4096 token；代码生成默认 high thinking、编译修复
-默认 max thinking，二者上限均为 65536。thinking 模式不发送 temperature。客户端先
+知识路由默认关闭 thinking 并使用 4096 token；PLAN 默认关闭 thinking 并使用 8192
+token；代码生成默认 high thinking 且上限为 65536。thinking 模式不发送 temperature。客户端先
 读取同级的 `reasoning_content`、`content`、usage 和 finish reason，因此 reasoning
 耗尽预算导致的空正文不再退化为无法解释的 `LLM API returned empty content`。
 
@@ -309,11 +310,11 @@ score = exp(sum(log(speedup)) / case_count)
 
 虽然 `trajectory.json` 保存所有轮次，但下一轮 Prompt 不会检索完整历史，只使用“当前源码 + 最近一轮评测结果”。
 
-## 9. Skill 与知识检索实现判断
+## 9. AscendC 知识检索实现判断
 
-原始版本没有真正实现 RAG；当前版本实现了受控的 Skill-aware、version-aware 文档选择。
+原始版本没有真正实现 RAG；当前版本实现了受控的 version-aware AscendC 文档选择。
 
-首次生成调用知识路由器查看完整 API manifest，并以唯一 `doc_id` 建立任务级工作集。后续轮默认复用该工作集；只有源码或编译诊断出现新 API 时，才通过符号匹配直接扩展，或把最多 5 个候选交给路由模型增量选择。完整 manifest 在一个任务中只路由一次，重复错误也只允许候选子集增量路由。该实现不使用 embedding 或向量数据库。
+首次生成前调用知识路由器查看完整 API manifest，并以唯一 `doc_id` 建立任务级工作集。该工作集不接受 DSL 转译补充文档。初始 PLAN 与 generator 复用同一份知识；后续轮默认复用工作集，只有源码或编译诊断出现新 API 时，才通过符号匹配直接扩展，或把最多 5 个候选交给路由模型增量选择。完整 manifest 在一个任务中只路由一次，重复错误也只允许候选子集增量路由。该实现不使用 embedding 或向量数据库。
 
 | 能力 | 是否存在 |
 |---|---:|
@@ -427,9 +428,8 @@ CLI 默认把阶段开始、结束和每 15 秒心跳写到 stderr，stdout 保�
 知识路由、生成器以及响应格式等编排异常会在同一 pending checkpoint 内最多重试
 配置的 `ASCENDC_LLM_TRANSIENT_RETRIES` 次；耗尽后状态变为 `paused`，写入
 `orchestration_attempts.jsonl`，但不消耗评测轮，也不覆盖最近的真实编译反馈。
-生成响应因 token 上限截断时还会进行一次同轮紧凑重试；AscendC 源码预检或真实
-编译失败会额外进行至多一次定向 compiler repair LLM 调用，并在
-`evaluation_attempts` 中同时保留修复前后结果。当前没有 fallback 模型。
+生成响应因 token 上限截断时还会进行一次同轮紧凑重试。候选进入 evaluator 后只评估
+一次；源码预检、编译或正确性失败由下一计划项处理。当前没有 fallback 模型。
 
 ### 12.4 Token 可能在特殊中断窗口重复统计
 
@@ -488,7 +488,7 @@ OK
 - Token 统计。
 - 模型输出文件安全约束。
 - CANN 版本检测、同主版本回退与跨主版本拒绝。
-- Skill 指令、专项指南和细粒度 API 页面的动态知识选择。
+- 纯 AscendC 专项资料和细粒度 API 页面的动态知识选择。
 
 它尚未具备：
 
@@ -496,5 +496,5 @@ OK
 - 向量库和 embedding。
 - 跨任务长期 Memory。
 - 跨任务历史经验检索。
-- Tool calling 或通用 Agent planner。
+- Tool calling 或通用 Agent planner；现有 PLAN 是受固定 JSON 协议约束的领域规划器。
 - Triton 对等的非 Claude 多轮生成入口。

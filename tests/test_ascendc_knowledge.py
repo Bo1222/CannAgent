@@ -10,7 +10,6 @@ from unittest.mock import MagicMock, patch
 
 from ascendc_multi_turn.knowledge import (
     MANIFEST_PATH,
-    KnowledgeSelection,
     KnowledgeVersion,
     candidate_doc_ids,
     detect_cann_version,
@@ -52,10 +51,10 @@ class KnowledgeSelectionTests(unittest.TestCase):
     def test_allowlisted_api_and_supplement(self) -> None:
         response = json.dumps(
             {
-                "skill": "ascendc-translator",
+                "domain": "ascendc",
                 "topics": ["vector"],
                 "api_names": ["Relu", "DataCopy简介"],
-                "supplements": ["dsl2Ascendc_compute_vector.md"],
+                "supplements": ["ascendc_dynamic_quant_kb.md"],
                 "reason": "elementwise implementation",
             }
         )
@@ -66,6 +65,7 @@ class KnowledgeSelectionTests(unittest.TestCase):
             fallback_text="",
         )
         self.assertFalse(selection.fallback)
+        self.assertEqual(selection.domain, "ascendc")
         self.assertLessEqual(len(selection.selected_files), 2)
         rendered = render_knowledge(selection, version=self.version, max_chars=60000)
         self.assertIn("Runtime CANN: 8.5.0", rendered)
@@ -147,7 +147,10 @@ class KnowledgeSelectionTests(unittest.TestCase):
     def test_legacy_selection_migrates_to_task_state(self) -> None:
         legacy = {
             "selected_files": ["pages/atlasascendc_api_07_0265.md"],
-            "supplements": ["dsl2Ascendc_compute_vector.md"],
+            "supplements": [
+                "dsl2Ascendc_compute_vector.md",
+                "ascendc_dynamic_quant_kb.md",
+            ],
         }
         with tempfile.TemporaryDirectory() as temporary:
             state = load_knowledge_state(
@@ -158,6 +161,46 @@ class KnowledgeSelectionTests(unittest.TestCase):
         self.assertTrue(state.initialized)
         self.assertTrue(state.migrated)
         self.assertEqual(state.working_doc_ids, ["atlasascendc_api_07_0265"])
+        self.assertEqual(state.supplements, ["ascendc_dynamic_quant_kb.md"])
+
+    def test_dsl_supplement_is_not_available_to_direct_routing(self) -> None:
+        selection = parse_knowledge_selection(
+            json.dumps(
+                {
+                    "domain": "ascendc",
+                    "topics": ["vector"],
+                    "doc_ids": [],
+                    "supplements": ["dsl2Ascendc_compute_vector.md"],
+                    "reason": "legacy translation request",
+                }
+            ),
+            version=self.version,
+            max_api_docs=2,
+            fallback_text="",
+        )
+        self.assertTrue(selection.fallback)
+        self.assertEqual(selection.supplements, [])
+
+    def test_existing_state_drops_dsl_supplements_on_load(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "knowledge_state.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "runtime_version": "8.5.0",
+                        "knowledge_version": "8.5.0",
+                        "initialized": True,
+                        "supplements": [
+                            "dsl2Ascendc_host.md",
+                            "dequant_kernel_patterns.md",
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            state = load_knowledge_state(path, version=self.version)
+
+        self.assertEqual(state.supplements, ["dequant_kernel_patterns.md"])
 
 
 class RuntimeKnowledgeTests(unittest.TestCase):
@@ -303,6 +346,7 @@ class ProviderTests(unittest.TestCase):
             "ASCENDC_LLM_MAX_TOKENS": "",
             "ASCENDC_ROUTER_MAX_TOKENS": "",
             "ASCENDC_GENERATOR_MAX_TOKENS": "",
+            "ASCENDC_PLANNER_MAX_TOKENS": "",
             "ASCENDC_REPAIR_MAX_TOKENS": "",
         }
         with patch.dict(os.environ, names):
@@ -311,9 +355,26 @@ class ProviderTests(unittest.TestCase):
 
         self.assertEqual(config.router_max_tokens, 4096)
         self.assertEqual(config.generator_max_tokens, 65536)
+        self.assertEqual(config.planner_max_tokens, 8192)
         self.assertEqual(config.repair_max_tokens, 65536)
         self.assertEqual(legacy.router_max_tokens, 1234)
         self.assertEqual(legacy.generator_max_tokens, 1234)
+        self.assertEqual(legacy.planner_max_tokens, 1234)
+
+    def test_planner_and_diagnose_have_an_independent_compact_budget(self) -> None:
+        config = RunConfig("model.py", "output", mock=True)
+
+        planner = config.call_config("planner")
+        diagnose = config.call_config("diagnose")
+
+        self.assertEqual(planner.max_tokens, 8192)
+        self.assertEqual(planner.thinking, "disabled")
+        self.assertEqual(planner.reasoning_effort, "low")
+        self.assertEqual(diagnose, LLMCallConfig("diagnose", 8192, "disabled", "low"))
+
+    def test_total_round_budget_must_be_positive_when_set(self) -> None:
+        with self.assertRaisesRegex(ValueError, "max_total_rounds must be at least 1"):
+            RunConfig("model.py", "output", max_total_rounds=0, mock=True)
 
 
 if __name__ == "__main__":

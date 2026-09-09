@@ -40,7 +40,7 @@
 | **AscendC** | **ascend-kernel-developer Agent** | AscendC 单算子交互式生成 | 代码生成 → 评测验证（精度对齐与性能测试） |
 | **AscendC** | **Ascend-Benchmark-Evaluator** | AscendC 算子一键批量评测 | 执行指定 Benchmark 评测，自动总结并生成详细报告 |
 | **Triton** | **AutoResearch** | 多轮迭代性能优化 | plan → edit → eval → keep/discard 闭环，由 Python 阶段机强约束，Claude Code 提供 agent runtime |
-| **AscendC** | **ascendc_multi_turn** | 直接 LLM 多轮生成（不依赖 Claude Code） | generate → evaluate → select 闭环，Python 状态机实现 KEEP/DISCARD、token 统计与断点续跑 |
+| **AscendC** | **ascendc_multi_turn** | 直接 LLM 多轮生成（不依赖 Claude Code） | AscendC knowledge → PLAN → generate → evaluate → select 闭环，Python 状态机实现 KEEP/DISCARD、token 统计与断点续跑 |
 
 > **共享内核**：Triton 单算子 Agent 与 Benchmark-Evaluator 底层共用同一个代码生成 Agent 工作流（`agents/triton-ascend-coder.md` + `skills/triton/`），统一处理「代码生成 → 验证 → 性能测试」的核心流程，保证生成逻辑一致性与复用。
 
@@ -69,7 +69,7 @@ User
 
 **(C) AscendC 直接 LLM 多轮生成**
 
-`ascendc_multi_turn/` 是一个独立的 Python 包，显式实现 `knowledge route → generate → compile → verify → perform → KEEP/DISCARD` 循环，复用仓库的 AscendC 工具链（`utils/build_ascendc.py`、`utils/verification_ascendc.py`、性能分析 skill）。它不调用 Claude Code，通过同一 Chat Completions 客户端连接 DeepSeek 或 OpenAI。详见 [docs/ascendc-direct-llm.md](docs/ascendc-direct-llm.md)。
+`ascendc_multi_turn/` 是一个独立的 Python 包，显式实现 `AscendC knowledge → initial PLAN → EDIT → eval → KEEP/DISCARD/FAIL → DIAGNOSE/REPLAN` 循环，复用仓库的 AscendC 工具链。它不调用 Claude Code，也不生成或转换 TileLang 中间实现，通过同一 Chat Completions 客户端连接 DeepSeek 或 OpenAI。详见 [docs/ascendc-direct-llm.md](docs/ascendc-direct-llm.md)。
 
 ### AutoResearch 阶段机（多轮 Agent Framework）
 
@@ -124,37 +124,41 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-    R0[读取 reference model.py + cases] --> P{迭代 round_num ≤ max_rounds}
-    P -->|是| B[检测 CANN 版本; 首轮全量路由/后续复用或增量路由]
-    B --> H[抽取安装版 CANN 公共头文件事实]
-    H --> C0[构建 prompt: targeted knowledge + reference + current + feedback]
-    C0 --> L[调用 DeepSeek 或 OpenAI, 返回 files/delete 增量]
-    L --> F{解析文件包, 路径/完整性校验}
-    F -->|格式/API/环境失败| X[保存 checkpoint; 不消耗评估轮; resume]
-    F -->|ok| A[写回 task_dir]
-    A --> C[evaluator: wrapper 检查 → C++ 源码预检 → 编译 → 正确性 → 性能]
-    C -->|编译失败| CR[同轮一次 compiler repair LLM + 重编译]
-    CR --> D
-    C --> D{_is_better? 正确且分数更高}
-    D -->|KEEP| K[记录 best.json, 更新 current]
-    D -->|DISCARD| G[回滚到 best, current=best]
-    D -->|首个正确候选| K
-    G --> E[LogTrajectory + 写 state]
-    K --> E
-    E --> P
-    P -->|否, best 存在| Z[还原 best, 写 summary.json + token 统计]
+    R0[读取 reference model.py + cases] --> KR[选择纯 AscendC/CANN 知识]
+    KR --> IP[INITIAL PLAN: 完整 AscendC baseline 蓝图]
+    IP --> B[生成并评估首个 bootstrap 候选]
+    B --> P[依据真实结果 PLAN/REPLAN]
+    P --> E[EDIT: 一次通用生成]
+    E --> Q[Host ABI/source quick check]
+    Q --> V[编译 → 正确性 → benchmark]
+    V --> S{SETTLE}
+    S -->|首个有效结果| BL[保存 sticky baseline]
+    S -->|更快| K[KEEP 并更新 best]
+    S -->|有效但不快| D[DISCARD 并恢复 best]
+    S -->|失败| F[FAIL]
+    F -->|连续 3 次| G[DIAGNOSE 并创建新计划]
+    F -->|未达阈值| P
+    G --> E
+    BL --> P
+    K --> P
+    D --> P
+    P -->|plan 耗尽| RP[REPLAN]
+    RP --> E
+    B -->|bootstrap 达 8 次仍无基线| X[BLOCKED; 增加预算后 resume]
+    P -->|优化评测达到 max_rounds| Z[FINISH; 恢复 best]
 ```
 
 关键实现位置：
 
-- **循环**：`runner.py` 的 `MultiTurnRunner.run()` 分开维护 evaluation round 与 physical attempt ID；`max_rounds` 限制真正进入 evaluator 的候选数量。
-- **每轮输入**：`prompts.py:60`（`build_prompt`）把 `reference_code + cases + current(FileBundle) + previous_result(EvalResult)` 组装进 prompt —— 上一轮评测反馈以 JSON 形式回灌给下一轮，用于 repair / optimize。
-- **KEEP/DISCARD**：`runner.py` 的 `_is_better()` 只接受正确且具有有效性能分数的候选；之后只有严格优于已存 best 才 KEEP，否则 DISCARD 回滚到 best。
+- **评测预算**：`--max-bootstrap-rounds` 默认 8，约束建立正确且已测速基线的候选；`--max-rounds` 只约束基线后的性能候选；可选的 `--max-total-rounds` 为两阶段设置统一候选总数上限。
+- **直接规划**：首个候选生成前先创建一个完整 AscendC baseline 计划，覆盖算法、tiling、内存搬运、dtype/尾块和 Host ABI；不使用 TileLang、DSL 中间实现或源码转换。后续计划再依据真实评测证据生成 3–5 个独立实验项。
+- **每轮输入**：`prompts.py` 把 `reference_code + cases + current(FileBundle) + previous_result(EvalResult)` 组装进 prompt；同一轮 PLAN 和 generator 复用已选择的 AscendC 知识。
+- **SETTLE**：基线前失败为 FAIL；基线后更快为 KEEP、有效但不快为 DISCARD、无效为 FAIL。连续三次 FAIL 进入 DIAGNOSE。
 - **文件协议与安全**：`bundle.py` —— 模型只能返回 `model_new_ascendc.py` 和 `kernel/` 下的源码（`validate_relative_path` 阻止绝对路径 / `..` 穿越 / build 文件），`validate_initial_bundle` 强制首轮必须包含完整 wrapper + pybind + kernel cpp。
-- **评测反馈**：`evaluator.py:42`（`LocalAscendEvaluator`）——依次跑 `validate_ascendc_impl.py` → `utils/build_ascendc.py` → `utils/verification_ascendc.py` → 性能分析；几何平均 speedup 作为分数。
-- **知识控制**：首次完整路由建立任务级工作集；后续稳定轮不调用路由模型，新 API 仅在最多 5 个候选中增量选择。安装版 CANN 公共头文件优先于回退版本文档，实际注入默认限制为 24000 字符。
-- **状态保存**：每次尝试写入 `.llm_state/round_NN/`，并保存 `knowledge_state.json`、`trajectory.json`、`calls.jsonl`、`orchestration_attempts.jsonl`、`run_state.json`、`token_usage.json`、`best.json` 和 `summary.json`；中断或编排失败后用 `--resume` 重试未完成的评测轮，只有真正进入 evaluator 的候选才消耗 `max_rounds`。
-- **终止与退出**：达到 `max_rounds` 后，若存在 best 则还原并报告 success，否则失败。
+- **评测反馈**：先校验 pybind 声明/调用 `*_do`、kernel 源定义 wrapper 并使用 `kernel<<<...>>>`，再执行 wrapper 检查、编译、正确性和性能评测；几何平均 speedup 作为分数。
+- **知识控制**：首次完整路由建立纯 AscendC 任务级工作集；后续稳定轮不调用路由模型，新 API 仅在最多 5 个候选中增量选择。直接流程不允许选择 `dsl2Ascendc_*` 文档；安装版 CANN 公共头文件优先于回退版本文档，实际注入默认限制为 24000 字符。
+- **状态保存**：phase、plan、双预算、pending checkpoint、baseline 和 best 均持久化；EVAL 环境失败后 resume 直接重评候选，不重复调用模型。
+- **终止与退出**：无基线且 bootstrap 用尽为 `blocked`，不创建 DONE；完成全部性能轮才为 `completed`。
 
 ## Claude 的真实位置
 
@@ -305,22 +309,24 @@ python -m ascendc_multi_turn \
   --provider deepseek \
   --model deepseek-v4-flash \
   --base-url https://api.deepseek.com \
-  --max-rounds 5 --soc-version Ascend910B3 --device 0
+  --max-bootstrap-rounds 8 --max-rounds 5 --max-total-rounds 5 \
+  --soc-version Ascend910B3 --device 0
 ```
 
 使用 OpenAI/GPT 测试时，在 `.env` 填写 `OPENAI_API_KEY`、`OPENAI_MODEL`、
-`OPENAI_BASE_URL`，并改用 `--provider openai`。每轮会先通过
-`ascendc-translator` Skill 选择与 CANN 版本匹配的 API 文档，再执行代码生成和评测。
+`OPENAI_BASE_URL`，并改用 `--provider openai`。直接流程会选择与 CANN 版本匹配的
+AscendC API 文档；首轮先生成直接 AscendC 实现计划，再执行代码生成和评测，不加载
+TileLang 转译指南。
 命令默认在 stderr 显示当前轮次、各阶段和每 15 秒心跳，stdout 只保留最终
 JSON；需要静默运行时增加 `--quiet`。每轮完整的静态检查、编译、正确性与性能
 输出保存在 `.llm_state/round_NN/*.log`，最终 JSON 的 `failure.details_path` 会指向
 失败阶段日志。
 
-DeepSeek V4 默认按调用类型分配输出预算：知识路由 4096 token 且关闭 thinking，
-代码生成 65536 token 且使用 `high` thinking，编译修复 65536 token 且使用
-`max` thinking。终端和 `calls.jsonl` 会同时记录请求模型、服务端实际模型、thinking、
-effort、reasoning token 和结束原因。`--max-rounds` 只统计实际进入评测链路的候选；
-API、知识选择或本地环境失败会停在当前 checkpoint，修复后 `--resume` 不会浪费一轮。
+DeepSeek V4 默认给知识路由 4096 token 且关闭 thinking，代码生成使用 65536 token、
+`high` thinking；结构化 PLAN/DIAGNOSE 独立使用 8192 token 且默认关闭 thinking，避免
+短计划继承代码生成预算。旧 `--repair-*` 参数暂时接受但已弃用，不再触发额外 repair
+调用。终端和 `calls.jsonl` 会记录模型、thinking、reasoning token 和结束原因。
+API、知识选择或本地环境失败会停在当前 checkpoint，`--resume` 不会浪费候选轮。
 
 无 NPU 验证编排：
 ```bash

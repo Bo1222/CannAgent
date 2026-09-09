@@ -14,8 +14,8 @@ from .models import EvalResult, FileBundle
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-TRANSLATOR_ROOT = REPO_ROOT / "skills/ascendc/ascendc-translator"
-REFERENCES_ROOT = TRANSLATOR_ROOT / "references"
+SHARED_ASCENDC_ROOT = REPO_ROOT / "skills/ascendc/ascendc-translator"
+REFERENCES_ROOT = SHARED_ASCENDC_ROOT / "references"
 KNOWLEDGE_ROOT = REFERENCES_ROOT / "AscendC_knowledge"
 CATALOG_PATH = KNOWLEDGE_ROOT / "knowledge_catalog.json"
 MANIFEST_PATH = KNOWLEDGE_ROOT / "api_reference/manifest.json"
@@ -27,11 +27,6 @@ CORE_DOCUMENTS = (
 SUPPLEMENT_DOCUMENTS = {
     path.name: path
     for path in (
-        REFERENCES_ROOT / "dsl2Ascendc_compute_vector.md",
-        REFERENCES_ROOT / "dsl2Ascendc_compute_cube.md",
-        REFERENCES_ROOT / "dsl2Ascendc_compute_cv.md",
-        REFERENCES_ROOT / "dsl2Ascendc_cross_core_sync.md",
-        REFERENCES_ROOT / "dsl2Ascendc_host.md",
         REFERENCES_ROOT / "ascendc_dynamic_quant_kb.md",
         REFERENCES_ROOT / "dequant_kernel_patterns.md",
     )
@@ -51,7 +46,7 @@ class KnowledgeVersion:
 
 @dataclass
 class KnowledgeSelection:
-    skill: str
+    domain: str
     topics: list[str]
     api_names: list[str]
     supplements: list[str]
@@ -227,9 +222,9 @@ def build_knowledge_prompt(
     current_paths = sorted(current.files) if current else []
     previous = compact_evaluation(previous_result)
     supplements = ", ".join(sorted(SUPPLEMENT_DOCUMENTS))
-    return f"""Select the AscendC skill knowledge required for the next implementation round.
-Return exactly one JSON object with keys: skill, topics, doc_ids, supplements, reason.
-skill must be \"ascendc-translator\". doc_ids must use exact IDs from the index below.
+    return f"""Select the direct AscendC knowledge required for the next implementation round.
+Return exactly one JSON object with keys: domain, topics, doc_ids, supplements, reason.
+domain must be \"ascendc\". doc_ids must use exact IDs from the index below.
 supplements may only use these file names: {supplements}.
 Choose only directly relevant material; do not return file paths.
 
@@ -288,8 +283,12 @@ def parse_knowledge_selection(
         by_name.setdefault(entry["name"].lower(), []).append(entry)
     try:
         payload = _json_object(text)
-        if payload.get("skill") != "ascendc-translator":
-            raise ValueError("unsupported skill")
+        domain = payload.get("domain")
+        legacy_skill = payload.get("skill")
+        if domain not in {None, "ascendc"}:
+            raise ValueError("unsupported knowledge domain")
+        if legacy_skill not in {None, "ascendc", "ascendc-translator"}:
+            raise ValueError("unsupported legacy skill")
         requested_ids = _string_list(payload, "doc_ids") if "doc_ids" in payload else []
         requested = _string_list(payload, "api_names") if "api_names" in payload else []
         supplements = _string_list(payload, "supplements")[:2]
@@ -314,7 +313,7 @@ def parse_knowledge_selection(
         if (requested_ids or requested) and not selected_entries:
             raise ValueError("no requested API document exists in the selected index")
         return KnowledgeSelection(
-            skill="ascendc-translator",
+            domain="ascendc",
             topics=_string_list(payload, "topics"),
             api_names=[entry["name"] for entry in selected_entries],
             supplements=supplements,
@@ -334,7 +333,7 @@ def parse_knowledge_selection(
         ]
         selected_entries = [by_id[doc_id] for doc_id in fallback_ids if doc_id in by_id]
         return KnowledgeSelection(
-            skill="ascendc-translator",
+            domain="ascendc",
             topics=["deterministic-fallback"],
             api_names=[entry["name"] for entry in selected_entries],
             supplements=[],
@@ -359,6 +358,9 @@ def load_knowledge_state(
             version.knowledge_version,
         ):
             raise ValueError("knowledge state version does not match the selected CANN knowledge")
+        state.supplements = [
+            item for item in state.supplements if item in SUPPLEMENT_DOCUMENTS
+        ]
         return state
     state = KnowledgeState(version.runtime_version, version.knowledge_version)
     if legacy_selection:
@@ -463,7 +465,7 @@ def selection_from_state(
     doc_ids = [item for item in (active_ids or state.working_doc_ids) if item in by_id]
     entries = [by_id[item] for item in doc_ids]
     return KnowledgeSelection(
-        skill="ascendc-translator",
+        domain="ascendc",
         topics=[mode],
         api_names=[entry["name"] for entry in entries],
         supplements=list(state.supplements),

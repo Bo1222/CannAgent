@@ -3,6 +3,67 @@
 All repository modifications must be recorded here. Dates use `YYYY-MM-DD`.
 Secrets must never be included.
 
+## 2026-09-09
+
+### Changes
+
+- Began functionally decoupling `ascendc_multi_turn` knowledge routing from TileLang: direct routing now uses an `ascendc` domain, excludes all `dsl2Ascendc_*` supplements, accepts legacy router output for compatibility, and removes stale DSL supplements when loading resumable knowledge state.
+- Added a dedicated one-item initial planning contract that requires a complete direct AscendC baseline blueprint and explicitly rejects TileLang, DSL intermediates, and source-to-source conversion.
+- Changed new-task orchestration to select pure AscendC knowledge, create and persist the initial plan, then generate the first candidate; PLAN and generator reuse the same selected knowledge, while pending EVAL resumes still bypass model calls.
+- Updated mock planning responses and compatibility coverage for the strict one-item initial plan, neutral AscendC domain, rejected DSL supplements, and legacy-state sanitation.
+- Added end-to-end assertions for the new `knowledge_router -> planner -> generator` startup order, persisted bootstrap plan item, clean direct-reference context, and unchanged EVAL-checkpoint resume behavior.
+- Added regressions with an isolated planner-failure fixture proving a failed initial planner pauses at the same non-counting checkpoint and resumes successfully, and proving already-persisted DSL supplements are removed on load.
+- Updated the README and direct/non-Claude architecture guides to document the pure AscendC knowledge boundary, pre-generation baseline plan, later evidence-driven plans, artifact compatibility, and absence of TileLang conversion in `ascendc_multi_turn`.
+- Added an optional `--max-total-rounds` limit spanning bootstrap and optimization evaluations, with explicit `stop_reason` reporting, so fixed-candidate diagnostic experiments terminate at an exact total without changing existing dual-budget defaults.
+
+### Analysis
+
+- `ascendc_multi_turn` has no TileLang import, compiler invocation, generated TileLang file, or TileLang evaluation stage. The removed coupling was prompt-level: five allowlisted `dsl2Ascendc_*` supplements could inject translation assumptions into otherwise direct AscendC generation.
+- The shared versioned AscendC API corpus, runtime-header extraction, static validator, build tool, correctness verifier, and performance evaluator are direct AscendC dependencies and remain in use even though some are physically stored below the legacy translator Skill directory.
+- The retained interactive TileLang/translator Skills are separate compatibility entry points; deleting them is unnecessary for functional isolation of the direct multi-turn runner.
+- A fixed diagnostic window cannot be expressed by `--max-rounds` alone because that budget starts only after a valid baseline; the independent total cap is required to compare unsuccessful and successful trajectories on the same number of evaluated candidates.
+
+### Validation
+
+- Passed all 76 repository unit tests, including initial-plan failure/resume, legacy DSL-state sanitation, direct knowledge selection, planning, source safety, evaluator, and checkpoint coverage.
+- Passed Python compilation, Ruff checks, and `git diff --check`.
+- Completed a no-NPU mock run with call order `knowledge_router -> planner -> generator -> planner -> generator`; round one used the single `bootstrap-1` plan item, new knowledge artifacts recorded `domain=ascendc` without a `skill` field, and the generation knowledge/prompt artifacts contained no TileLang or `dsl2Ascendc` references.
+- Removed the remaining direct-generator wording that implied an unplanned initial candidate or a runtime Skill layer, and aligned the architecture summary with the dual evaluation budgets.
+- Added regression coverage for total-cap exhaustion before a baseline, total accounting across baseline and optimization, and invalid total limits; documented the resulting resume and summary semantics.
+
+### Analysis
+
+- `ascendc_multi_turn` has no TileLang import, compilation, verification, or generated-file stage. The coupling was limited to optional knowledge supplements and `ascendc-translator` naming; the direct evaluator continues to use only the AscendC validator, builder, correctness verifier, and performance harness.
+- The shared versioned AscendC API corpus and validator remain valid direct-generation dependencies, so functional decoupling does not require deleting or duplicating the legacy interactive Skill directory.
+- A pre-generation plan adds one bounded planner call per new task. It does not consume a bootstrap evaluation and is reused by the first generator call through the active plan item.
+
+### Validation
+
+- Passed all 74 repository unit tests, Python compilation, Ruff checks, and `git diff --check`.
+- Completed a two-evaluation mock smoke run with call order `knowledge_router -> planner -> generator -> planner -> generator`; round 1 used the single `bootstrap-1` plan item and the run completed with a retained best candidate.
+- Verified the mock round-1 knowledge prompt, rendered references, and generator prompt contain no `TileLang` or `dsl2Ascendc` material; `selected_knowledge.json` records `domain=ascendc` without a `skill` field.
+
+## 2026-09-08
+
+### Changes
+
+- Replaced the direct AscendC same-round compiler-repair loop with an explicit bootstrap, PLAN, EDIT, EVAL, SETTLE, DIAGNOSE/REPLAN workflow. A correct benchmarked baseline now has an independent default budget of eight attempts, while `--max-rounds` counts only post-baseline performance candidates.
+- Added schema-v3 phase checkpoints, structured plans, sticky baseline artifacts, resumable EVAL checkpoints, `blocked` exhaustion state, and v2 trajectory migration. Deprecated `--repair-*` options remain accepted without triggering a dedicated repair call.
+- Added a deterministic Host launch ABI guard before compilation. Generated pybind code must call `extern "C" *_do` wrappers defined in AscendC kernel sources with `kernel<<<blockDim, nullptr, stream>>>`; unsupported launch headers/macros, unresolved local/CANN includes, absolute includes, and wrapper mismatches are rejected early.
+- Updated direct-run documentation and tests for the dual-budget semantics, planning artifacts, failure decisions, infrastructure handling, and resume behavior without changing the fixed AscendC Skill corpus.
+- Separated PLAN/DIAGNOSE from code-generation inference settings: planning now defaults to 8192 output tokens with thinking disabled, with independent CLI/environment overrides.
+
+### Analysis
+
+- The failed GELU trajectory did not repeat one compiler diagnostic verbatim, but rounds 2–5 shared an invalid Host ABI assumption: the generated code tried to launch kernels from pybind through `ACLRT_LAUNCH_KERNEL` and an `acl/acl_rt_launch.h` header absent from the installed CANN tree.
+- Repository AscendC examples consistently place `*_do` Host wrappers beside `__aicore__` kernels and link those wrappers into pybind. All eight archived tasks containing pybind sources satisfy the new contract.
+- A workflow state machine cannot guarantee that a zero-seed model reaches a valid kernel within a finite budget. It can prevent build-repair attempts from consuming performance rounds, reject known-invalid project contracts deterministically, diagnose repeated failures, and report resumable `blocked` rather than false completion.
+- A live GELU short run showed that a structured PLAN inherited the 65536-token/high-thinking generator profile and consumed 37928 tokens. Planning needs an independent compact inference profile even when generation benefits from a large reasoning budget.
+
+### Validation
+
+- Passed all 73 repository unit tests, Python compilation, repository whitespace checks, and Ruff validation; source-contract coverage includes all eight archived Host launch layouts.
+
 ## 2026-09-07
 
 ### Changes

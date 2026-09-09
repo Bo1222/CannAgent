@@ -16,18 +16,21 @@ from ascendc_multi_turn.evaluator import LocalAscendEvaluator, MockEvaluator, _r
 from ascendc_multi_turn.llm import MockProvider
 from ascendc_multi_turn.models import EvalResult, LLMResponse, RunConfig
 from ascendc_multi_turn.progress import ProgressReporter
+from ascendc_multi_turn.prompts import build_plan_prompt, build_prompt
 from ascendc_multi_turn.runner import MultiTurnRunner
 
 
 class TruncatingProvider:
     def __init__(self, retry_content: str, *, retry_finish_reason: str | None = "stop"):
         self.calls = 0
+        self.generator_calls = 0
         self.retry_content = retry_content
         self.retry_finish_reason = retry_finish_reason
 
-    def generate(self, prompt: str) -> LLMResponse:
+    def generate(self, prompt: str, *, call_config=None) -> LLMResponse:
         self.calls += 1
-        if self.calls == 1:
+        call_type = call_config.call_type if call_config else "generator"
+        if call_type == "knowledge_router":
             content = json.dumps(
                 {
                     "skill": "ascendc-translator",
@@ -38,12 +41,17 @@ class TruncatingProvider:
                 }
             )
             finish_reason = "stop"
-        elif self.calls == 2:
-            content = '{"analysis":"truncated"'
-            finish_reason = "length"
+        elif call_type in {"planner", "diagnose"}:
+            content = _plan_response(initial="Return exactly one complete baseline item" in prompt)
+            finish_reason = "stop"
         else:
-            content = self.retry_content
-            finish_reason = self.retry_finish_reason
+            self.generator_calls += 1
+            if call_type == "generator" and self.generator_calls == 1:
+                content = '{"analysis":"truncated"'
+                finish_reason = "length"
+            else:
+                content = self.retry_content
+                finish_reason = self.retry_finish_reason
         return LLMResponse(
             content=content,
             model="test-model",
@@ -55,6 +63,26 @@ class TruncatingProvider:
 class FailingProvider:
     def generate(self, prompt: str) -> LLMResponse:
         raise RuntimeError("simulated API outage")
+
+
+class PlannerFailingProvider:
+    def generate(self, prompt: str, *, call_config=None) -> LLMResponse:
+        call_type = call_config.call_type if call_config else "generator"
+        if call_type == "knowledge_router":
+            return LLMResponse(
+                content=json.dumps(
+                    {
+                        "domain": "ascendc",
+                        "topics": [],
+                        "doc_ids": [],
+                        "supplements": [],
+                        "reason": "test",
+                    }
+                ),
+                model="test-model",
+                usage={"total_tokens": 1},
+            )
+        raise RuntimeError("simulated planner outage")
 
 
 class EmptyRouterThenSuccessProvider:
@@ -89,6 +117,8 @@ class EmptyRouterThenSuccessProvider:
                     "reason": "retry succeeded",
                 }
             )
+        elif call_config and call_config.call_type in {"planner", "diagnose"}:
+            content = _plan_response(initial="Return exactly one complete baseline item" in prompt)
         else:
             content = _valid_bundle_response()
         return LLMResponse(
@@ -126,13 +156,33 @@ class UnscoredEvaluator:
         return EvalResult(True, True, score=None)
 
 
-class CompilerRepairProvider:
+class InfrastructureThenSuccessEvaluator:
     def __init__(self):
         self.calls = 0
 
-    def generate(self, prompt: str) -> LLMResponse:
+    def evaluate(self, task_dir: Path, round_dir: Path) -> EvalResult:
         self.calls += 1
         if self.calls == 1:
+            return EvalResult(
+                False,
+                False,
+                error="simulated tool timeout",
+                failure_stage="ascendc_build",
+                failure_code="ascendc_build_failed",
+                failure_kind="infrastructure",
+            )
+        return EvalResult(True, True, score=1.0 + self.calls / 10)
+
+
+class CompilerRepairProvider:
+    def __init__(self):
+        self.calls = 0
+        self.generator_calls = 0
+
+    def generate(self, prompt: str, *, call_config=None) -> LLMResponse:
+        self.calls += 1
+        call_type = call_config.call_type if call_config else "generator"
+        if call_type == "knowledge_router":
             content = json.dumps(
                 {
                     "skill": "ascendc-translator",
@@ -142,9 +192,9 @@ class CompilerRepairProvider:
                     "reason": "test",
                 }
             )
-        elif self.calls == 2:
-            content = _valid_bundle_response()
-        else:
+        elif call_type in {"planner", "diagnose"}:
+            content = _plan_response(initial="Return exactly one complete baseline item" in prompt)
+        elif self.generator_calls:
             content = json.dumps(
                 {
                     "analysis": "use the runtime field spelling",
@@ -157,6 +207,10 @@ class CompilerRepairProvider:
                     "delete": [],
                 }
             )
+        else:
+            content = _valid_bundle_response()
+        if call_type in {"generator", "generator_retry"}:
+            self.generator_calls += 1
         return LLMResponse(
             content=content,
             model="test-model",
@@ -252,11 +306,93 @@ def _valid_bundle_response() -> str:
     )
 
 
+def _plan_response(*, initial: bool = False) -> str:
+    return json.dumps(
+        {
+            "diagnosis": "direct baseline design" if initial else "use evaluation evidence",
+            "items": [
+                {
+                    "id": "bootstrap-1" if initial else f"p{index}",
+                    "kind": "correctness" if initial else "performance",
+                    "hypothesis": f"hypothesis {index}",
+                    "change": (
+                        "complete direct AscendC baseline design"
+                        if initial
+                        else f"change {index}"
+                    ),
+                    "expected_signal": (
+                        "compiled, correct, and benchmarked"
+                        if initial
+                        else "higher valid score"
+                    ),
+                }
+                for index in range(1, 2 if initial else 4)
+            ],
+        }
+    )
+
+
+def _write_valid_launch_fixture(kernel_dir: Path, module: str = "_test") -> None:
+    (kernel_dir / "pybind11.cpp").write_text(
+        '''#include <pybind11/pybind11.h>
+extern "C" void test_do(uint32_t blockDim, void *stream, uint8_t *x);
+void run(void *stream, uint8_t *x) { test_do(1, stream, x); }
+PYBIND11_MODULE(''' + module + ''', m) {}
+''',
+        encoding="utf-8",
+    )
+    (kernel_dir / "test.cpp").write_text(
+        '''extern "C" __global__ __aicore__ void test_custom(GM_ADDR x) {}
+extern "C" void test_do(uint32_t blockDim, void *stream, uint8_t *x)
+{
+    test_custom<<<blockDim, nullptr, stream>>>(x);
+}
+''',
+        encoding="utf-8",
+    )
+
+
 class BundleTests(unittest.TestCase):
     def test_rejects_path_traversal(self) -> None:
         payload = {"files": [{"path": "../escape.cpp", "content": "bad"}]}
         with self.assertRaisesRegex(ValueError, "unsafe file path"):
             parse_file_bundle(json.dumps(payload))
+
+
+class PromptTests(unittest.TestCase):
+    def test_edit_and_plan_prompts_exclude_full_evaluation_logs(self) -> None:
+        marker = "FULL_LOG_SHOULD_NOT_BE_IN_PROMPT"
+        result = EvalResult(
+            False,
+            False,
+            compile_output=marker * 1000,
+            error="AscendC build failed",
+            failure_stage="ascendc_build",
+            failure_code="ascendc_build_failed",
+            error_excerpt="kernel.cpp:1: error: concise failure",
+        )
+        bundle = parse_file_bundle(_valid_bundle_response())
+        edit_prompt = build_prompt(
+            reference_code="class Model: pass",
+            cases_text="{}",
+            current=bundle,
+            previous_result=result,
+            round_num=2,
+            knowledge_context="facts",
+        )
+        plan_prompt = build_plan_prompt(
+            reference_code="class Model: pass",
+            cases_text="{}",
+            current=bundle,
+            result=result,
+            mode="bootstrap",
+            history=[{"round": 1, "decision": "FAIL", "evaluation": result.to_dict()}],
+        )
+
+        self.assertNotIn(marker, edit_prompt)
+        self.assertNotIn(marker, plan_prompt)
+        self.assertIn("concise failure", edit_prompt)
+        self.assertIn("concise failure", plan_prompt)
 
 
 class EvaluatorTests(unittest.TestCase):
@@ -266,10 +402,7 @@ class EvaluatorTests(unittest.TestCase):
             kernel_dir = task_dir / "kernel"
             kernel_dir.mkdir()
             (task_dir / "model_new_ascendc.py").write_text("class ModelNew: pass\n", encoding="utf-8")
-            (kernel_dir / "pybind11.cpp").write_text(
-                "PYBIND11_MODULE(_test_ext, m) {}\n", encoding="utf-8"
-            )
-            (kernel_dir / "test.cpp").write_text("// kernel\n", encoding="utf-8")
+            _write_valid_launch_fixture(kernel_dir, "_test_ext")
             evaluator = LocalAscendEvaluator(device=0, soc_version="Ascend910B3")
 
             with patch("ascendc_multi_turn.evaluator._run", return_value=(1, "expected stop")) as run:
@@ -291,8 +424,7 @@ class EvaluatorTests(unittest.TestCase):
             kernel_dir.mkdir(parents=True)
             round_dir.mkdir(parents=True)
             (task_dir / "model_new_ascendc.py").write_text("class ModelNew: pass\n", encoding="utf-8")
-            (kernel_dir / "pybind11.cpp").write_text("PYBIND11_MODULE(_gelu, m) {}\n", encoding="utf-8")
-            (kernel_dir / "gelu.cpp").write_text("// kernel\n", encoding="utf-8")
+            _write_valid_launch_fixture(kernel_dir, "_gelu")
             build_output = "\n".join(
                 [
                     "gelu_kernel.cpp:25:9: error: use of undeclared identifier 'CopyTiling'",
@@ -337,7 +469,7 @@ class EvaluatorTests(unittest.TestCase):
             with patch("ascendc_multi_turn.evaluator._run", return_value=(0, "static passed")) as run:
                 result = evaluator.evaluate(task_dir, round_dir)
 
-            self.assertEqual(run.call_count, 1)
+            self.assertEqual(run.call_count, 0)
             self.assertEqual(result.failure_stage, "ascendc_source_validation")
             self.assertIn("TPipe does not own EnQue", result.error_excerpt)
 
@@ -365,6 +497,23 @@ class EvaluatorTests(unittest.TestCase):
             self.assertIn("Timed out after 3s", output)
             self.assertEqual(log_path.read_text(encoding="utf-8"), output)
 
+    def test_tool_timeout_is_classified_as_infrastructure(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            task_dir = Path(temporary) / "task"
+            round_dir = task_dir / ".llm_state" / "round_01"
+            kernel_dir = task_dir / "kernel"
+            kernel_dir.mkdir(parents=True)
+            round_dir.mkdir(parents=True)
+            (task_dir / "model_new_ascendc.py").write_text("class ModelNew: pass\n", encoding="utf-8")
+            _write_valid_launch_fixture(kernel_dir)
+            evaluator = LocalAscendEvaluator(device=0, soc_version="Ascend910B3")
+
+            with patch("ascendc_multi_turn.evaluator._run", return_value=(124, "Timed out")):
+                result = evaluator.evaluate(task_dir, round_dir)
+
+            self.assertEqual(result.failure_stage, "static_validation")
+            self.assertEqual(result.failure_kind, "infrastructure")
+
     def test_static_correctness_and_performance_failures_are_classified(self) -> None:
         scenarios = {
             "static_validation": [1],
@@ -379,8 +528,7 @@ class EvaluatorTests(unittest.TestCase):
                 kernel_dir.mkdir(parents=True)
                 round_dir.mkdir(parents=True)
                 (task_dir / "model_new_ascendc.py").write_text("class ModelNew: pass\n", encoding="utf-8")
-                (kernel_dir / "pybind11.cpp").write_text("PYBIND11_MODULE(_test, m) {}\n", encoding="utf-8")
-                (kernel_dir / "test.cpp").write_text("// kernel\n", encoding="utf-8")
+                _write_valid_launch_fixture(kernel_dir)
                 codes = iter(return_codes)
 
                 def fake_run(command, *, env, timeout, log_path=None):
@@ -455,9 +603,11 @@ class RunnerTests(unittest.TestCase):
             summary = MultiTurnRunner(config, MockProvider(), MockEvaluator()).run()
 
             self.assertTrue(summary["success"])
-            self.assertEqual(summary["rounds_completed"], 3)
-            self.assertEqual(summary["best_round"], 3)
-            self.assertAlmostEqual(summary["best_score"], 1.3)
+            self.assertEqual(summary["rounds_completed"], 4)
+            self.assertEqual(summary["bootstrap_attempts_completed"], 1)
+            self.assertEqual(summary["optimization_rounds_completed"], 3)
+            self.assertEqual(summary["best_round"], 4)
+            self.assertAlmostEqual(summary["best_score"], 1.4)
             self.assertGreater(summary["token_usage"]["total_tokens"], 0)
             self.assertTrue((output / "model_new_ascendc.py").is_file())
             self.assertTrue((output / "kernel" / "mock.cpp").is_file())
@@ -469,17 +619,44 @@ class RunnerTests(unittest.TestCase):
             self.assertNotIn('"content"', calls)
             self.assertIn('"call_type": "knowledge_router"', calls)
             self.assertIn('"call_type": "generator"', calls)
+            self.assertIn('"call_type": "planner"', calls)
             call_records = [json.loads(line) for line in calls.splitlines()]
+            self.assertEqual(
+                [item["call_type"] for item in call_records[:3]],
+                ["knowledge_router", "planner", "generator"],
+            )
             self.assertEqual(
                 sum(item["call_type"] == "knowledge_router" for item in call_records),
                 1,
             )
+            trajectory = json.loads(
+                (output / ".llm_state" / "trajectory.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(trajectory["rounds"][0]["plan_item"]["id"], "bootstrap-1")
+            initial_plan = json.loads(
+                (output / ".llm_state" / "planner_v01" / "result.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            self.assertEqual(len(initial_plan["items"]), 1)
+            references = (output / ".llm_state" / "round_01" / "references.md").read_text(
+                encoding="utf-8"
+            )
+            self.assertNotIn("TileLang", references)
+            self.assertNotIn("dsl2Ascendc", references)
+            selected = json.loads(
+                (output / ".llm_state" / "round_01" / "selected_knowledge.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            self.assertEqual(selected["domain"], "ascendc")
+            self.assertNotIn("skill", selected)
             self.assertTrue((output / ".llm_state" / "knowledge_state.json").is_file())
             self.assertTrue((output / ".llm_state" / "round_02" / "knowledge_reuse.json").is_file())
             self.assertEqual(summary["last_round"]["decision"], "KEEP")
             self.assertIsNone(summary["failure"])
 
-    def test_build_failure_gets_one_same_round_compiler_repair(self) -> None:
+    def test_build_failure_uses_a_later_planned_edit_without_same_round_repair(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             source = root / "model.py"
@@ -492,53 +669,98 @@ class RunnerTests(unittest.TestCase):
             summary = MultiTurnRunner(config, provider, evaluator).run()
 
             self.assertTrue(summary["success"])
-            self.assertEqual(provider.calls, 3)
-            self.assertEqual(evaluator.calls, 2)
+            self.assertEqual(evaluator.calls, 3)
             repair_dir = output / ".llm_state" / "round_01" / "repair_01"
-            self.assertTrue((repair_dir / "prompt.txt").is_file())
-            self.assertTrue((repair_dir / "response.txt").is_file())
-            self.assertTrue((repair_dir / "candidate.json").is_file())
+            self.assertFalse(repair_dir.exists())
             trajectory = json.loads(
                 (output / ".llm_state" / "trajectory.json").read_text(encoding="utf-8")
             )
             record = trajectory["rounds"][0]
-            self.assertEqual(record["compile_repair_attempts"], 1)
-            self.assertEqual(len(record["evaluation_attempts"]), 2)
+            self.assertEqual(record["decision"], "FAIL")
+            self.assertEqual(record["compile_repair_attempts"], 0)
+            self.assertEqual(len(record["evaluation_attempts"]), 1)
             calls = [
                 json.loads(line)["call_type"]
                 for line in (output / ".llm_state" / "calls.jsonl").read_text(encoding="utf-8").splitlines()
             ]
-            self.assertEqual(calls, ["knowledge_router", "generator", "compile_repair"])
+            self.assertNotIn("compile_repair", calls)
+            self.assertIn("planner", calls)
 
-    def test_regressing_compiler_repair_restores_the_pre_repair_candidate(self) -> None:
+    def test_bootstrap_budget_exhaustion_is_blocked_and_resumable(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             source = root / "model.py"
             source.write_text("class Model: pass\n", encoding="utf-8")
             output = root / "generated"
-            config = RunConfig(str(source), str(output), max_rounds=1, evaluator="mock", mock=True)
+            config = RunConfig(
+                str(source), str(output), max_rounds=1, max_bootstrap_rounds=1,
+                evaluator="mock", mock=True
+            )
 
-            summary = MultiTurnRunner(
-                config, CompilerRepairProvider(), RepairRegressionEvaluator()
-            ).run()
+            summary = MultiTurnRunner(config, MockProvider(), RepeatingBuildFailureEvaluator()).run()
 
             self.assertFalse(summary["success"])
             self.assertEqual(summary["rounds_completed"], 1)
-            self.assertIn(
-                "original API failure",
-                summary["last_evaluation_failure"]["excerpt"],
+            self.assertEqual(summary["status"], "blocked")
+            self.assertFalse(summary["completed"])
+            self.assertEqual(summary["pending_phase"], "BOOTSTRAP")
+            self.assertFalse((output / ".llm_state" / "DONE").exists())
+
+    def test_total_round_budget_blocks_after_exact_failed_candidate_count(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "model.py"
+            source.write_text("class Model: pass\n", encoding="utf-8")
+            output = root / "generated"
+            config = RunConfig(
+                str(source),
+                str(output),
+                max_rounds=10,
+                max_bootstrap_rounds=10,
+                max_total_rounds=2,
+                evaluator="mock",
+                mock=True,
             )
-            self.assertEqual(
-                (output / "kernel" / "retry.cpp").read_text(encoding="utf-8"),
-                "// AscendC retry kernel\n",
+
+            summary = MultiTurnRunner(
+                config, MockProvider(), RepeatingBuildFailureEvaluator()
+            ).run()
+
+            self.assertFalse(summary["success"])
+            self.assertEqual(summary["status"], "blocked")
+            self.assertEqual(summary["stop_reason"], "max_total_rounds")
+            self.assertEqual(summary["evaluations_completed"], 2)
+            self.assertEqual(summary["bootstrap_attempts_completed"], 2)
+            self.assertEqual(summary["optimization_rounds_completed"], 0)
+            self.assertEqual(summary["total_rounds_limit"], 2)
+            self.assertFalse((output / ".llm_state" / "DONE").exists())
+
+    def test_total_round_budget_spans_bootstrap_and_optimization(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "model.py"
+            source.write_text("class Model: pass\n", encoding="utf-8")
+            output = root / "generated"
+            config = RunConfig(
+                str(source),
+                str(output),
+                max_rounds=10,
+                max_bootstrap_rounds=10,
+                max_total_rounds=3,
+                evaluator="mock",
+                mock=True,
             )
-            trajectory = json.loads(
-                (output / ".llm_state" / "trajectory.json").read_text(encoding="utf-8")
-            )
-            self.assertIn("restored pre-repair", trajectory["rounds"][0]["repair_error"])
-            self.assertTrue(
-                (output / ".llm_state" / "round_01" / "repair_01" / "repair_regression.log").is_file()
-            )
+
+            summary = MultiTurnRunner(config, MockProvider(), MockEvaluator()).run()
+
+            self.assertTrue(summary["success"])
+            self.assertTrue(summary["completed"])
+            self.assertEqual(summary["status"], "completed")
+            self.assertEqual(summary["stop_reason"], "max_total_rounds")
+            self.assertEqual(summary["evaluations_completed"], 3)
+            self.assertEqual(summary["bootstrap_attempts_completed"], 1)
+            self.assertEqual(summary["optimization_rounds_completed"], 2)
+            self.assertTrue((output / ".llm_state" / "DONE").exists())
 
     def test_repeated_failure_never_reopens_the_full_knowledge_index(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -546,18 +768,23 @@ class RunnerTests(unittest.TestCase):
             source = root / "model.py"
             source.write_text("class Model: pass\n", encoding="utf-8")
             output = root / "generated"
-            config = RunConfig(str(source), str(output), max_rounds=3, evaluator="mock", mock=True)
+            config = RunConfig(
+                str(source), str(output), max_rounds=3, max_bootstrap_rounds=4,
+                evaluator="mock", mock=True
+            )
 
             summary = MultiTurnRunner(
                 config, MockProvider(), RepeatingBuildFailureEvaluator()
             ).run()
 
-            self.assertEqual(summary["rounds_completed"], 3)
+            self.assertEqual(summary["rounds_completed"], 4)
+            self.assertEqual(summary["status"], "blocked")
             calls = [
                 json.loads(line)
                 for line in (output / ".llm_state" / "calls.jsonl").read_text(encoding="utf-8").splitlines()
             ]
             self.assertEqual(sum(item["call_type"] == "knowledge_router" for item in calls), 1)
+            self.assertEqual(sum(item["call_type"] == "diagnose" for item in calls), 1)
             state = json.loads(
                 (output / ".llm_state" / "knowledge_state.json").read_text(encoding="utf-8")
             )
@@ -587,9 +814,10 @@ class RunnerTests(unittest.TestCase):
             resumed = RunConfig(str(source), str(output), max_rounds=2, evaluator="mock", mock=True, resume=True)
             summary = MultiTurnRunner(resumed, MockProvider(), MockEvaluator()).run()
 
-            self.assertEqual(summary["rounds_completed"], 2)
+            self.assertEqual(summary["rounds_completed"], 3)
+            self.assertEqual(summary["optimization_rounds_completed"], 2)
             trajectory = json.loads((output / ".llm_state" / "trajectory.json").read_text(encoding="utf-8"))
-            self.assertEqual([item["round"] for item in trajectory["rounds"]], [1, 2])
+            self.assertEqual([item["round"] for item in trajectory["rounds"]], [1, 2, 3])
 
     def test_resume_migrates_legacy_non_evaluation_failures_without_id_collision(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -604,7 +832,7 @@ class RunnerTests(unittest.TestCase):
             trajectory = json.loads(trajectory_path.read_text(encoding="utf-8"))
             trajectory["rounds"].append(
                 {
-                    "round": 2,
+                    "round": 3,
                     "decision": "LLM_FAIL",
                     # Historical orchestration failures could contain a
                     # synthetic evaluation_attempts entry without ever
@@ -633,12 +861,12 @@ class RunnerTests(unittest.TestCase):
             provider = MockProvider()
             summary = MultiTurnRunner(resumed, provider, MockEvaluator()).run()
 
-            self.assertEqual(summary["rounds_completed"], 2)
-            self.assertEqual(summary["historical_records"], 3)
+            self.assertEqual(summary["rounds_completed"], 3)
+            self.assertEqual(summary["historical_records"], 4)
             trajectory = json.loads(trajectory_path.read_text(encoding="utf-8"))
-            self.assertEqual([item["round"] for item in trajectory["rounds"]], [1, 2, 3])
-            self.assertEqual(trajectory["rounds"][-1]["evaluation_round"], 2)
-            self.assertTrue((output / ".llm_state" / "round_03" / "candidate.json").is_file())
+            self.assertEqual([item["round"] for item in trajectory["rounds"]], [1, 2, 3, 4])
+            self.assertEqual(trajectory["rounds"][-1]["evaluation_round"], 3)
+            self.assertTrue((output / ".llm_state" / "round_04" / "candidate.json").is_file())
             self.assertEqual(provider.calls, 1)
             self.assertEqual(trajectory["status"], "completed")
 
@@ -654,7 +882,7 @@ class RunnerTests(unittest.TestCase):
             summary = MultiTurnRunner(config, provider, MockEvaluator()).run()
 
             self.assertTrue(summary["success"])
-            self.assertEqual(provider.calls, 3)
+            self.assertEqual(provider.calls, 6)
             self.assertTrue((output / ".llm_state" / "round_01" / "retry_prompt.txt").is_file())
             self.assertTrue((output / ".llm_state" / "round_01" / "response_retry_01.txt").is_file())
             calls = [
@@ -663,9 +891,16 @@ class RunnerTests(unittest.TestCase):
             ]
             self.assertEqual(
                 [call["call_type"] for call in calls],
-                ["knowledge_router", "generator", "generator_retry"],
+                [
+                    "knowledge_router",
+                    "planner",
+                    "generator",
+                    "generator_retry",
+                    "planner",
+                    "generator",
+                ],
             )
-            self.assertEqual(summary["token_usage"]["total_tokens"], 6)
+            self.assertGreater(summary["token_usage"]["total_tokens"], 6)
             trajectory = json.loads((output / ".llm_state" / "trajectory.json").read_text(encoding="utf-8"))
             self.assertEqual(trajectory["rounds"][0]["generation_attempts"], 2)
             self.assertEqual(trajectory["rounds"][0]["response_finish_reason"], "stop")
@@ -689,7 +924,7 @@ class RunnerTests(unittest.TestCase):
             summary = MultiTurnRunner(config, provider, MockEvaluator()).run()
 
             self.assertTrue(summary["completed"])
-            self.assertEqual(summary["rounds_completed"], 1)
+            self.assertEqual(summary["rounds_completed"], 2)
             calls = [
                 json.loads(line)
                 for line in (output / ".llm_state" / "calls.jsonl").read_text(encoding="utf-8").splitlines()
@@ -712,7 +947,7 @@ class RunnerTests(unittest.TestCase):
             summary = MultiTurnRunner(config, provider, MockEvaluator()).run()
 
             self.assertFalse(summary["success"])
-            self.assertEqual(provider.calls, 3)
+            self.assertEqual(provider.calls, 4)
             trajectory = json.loads((output / ".llm_state" / "trajectory.json").read_text(encoding="utf-8"))
             self.assertEqual(trajectory["rounds"], [])
             self.assertEqual(summary["rounds_completed"], 0)
@@ -796,7 +1031,7 @@ class RunnerTests(unittest.TestCase):
             payload = json.loads(stdout.getvalue())
             self.assertEqual(exit_code, 0)
             self.assertTrue(payload["success"])
-            self.assertIn("Evaluation 1/1", stderr.getvalue())
+            self.assertIn("Optimization 1", stderr.getvalue())
             self.assertNotIn("started", stdout.getvalue())
 
     def test_llm_exception_pauses_without_consuming_an_evaluation_round(self) -> None:
@@ -851,9 +1086,75 @@ class RunnerTests(unittest.TestCase):
 
             self.assertEqual(first_summary["pending_round"], 1)
             self.assertTrue(second_summary["completed"])
-            self.assertEqual(second_summary["rounds_completed"], 1)
-            self.assertEqual(second_summary["last_round"]["attempt_id"], 1)
+            self.assertEqual(second_summary["rounds_completed"], 2)
+            self.assertEqual(second_summary["last_round"]["attempt_id"], 2)
             self.assertEqual(second_summary["orchestration_failures"], 1)
+
+    def test_initial_planner_failure_pauses_without_consuming_budget_and_resumes(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "model.py"
+            source.write_text("class Model: pass\n", encoding="utf-8")
+            output = root / "generated"
+            failing = RunConfig(
+                str(source),
+                str(output),
+                max_rounds=1,
+                evaluator="mock",
+                mock=True,
+                llm_transient_retries=0,
+            )
+
+            first = MultiTurnRunner(failing, PlannerFailingProvider(), MockEvaluator()).run()
+
+            self.assertEqual(first["status"], "paused")
+            self.assertEqual(first["pending_phase"], "PLAN")
+            self.assertEqual(first["rounds_completed"], 0)
+            self.assertEqual(first["failure"]["stage"], "llm_planning")
+            resumed = RunConfig(
+                str(source),
+                str(output),
+                max_rounds=1,
+                evaluator="mock",
+                mock=True,
+                resume=True,
+            )
+            second = MultiTurnRunner(resumed, MockProvider(), MockEvaluator()).run()
+
+            self.assertTrue(second["completed"])
+            self.assertEqual(second["rounds_completed"], 2)
+            self.assertEqual(second["orchestration_failures"], 1)
+
+    def test_resume_at_eval_checkpoint_does_not_regenerate_candidate(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "model.py"
+            source.write_text("class Model: pass\n", encoding="utf-8")
+            output = root / "generated"
+            evaluator = InfrastructureThenSuccessEvaluator()
+            first_provider = MockProvider()
+            first = RunConfig(str(source), str(output), max_rounds=1, evaluator="mock", mock=True)
+
+            first_summary = MultiTurnRunner(first, first_provider, evaluator).run()
+
+            self.assertEqual(first_summary["status"], "paused")
+            self.assertEqual(first_summary["pending_phase"], "EVAL")
+            self.assertEqual(first_provider.calls, 3)
+            resumed_provider = MockProvider()
+            resumed = RunConfig(
+                str(source), str(output), max_rounds=1, evaluator="mock", mock=True, resume=True
+            )
+            second_summary = MultiTurnRunner(resumed, resumed_provider, evaluator).run()
+
+            self.assertTrue(second_summary["completed"])
+            self.assertEqual(second_summary["baseline_round"], 1)
+            self.assertEqual(second_summary["optimization_rounds_completed"], 1)
+            calls = [
+                json.loads(line)
+                for line in (output / ".llm_state" / "calls.jsonl").read_text(encoding="utf-8").splitlines()
+            ]
+            self.assertEqual(sum(item["call_type"] == "generator" for item in calls), 2)
+            self.assertEqual(sum(item["call_type"] == "generator" and item["round"] == 1 for item in calls), 1)
 
     def test_later_failure_is_visible_without_losing_an_existing_best(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -867,7 +1168,7 @@ class RunnerTests(unittest.TestCase):
 
             self.assertTrue(summary["success"])
             self.assertEqual(summary["best_round"], 1)
-            self.assertEqual(summary["last_round"]["decision"], "DISCARD")
+            self.assertEqual(summary["last_round"]["decision"], "FAIL")
             self.assertEqual(summary["failure"]["stage"], "ascendc_build")
 
     def test_legacy_failure_is_inferred_without_inventing_a_log_path(self) -> None:

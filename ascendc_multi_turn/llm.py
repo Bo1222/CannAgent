@@ -144,6 +144,53 @@ class MockProvider:
 
     def generate(self, prompt: str, *, call_config: LLMCallConfig | None = None) -> LLMResponse:
         self.calls += 1
+        if call_config and call_config.call_type in {"planner", "diagnose"}:
+            initial = "Return exactly one complete baseline item" in prompt
+            content = json.dumps(
+                {
+                    "diagnosis": (
+                        "mock direct AscendC baseline plan"
+                        if initial
+                        else "mock evidence-driven plan"
+                    ),
+                    "items": [
+                        {
+                            "id": "bootstrap-1" if initial else f"p{index}",
+                            "kind": "correctness" if initial else "performance",
+                            "hypothesis": f"mock hypothesis {index}",
+                            "change": (
+                                "implement one complete direct AscendC baseline"
+                                if initial
+                                else f"apply mock change {index}"
+                            ),
+                            "expected_signal": (
+                                "valid compiled and benchmarked candidate"
+                                if initial
+                                else "higher valid score"
+                            ),
+                        }
+                        for index in range(1, 2 if initial else 4)
+                    ],
+                }
+            )
+            prompt_tokens = max(1, len(prompt) // 4)
+            completion_tokens = max(1, len(content) // 4)
+            return LLMResponse(
+                content=content,
+                model="mock",
+                usage={
+                    "prompt_tokens": prompt_tokens,
+                    "completion_tokens": completion_tokens,
+                    "total_tokens": prompt_tokens + completion_tokens,
+                },
+                requested_model="mock",
+                request_options={
+                    "call_type": call_config.call_type,
+                    "max_tokens": call_config.max_tokens,
+                    "thinking_requested": call_config.thinking,
+                    "reasoning_effort_requested": call_config.reasoning_effort,
+                },
+            )
         module = "_mock_ascendc_ext"
         payload = {
             "analysis": f"mock generation round {self.calls}",

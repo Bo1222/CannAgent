@@ -46,6 +46,7 @@ class EvalResult:
     failure_code: str | None = None
     error_excerpt: str = ""
     details_path: str | None = None
+    failure_kind: str = "candidate"
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -76,6 +77,7 @@ class RunConfig:
     base_url: str = ""
     provider: str = field(default_factory=lambda: get_env("LLM_PROVIDER", "deepseek"))
     max_rounds: int = 3
+    max_bootstrap_rounds: int = 8
     temperature: float = field(default_factory=lambda: float(get_env("ASCENDC_LLM_TEMPERATURE", "0.2")))
     # max_tokens is the legacy blanket override. New callers should use the
     # per-call fields below so routing cannot consume the code-generation
@@ -90,12 +92,17 @@ class RunConfig:
     mock: bool = False
     router_max_tokens: int | None = None
     generator_max_tokens: int | None = None
+    planner_max_tokens: int | None = None
     repair_max_tokens: int | None = None
     router_thinking: str = field(default_factory=lambda: get_env("ASCENDC_ROUTER_THINKING", "disabled"))
     generator_thinking: str = field(default_factory=lambda: get_env("ASCENDC_GENERATOR_THINKING", "enabled"))
+    planner_thinking: str = field(default_factory=lambda: get_env("ASCENDC_PLANNER_THINKING", "disabled"))
     repair_thinking: str = field(default_factory=lambda: get_env("ASCENDC_REPAIR_THINKING", "enabled"))
     generator_reasoning_effort: str = field(
         default_factory=lambda: get_env("ASCENDC_GENERATOR_REASONING_EFFORT", "high")
+    )
+    planner_reasoning_effort: str = field(
+        default_factory=lambda: get_env("ASCENDC_PLANNER_REASONING_EFFORT", "low")
     )
     repair_reasoning_effort: str = field(
         default_factory=lambda: get_env("ASCENDC_REPAIR_REASONING_EFFORT", "max")
@@ -103,12 +110,22 @@ class RunConfig:
     llm_transient_retries: int = field(
         default_factory=lambda: int(get_env("ASCENDC_LLM_TRANSIENT_RETRIES", "3"))
     )
+    # Kept at the end of the public init fields so existing positional
+    # RunConfig callers retain their argument order.
+    max_total_rounds: int | None = None
     legacy_max_tokens_active: bool = field(default=False, init=False)
+    deprecated_repair_options_active: bool = field(default=False, init=False)
 
     def __post_init__(self) -> None:
         self.provider = self.provider.lower()
         if self.provider not in {"deepseek", "openai"}:
             raise ValueError("provider must be 'deepseek' or 'openai'")
+        if self.max_rounds < 1:
+            raise ValueError("max_rounds must be at least 1")
+        if self.max_bootstrap_rounds < 1:
+            raise ValueError("max_bootstrap_rounds must be at least 1")
+        if self.max_total_rounds is not None and self.max_total_rounds < 1:
+            raise ValueError("max_total_rounds must be at least 1")
         prefix = "DEEPSEEK" if self.provider == "deepseek" else "OPENAI"
         if not self.model:
             self.model = get_env(
@@ -126,6 +143,7 @@ class RunConfig:
         specific_overrides = (
             self.router_max_tokens is not None or bool(get_env("ASCENDC_ROUTER_MAX_TOKENS", "").strip()),
             self.generator_max_tokens is not None or bool(get_env("ASCENDC_GENERATOR_MAX_TOKENS", "").strip()),
+            self.planner_max_tokens is not None or bool(get_env("ASCENDC_PLANNER_MAX_TOKENS", "").strip()),
             self.repair_max_tokens is not None or bool(get_env("ASCENDC_REPAIR_MAX_TOKENS", "").strip()),
         )
         self.legacy_max_tokens_active = legacy_cli_limit is not None or bool(
@@ -155,17 +173,20 @@ class RunConfig:
         self.generator_max_tokens = resolve_limit(
             self.generator_max_tokens, "ASCENDC_GENERATOR_MAX_TOKENS", 65536
         )
+        self.planner_max_tokens = resolve_limit(
+            self.planner_max_tokens, "ASCENDC_PLANNER_MAX_TOKENS", 8192
+        )
         self.repair_max_tokens = resolve_limit(
             self.repair_max_tokens, "ASCENDC_REPAIR_MAX_TOKENS", 65536
         )
         if self.llm_transient_retries < 0:
             raise ValueError("llm_transient_retries must be non-negative")
-        for name in ("router_thinking", "generator_thinking", "repair_thinking"):
+        for name in ("router_thinking", "generator_thinking", "planner_thinking", "repair_thinking"):
             value = getattr(self, name).lower()
             if value not in {"enabled", "disabled"}:
                 raise ValueError(f"{name} must be 'enabled' or 'disabled'")
             setattr(self, name, value)
-        for name in ("generator_reasoning_effort", "repair_reasoning_effort"):
+        for name in ("generator_reasoning_effort", "planner_reasoning_effort", "repair_reasoning_effort"):
             value = getattr(self, name).lower()
             if value not in {"low", "high", "max"}:
                 raise ValueError(f"{name} must be low, high, or max")
@@ -178,12 +199,12 @@ class RunConfig:
                 max_tokens=int(self.router_max_tokens),
                 thinking=self.router_thinking,
             )
-        if call_type in {"compile_repair"}:
+        if call_type in {"planner", "diagnose"}:
             return LLMCallConfig(
                 call_type=call_type,
-                max_tokens=int(self.repair_max_tokens),
-                thinking=self.repair_thinking,
-                reasoning_effort=self.repair_reasoning_effort,
+                max_tokens=int(self.planner_max_tokens),
+                thinking=self.planner_thinking,
+                reasoning_effort=self.planner_reasoning_effort,
             )
         return LLMCallConfig(
             call_type=call_type,

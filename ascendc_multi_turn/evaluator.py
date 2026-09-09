@@ -4,6 +4,7 @@ import json
 import math
 import os
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -103,6 +104,7 @@ def _failure(
     details_path: Path | None,
     compile_output: str = "",
     verify_output: str = "",
+    failure_kind: str = "candidate",
 ) -> EvalResult:
     return EvalResult(
         compiled=compiled,
@@ -114,7 +116,12 @@ def _failure(
         failure_code=code,
         error_excerpt=extract_error_excerpt(output),
         details_path=str(details_path.resolve()) if details_path is not None else None,
+        failure_kind=failure_kind,
     )
+
+
+def _return_code_kind(return_code: int) -> str:
+    return "infrastructure" if return_code in {124, 126, 127} else "candidate"
 
 
 class LocalAscendEvaluator:
@@ -130,6 +137,48 @@ class LocalAscendEvaluator:
         self.soc_version = soc_version
         self.timeout = timeout
         self.progress = progress or ProgressReporter()
+
+    def preflight(self, task_dir: Path, state_dir: Path) -> EvalResult | None:
+        log_path = state_dir / "environment_preflight.log"
+        failures: list[str] = []
+        if shutil.which("cmake") is None:
+            failures.append("cmake is not available on PATH")
+        for path in (
+            REPO_ROOT / "utils/build_ascendc.py",
+            REPO_ROOT / "utils/verification_ascendc.py",
+            REPO_ROOT / "skills/ascendc/ascendc-translator/scripts/validate_ascendc_impl.py",
+        ):
+            if not path.is_file():
+                failures.append(f"required tool does not exist: {path}")
+        if not failures:
+            env = os.environ.copy()
+            env["ASCEND_RT_VISIBLE_DEVICES"] = str(self.device)
+            rc, output = _run(
+                [
+                    sys.executable,
+                    "-c",
+                    "import torch, torch_npu; assert torch.npu.is_available(), 'NPU is unavailable'",
+                ],
+                env=env,
+                timeout=min(self.timeout, 60),
+                log_path=log_path,
+            )
+            if rc == 0:
+                return None
+            failures.append(output or f"NPU runtime preflight exited with {rc}")
+        message = "environment preflight failed"
+        output = "\n".join(failures)
+        _write_log(log_path, output + "\n")
+        return _failure(
+            compiled=False,
+            correctness=False,
+            stage="environment_preflight",
+            code="environment_preflight_failed",
+            message=message,
+            output=output,
+            details_path=log_path,
+            failure_kind="infrastructure",
+        )
 
     def evaluate(self, task_dir: Path, round_dir: Path) -> EvalResult:
         try:
@@ -151,6 +200,24 @@ class LocalAscendEvaluator:
         env = os.environ.copy()
         env["ASCEND_RT_VISIBLE_DEVICES"] = str(self.device)
         python = sys.executable
+        source_log = round_dir / "source_validation.log"
+        task = self.progress.start(f"{round_dir.name} · AscendC source validation")
+        source_issues = validate_source_tree(task_dir)
+        source_output = render_issues(source_issues)
+        _write_log(source_log, source_output + ("\n" if source_output else ""))
+        task.finish(status="failed" if source_issues else "passed", detail=f"issues={len(source_issues)}")
+        if source_issues:
+            return _failure(
+                compiled=False,
+                correctness=False,
+                stage="ascendc_source_validation",
+                code="ascendc_source_validation_failed",
+                message="AscendC source validation failed",
+                output=source_output,
+                details_path=source_log,
+                compile_output=source_output,
+            )
+
         validator = REPO_ROOT / "skills/ascendc/ascendc-translator/scripts/validate_ascendc_impl.py"
         static_log = round_dir / "static_validation.log"
         task = self.progress.start(f"{round_dir.name} · static validation")
@@ -178,24 +245,7 @@ class LocalAscendEvaluator:
                 output=static_full_output,
                 details_path=static_log,
                 compile_output=static_full_output,
-            )
-
-        source_log = round_dir / "source_validation.log"
-        task = self.progress.start(f"{round_dir.name} · AscendC source validation")
-        source_issues = validate_source_tree(task_dir)
-        source_output = render_issues(source_issues)
-        _write_log(source_log, source_output + ("\n" if source_output else ""))
-        task.finish(status="failed" if source_issues else "passed", detail=f"issues={len(source_issues)}")
-        if source_issues:
-            return _failure(
-                compiled=False,
-                correctness=False,
-                stage="ascendc_source_validation",
-                code="ascendc_source_validation_failed",
-                message="AscendC source validation failed",
-                output=source_output,
-                details_path=source_log,
-                compile_output=f"{static_output}\n{source_output}".strip(),
+                failure_kind=_return_code_kind(rc),
             )
 
         build_log = round_dir / "build.log"
@@ -219,6 +269,7 @@ class LocalAscendEvaluator:
                 output=build_full_output,
                 details_path=build_log,
                 compile_output=f"{static_output}\n{build_full_output}".strip(),
+                failure_kind=_return_code_kind(rc),
             )
 
         correctness_log = round_dir / "correctness.log"
@@ -242,6 +293,7 @@ class LocalAscendEvaluator:
                 details_path=correctness_log,
                 compile_output=compile_output,
                 verify_output=verify_full_output,
+                failure_kind=_return_code_kind(rc),
             )
 
         perf_path = round_dir / "performance.json"
@@ -281,6 +333,7 @@ class LocalAscendEvaluator:
                 details_path=performance_log,
                 compile_output=compile_output,
                 verify_output=verify_output,
+                failure_kind=_return_code_kind(rc),
             )
         try:
             performance = json.loads(perf_path.read_text(encoding="utf-8"))
