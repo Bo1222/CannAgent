@@ -7,6 +7,7 @@ Secrets must never be included.
 
 ### Changes
 
+- Added the M0 offline `knowledge_v2` compiler MVP with deterministic Markdown normalization, structured documents, provenance-bearing atomic parameter facts, a query API, real DataCopyPad coverage, and a phase TODO/report without changing runtime Agent behavior.
 - Added the semantic knowledge target architecture and M0-M5 migration specifications under `repo_ascendc/` as the staged implementation contract for the offline compiler, snapshots, router, failure pipeline, validator, and experience loop.
 - Began functionally decoupling `ascendc_multi_turn` knowledge routing from TileLang: direct routing now uses an `ascendc` domain, excludes all `dsl2Ascendc_*` supplements, accepts legacy router output for compatibility, and removes stale DSL supplements when loading resumable knowledge state.
 - Added a dedicated one-item initial planning contract that requires a complete direct AscendC baseline blueprint and explicitly rejects TileLang, DSL intermediates, and source-to-source conversion.
@@ -26,6 +27,7 @@ Secrets must never be included.
 
 ### Validation
 
+- Validated M0 against the real CANN 8.5.0 DataCopyPad page, including two context-preserving `blockLen` rows, schema round trips, source hashes, section evidence, and legacy repository regressions.
 - Passed all 76 repository unit tests, including initial-plan failure/resume, legacy DSL-state sanitation, direct knowledge selection, planning, source safety, evaluator, and checkpoint coverage.
 - Passed Python compilation, Ruff checks, and `git diff --check`.
 - Completed a no-NPU mock run with call order `knowledge_router -> planner -> generator -> planner -> generator`; round one used the single `bootstrap-1` plan item, new knowledge artifacts recorded `domain=ascendc` without a `skill` field, and the generation knowledge/prompt artifacts contained no TileLang or `dsl2Ascendc` references.
