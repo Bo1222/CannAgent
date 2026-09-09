@@ -88,6 +88,9 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--device", type=int, default=0)
     result.add_argument("--soc-version", default="Ascend910B3")
     result.add_argument("--cann-version", default="auto", help="installed CANN version or 'auto'")
+    result.add_argument("--knowledge-mode", choices=("legacy", "semantic"), default="legacy")
+    result.add_argument("--knowledge-store", default="")
+    result.add_argument("--knowledge-snapshot", default=None)
     result.add_argument("--resume", action="store_true")
     result.add_argument("--quiet", action="store_true", help="suppress progress and failure details on stderr")
     result.add_argument("--mock", action="store_true", help="exercise orchestration without API calls, compilation, or NPU")
@@ -137,6 +140,9 @@ def main() -> int:
         device=args.device,
         soc_version=args.soc_version,
         cann_version=args.cann_version,
+        knowledge_mode=args.knowledge_mode,
+        knowledge_store=args.knowledge_store,
+        knowledge_snapshot=args.knowledge_snapshot,
         evaluator="mock" if args.mock else "local",
         resume=args.resume,
         mock=args.mock,

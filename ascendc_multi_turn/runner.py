@@ -24,6 +24,13 @@ from .knowledge import (
     selection_from_state,
 )
 from .llm import LLMProvider
+from .knowledge_v2 import (
+    KnowledgeContext,
+    KnowledgeRouterV2,
+    SnapshotView,
+    locate_snapshot,
+    render_bundle,
+)
 from .logging import TrajectoryLogger
 from .models import EvalResult, FileBundle, LLMCallConfig, LLMResponse, RunConfig
 from .progress import ProgressReporter, token_detail
@@ -538,6 +545,7 @@ file delta and no Markdown. The response must fit within the output-token limit.
         max_api_docs: int,
         max_knowledge_chars: int,
         knowledge_state_path: Path,
+        active_plan: dict[str, Any] | None = None,
     ) -> tuple[Any, str]:
         evidence_parts = [reference, cases]
         if current:
@@ -545,6 +553,37 @@ file delta and no Markdown. The response must fit within the output-token limit.
         if previous:
             evidence_parts.append(read_result_log(previous))
         evidence = "\n".join(evidence_parts)
+        if self.config.knowledge_mode == "semantic":
+            snapshot_path = locate_snapshot(
+                Path(self.config.knowledge_store),
+                knowledge_version.knowledge_version,
+                self.config.knowledge_snapshot,
+            )
+            context = KnowledgeContext(
+                operator=Path(self.config.op_file).stem,
+                phase="diagnose" if previous and previous.error else "plan_generate",
+                runtime_version=knowledge_version.runtime_version,
+                knowledge_version=knowledge_version.knowledge_version,
+                soc=self.config.soc_version,
+                source_symbols=extract_api_symbols(evidence),
+                failure=previous.to_dict() if previous and previous.error else None,
+                active_plan=active_plan,
+            )
+            bundle = KnowledgeRouterV2(SnapshotView(snapshot_path)).route(context)
+            payload = bundle.to_dict()
+            (round_dir / "knowledge_bundle.json").write_text(
+                json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+            (round_dir / "retrieval_trace.json").write_text(
+                json.dumps(payload["retrieval_trace"], ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            rendered = render_bundle(bundle, max_chars=max_knowledge_chars)
+            (round_dir / "references.md").write_text(rendered, encoding="utf-8")
+            (round_dir / "selected_knowledge.json").write_text(
+                json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+            return bundle, rendered
         candidates = candidate_doc_ids(
             evidence,
             version=knowledge_version,
@@ -690,11 +729,29 @@ file delta and no Markdown. The response must fit within the output-token limit.
         if logger.pending_state().get("pending_phase") == "EVAL" and checkpoint.is_file():
             candidate = self._read_bundle(checkpoint)
             restore_bundle(self.task_dir, candidate)
-            selection = selection_from_state(
-                knowledge_state,
-                version=knowledge_version,
-                mode="resume_eval",
-            )
+            if self.config.knowledge_mode == "semantic":
+                selection, _ = self._knowledge_context(
+                    logger=logger,
+                    knowledge_state=knowledge_state,
+                    knowledge_version=knowledge_version,
+                    reference=reference,
+                    cases=cases,
+                    current=current,
+                    previous=previous,
+                    round_dir=round_dir,
+                    attempt_id=attempt_id,
+                    evaluation_round=evaluation_round,
+                    max_api_docs=max_api_docs,
+                    max_knowledge_chars=max_knowledge_chars,
+                    knowledge_state_path=knowledge_state_path,
+                    active_plan=active_item,
+                )
+            else:
+                selection = selection_from_state(
+                    knowledge_state,
+                    version=knowledge_version,
+                    mode="resume_eval",
+                )
             response = LLMResponse(content="", model="checkpoint", usage={})
             return candidate, base_bundle, selection, response, 1, candidate_path
 
@@ -713,6 +770,7 @@ file delta and no Markdown. The response must fit within the output-token limit.
                 max_api_docs=max_api_docs,
                 max_knowledge_chars=max_knowledge_chars,
                 knowledge_state_path=knowledge_state_path,
+                active_plan=active_item,
             )
         else:
             selection, knowledge_context = prepared_knowledge
@@ -924,6 +982,7 @@ file delta and no Markdown. The response must fit within the output-token limit.
                             max_api_docs=max_api_docs,
                             max_knowledge_chars=max_knowledge_chars,
                             knowledge_state_path=knowledge_state_path,
+                            active_plan=active_item,
                         )
                     except LLMCallFailure as error:
                         path = round_dir / "llm_error.log"

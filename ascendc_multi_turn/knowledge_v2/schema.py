@@ -92,6 +92,53 @@ class PatternCard:
     schema_version: int = SCHEMA_VERSION
 
 
+@dataclass(frozen=True)
+class ProjectContract:
+    contract_id: str
+    subject: str
+    constraint: str
+    provenance: Provenance
+    schema_version: int = SCHEMA_VERSION
+
+
+@dataclass(frozen=True)
+class KnowledgeContext:
+    operator: str
+    phase: str
+    runtime_version: str
+    knowledge_version: str
+    soc: str
+    source_symbols: list[str]
+    failure: dict[str, Any] | None = None
+    active_plan: dict[str, Any] | None = None
+    schema_version: int = SCHEMA_VERSION
+
+
+@dataclass(frozen=True)
+class RetrievalTraceEntry:
+    stage: str
+    candidate: str
+    decision: str
+    reason: str
+    score: float | None = None
+
+
+@dataclass
+class KnowledgeBundle:
+    context: KnowledgeContext
+    api_semantics: list[dict[str, Any]] = field(default_factory=list)
+    relevant_facts: list[dict[str, Any]] = field(default_factory=list)
+    examples: list[str] = field(default_factory=list)
+    failure_cards: list[dict[str, Any]] = field(default_factory=list)
+    project_contracts: list[dict[str, Any]] = field(default_factory=list)
+    provenance: list[dict[str, Any]] = field(default_factory=list)
+    retrieval_trace: list[RetrievalTraceEntry] = field(default_factory=list)
+    schema_version: int = SCHEMA_VERSION
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
 @dataclass
 class NormalizedDocument:
     document_id: str

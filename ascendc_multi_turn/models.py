@@ -113,6 +113,9 @@ class RunConfig:
     # Kept at the end of the public init fields so existing positional
     # RunConfig callers retain their argument order.
     max_total_rounds: int | None = None
+    knowledge_mode: str = "legacy"
+    knowledge_store: str = ""
+    knowledge_snapshot: str | None = None
     legacy_max_tokens_active: bool = field(default=False, init=False)
     deprecated_repair_options_active: bool = field(default=False, init=False)
 
@@ -126,6 +129,11 @@ class RunConfig:
             raise ValueError("max_bootstrap_rounds must be at least 1")
         if self.max_total_rounds is not None and self.max_total_rounds < 1:
             raise ValueError("max_total_rounds must be at least 1")
+        self.knowledge_mode = self.knowledge_mode.lower()
+        if self.knowledge_mode not in {"legacy", "semantic"}:
+            raise ValueError("knowledge_mode must be 'legacy' or 'semantic'")
+        if self.knowledge_mode == "semantic" and not self.knowledge_store:
+            raise ValueError("knowledge_store is required in semantic knowledge mode")
         prefix = "DEEPSEEK" if self.provider == "deepseek" else "OPENAI"
         if not self.model:
             self.model = get_env(

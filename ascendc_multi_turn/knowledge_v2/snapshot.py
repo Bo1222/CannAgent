@@ -121,6 +121,7 @@ def build_snapshot(*, source: Path, output: Path, version: str) -> Path:
         )
         (cards_root / "failure_cards.json").write_text("[]\n", encoding="utf-8")
         (cards_root / "pattern_cards.json").write_text("[]\n", encoding="utf-8")
+        (cards_root / "project_contracts.json").write_text("[]\n", encoding="utf-8")
         symbol_index = {card.api: card.card_id for card in cards}
         (indexes_root / "symbols.json").write_text(
             json.dumps(symbol_index, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
