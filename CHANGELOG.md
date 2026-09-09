@@ -7,6 +7,7 @@ Secrets must never be included.
 
 ### Changes
 
+- Added the semantic knowledge target architecture and M0-M5 migration specifications under `repo_ascendc/` as the staged implementation contract for the offline compiler, snapshots, router, failure pipeline, validator, and experience loop.
 - Began functionally decoupling `ascendc_multi_turn` knowledge routing from TileLang: direct routing now uses an `ascendc` domain, excludes all `dsl2Ascendc_*` supplements, accepts legacy router output for compatibility, and removes stale DSL supplements when loading resumable knowledge state.
 - Added a dedicated one-item initial planning contract that requires a complete direct AscendC baseline blueprint and explicitly rejects TileLang, DSL intermediates, and source-to-source conversion.
 - Changed new-task orchestration to select pure AscendC knowledge, create and persist the initial plan, then generate the first candidate; PLAN and generator reuse the same selected knowledge, while pending EVAL resumes still bypass model calls.
