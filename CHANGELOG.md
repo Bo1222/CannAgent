@@ -7,6 +7,7 @@ Secrets must never be included.
 
 ### Changes
 
+- Added the M1 immutable semantic snapshot builder, API/failure/pattern card schemas, fact validation, context-sensitive conflict reporting, exact symbol indexes, squashed-declaration symbol recovery, load API, offline CLI, tests, and a completed phase report.
 - Added the M0 offline `knowledge_v2` compiler MVP with deterministic Markdown normalization, structured documents, provenance-bearing atomic parameter facts, a query API, real DataCopyPad coverage, and a phase TODO/report without changing runtime Agent behavior.
 - Added the semantic knowledge target architecture and M0-M5 migration specifications under `repo_ascendc/` as the staged implementation contract for the offline compiler, snapshots, router, failure pipeline, validator, and experience loop.
 - Began functionally decoupling `ascendc_multi_turn` knowledge routing from TileLang: direct routing now uses an `ascendc` domain, excludes all `dsl2Ascendc_*` supplements, accepts legacy router output for compatibility, and removes stale DSL supplements when loading resumable knowledge state.
@@ -20,6 +21,7 @@ Secrets must never be included.
 
 ### Analysis
 
+- Snapshot conflict identity includes the complete applicability context; two `blockLen` facts in different parameter structures are context differences rather than mutually exclusive global facts.
 - `ascendc_multi_turn` has no TileLang import, compiler invocation, generated TileLang file, or TileLang evaluation stage. The removed coupling was prompt-level: five allowlisted `dsl2Ascendc_*` supplements could inject translation assumptions into otherwise direct AscendC generation.
 - The shared versioned AscendC API corpus, runtime-header extraction, static validator, build tool, correctness verifier, and performance evaluator are direct AscendC dependencies and remain in use even though some are physically stored below the legacy translator Skill directory.
 - The retained interactive TileLang/translator Skills are separate compatibility entry points; deleting them is unnecessary for functional isolation of the direct multi-turn runner.
@@ -27,6 +29,7 @@ Secrets must never be included.
 
 ### Validation
 
+- Validated deterministic snapshot IDs and rebuild reuse, snapshot load integrity, required DataCopy/DataCopyPad/TPipe/TQue symbol cards, provenance rejection, and context-sensitive conflict handling.
 - Validated M0 against the real CANN 8.5.0 DataCopyPad page, including two context-preserving `blockLen` rows, schema round trips, source hashes, section evidence, and legacy repository regressions.
 - Passed all 76 repository unit tests, including initial-plan failure/resume, legacy DSL-state sanitation, direct knowledge selection, planning, source safety, evaluator, and checkpoint coverage.
 - Passed Python compilation, Ruff checks, and `git diff --check`.

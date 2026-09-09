@@ -43,7 +43,10 @@ class ParameterTableFactExtractor:
                         subject=f"{api}.{parameter}",
                         predicate="parameter_semantics",
                         value={"parameter": parameter, "description": description},
-                        applicability={"api": api},
+                        applicability={
+                            "api": api,
+                            "parameter_structure": f"document_table:{table.table_id}",
+                        },
                         provenance=Provenance(
                             document_id=document.document_id,
                             source_path=document.source_path,

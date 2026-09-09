@@ -88,7 +88,14 @@ class MarkdownNormalizer:
                             if any(marker in cell for marker in _CODE_MARKERS):
                                 code_candidates.append(CodeCandidate(current_section, cell, "table_cell"))
                         index += 1
-                    tables.append(TableNode(current_section, header, rows))
+                    tables.append(
+                        TableNode(
+                            table_id=f"{document_id}::t{len(tables) + 1:03d}",
+                            section_id=current_section,
+                            headers=header,
+                            rows=rows,
+                        )
+                    )
                     continue
             if line.strip() and line.strip() != "---":
                 paragraph = Paragraph(current_section, line.strip())

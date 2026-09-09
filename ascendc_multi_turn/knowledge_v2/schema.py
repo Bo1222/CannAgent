@@ -23,6 +23,7 @@ class Paragraph:
 
 @dataclass(frozen=True)
 class TableNode:
+    table_id: str
     section_id: str
     headers: list[str]
     rows: list[list[str]]
@@ -61,6 +62,34 @@ class AtomicFact:
         values = dict(payload)
         values["provenance"] = Provenance(**values["provenance"])
         return cls(**values)
+
+
+@dataclass(frozen=True)
+class ApiCard:
+    card_id: str
+    api: str
+    fact_ids: list[str]
+    document_ids: list[str]
+    examples: list[str] = field(default_factory=list)
+    schema_version: int = SCHEMA_VERSION
+
+
+@dataclass(frozen=True)
+class FailureCard:
+    card_id: str
+    signals: list[str]
+    subsystem: str
+    inspection_targets: list[str]
+    schema_version: int = SCHEMA_VERSION
+
+
+@dataclass(frozen=True)
+class PatternCard:
+    card_id: str
+    name: str
+    description: str
+    fact_ids: list[str]
+    schema_version: int = SCHEMA_VERSION
 
 
 @dataclass
