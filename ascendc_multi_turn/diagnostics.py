@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from .models import EvalResult
+from .knowledge_v2.schema import StructuredFailure
 
 
 ERROR_LINE = re.compile(
@@ -77,6 +78,47 @@ def extract_api_symbols(*texts: str) -> list[str]:
     return symbols
 
 
+def parse_structured_failure(
+    *, stage: str, output: str, case_info: dict[str, Any] | None = None
+) -> StructuredFailure:
+    lowered = output.lower()
+    runtime_match = re.search(r"\b(ACL_ERROR_[A-Z0-9_]+|[A-Z]+-\d{3,}|(?:50|56)\d{4})\b", output)
+    core_match = re.search(r"\bcore[_ ]?id\s*[:=]\s*(\d+)", output, re.IGNORECASE)
+    block_match = re.search(r"\bblock[_ ]?id\s*[:=]\s*(\d+)", output, re.IGNORECASE)
+    sub_error_match = re.search(r"\bsub[_ ]?error(?:[_ ]?type)?\s*[:=]\s*([^,;\n]+)", output, re.IGNORECASE)
+    if "mte" in lowered:
+        subsystem = "MTE"
+        reason = "illegal configuration" if "illegal configuration" in lowered else "MTE failure"
+    elif "aicore" in lowered or "ai core" in lowered:
+        subsystem = "AICORE"
+        reason = "AI Core exception"
+    elif "acl_error" in lowered or stage.startswith("acl"):
+        subsystem = "ACL"
+        reason = "ACL runtime error"
+    elif stage in {"ascendc_build", "compile", "static_validation", "ascendc_source_validation"}:
+        subsystem = "COMPILER" if stage in {"ascendc_build", "compile"} else "SOURCE"
+        reason = compact_diagnostics(output, max_lines=1, max_chars=1000) or "build validation failure"
+    else:
+        subsystem = "RUNTIME" if stage == "correctness" else stage.upper()
+        reason = compact_diagnostics(output, max_lines=1, max_chars=1000) or "evaluation failure"
+    device_line = next(
+        (line.strip() for line in output.splitlines() if re.search(r"exception|illegal configuration", line, re.I)),
+        None,
+    )
+    return StructuredFailure(
+        stage=stage,
+        runtime_code=runtime_match.group(1) if runtime_match else None,
+        subsystem=subsystem,
+        device_exception=device_line,
+        reason=reason,
+        core_id=int(core_match.group(1)) if core_match else None,
+        block_id=int(block_match.group(1)) if block_match else None,
+        sub_error_type=sub_error_match.group(1).strip() if sub_error_match else None,
+        case_info=case_info or {},
+        related_symbols=extract_api_symbols(output),
+    )
+
+
 def compact_evaluation(result: EvalResult | None) -> dict[str, Any] | None:
     if result is None:
         return None
@@ -91,7 +133,7 @@ def compact_evaluation(result: EvalResult | None) -> dict[str, Any] | None:
         "failure_code": result.failure_code,
         "message": result.error,
         "diagnostics": compact_diagnostics(output),
-        "details_path": result.details_path,
+        "structured_failure": result.structured_failure,
     }
 
 

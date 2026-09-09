@@ -22,6 +22,7 @@ from .schema import (
     ProjectContract,
     Provenance,
     RetrievalTraceEntry,
+    StructuredFailure,
     TableNode,
 )
 
@@ -45,6 +46,7 @@ __all__ = [
     "Provenance",
     "RetrievalTraceEntry",
     "SnapshotView",
+    "StructuredFailure",
     "TableNode",
     "locate_snapshot",
     "render_bundle",

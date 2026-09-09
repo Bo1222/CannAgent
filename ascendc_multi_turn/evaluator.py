@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Protocol
 
 from .bundle import capture_bundle, validate_initial_bundle
+from .diagnostics import parse_structured_failure
 from .models import EvalResult
 from .progress import ProgressReporter
 from .source_validation import render_issues, validate_source_tree
@@ -106,6 +107,7 @@ def _failure(
     verify_output: str = "",
     failure_kind: str = "candidate",
 ) -> EvalResult:
+    structured = parse_structured_failure(stage=stage, output=output)
     return EvalResult(
         compiled=compiled,
         correctness=correctness,
@@ -117,6 +119,7 @@ def _failure(
         error_excerpt=extract_error_excerpt(output),
         details_path=str(details_path.resolve()) if details_path is not None else None,
         failure_kind=failure_kind,
+        structured_failure=structured.to_dict(),
     )
 
 

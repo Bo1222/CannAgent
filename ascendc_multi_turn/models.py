@@ -47,6 +47,7 @@ class EvalResult:
     error_excerpt: str = ""
     details_path: str | None = None
     failure_kind: str = "candidate"
+    structured_failure: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

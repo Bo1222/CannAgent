@@ -139,6 +139,24 @@ class KnowledgeBundle:
         return asdict(self)
 
 
+@dataclass(frozen=True)
+class StructuredFailure:
+    stage: str
+    runtime_code: str | None
+    subsystem: str
+    device_exception: str | None
+    reason: str
+    core_id: int | None
+    block_id: int | None
+    sub_error_type: str | None
+    case_info: dict[str, Any]
+    related_symbols: list[str]
+    schema_version: int = SCHEMA_VERSION
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
 @dataclass
 class NormalizedDocument:
     document_id: str

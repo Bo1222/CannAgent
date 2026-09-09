@@ -7,6 +7,7 @@ Secrets must never be included.
 
 ### Changes
 
+- Added the M3 StructuredFailure schema and deterministic MTE/AI Core/ACL/compiler/runtime diagnostic parsing, persisted structured failures in evaluations and trajectories, connected them to semantic retrieval, and removed local details paths from LLM-facing compact evidence.
 - Added the M2 context-aware semantic router, snapshot view, phase-specific knowledge bundle and trace schemas, exact API isolation, supplemental metadata/lexical/vector ranking, semantic runtime artifacts, and opt-in `--knowledge-mode semantic` while preserving legacy routing.
 - Added the M1 immutable semantic snapshot builder, API/failure/pattern card schemas, fact validation, context-sensitive conflict reporting, exact symbol indexes, squashed-declaration symbol recovery, load API, offline CLI, tests, and a completed phase report.
 - Added the M0 offline `knowledge_v2` compiler MVP with deterministic Markdown normalization, structured documents, provenance-bearing atomic parameter facts, a query API, real DataCopyPad coverage, and a phase TODO/report without changing runtime Agent behavior.
@@ -22,6 +23,7 @@ Secrets must never be included.
 
 ### Analysis
 
+- Local `details_path` values remain useful for audit but cannot be a model's primary diagnostic input; semantic routing now consumes persisted failure fields and related API symbols instead.
 - API identity must be resolved before similarity retrieval: prefix-related names such as DataCopy, DataCopyPad, and DataCopyExt are explicitly rejected when only a different exact source symbol is present.
 - Snapshot conflict identity includes the complete applicability context; two `blockLen` facts in different parameter structures are context differences rather than mutually exclusive global facts.
 - `ascendc_multi_turn` has no TileLang import, compiler invocation, generated TileLang file, or TileLang evaluation stage. The removed coupling was prompt-level: five allowlisted `dsl2Ascendc_*` supplements could inject translation assumptions into otherwise direct AscendC generation.
@@ -31,6 +33,7 @@ Secrets must never be included.
 
 ### Validation
 
+- Validated MTE illegal-configuration extraction with runtime code, core/block IDs and DataCopyPad symbols, compile/ACL classification, structured trajectory data, and omission of private log paths from compact model evidence.
 - Validated semantic snapshot disambiguation, exact similar-name rejection, context-filtered facts, retrieval traces, and a mock multi-turn run whose call log contains no knowledge-router LLM request.
 - Validated deterministic snapshot IDs and rebuild reuse, snapshot load integrity, required DataCopy/DataCopyPad/TPipe/TQue symbol cards, provenance rejection, and context-sensitive conflict handling.
 - Validated M0 against the real CANN 8.5.0 DataCopyPad page, including two context-preserving `blockLen` rows, schema round trips, source hashes, section evidence, and legacy repository regressions.

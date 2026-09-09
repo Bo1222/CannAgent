@@ -8,7 +8,12 @@ from pathlib import Path
 from typing import Any
 
 from .bundle import capture_bundle, parse_file_bundle, restore_bundle, validate_initial_bundle
-from .diagnostics import diagnostic_fingerprint, extract_api_symbols, read_result_log
+from .diagnostics import (
+    diagnostic_fingerprint,
+    extract_api_symbols,
+    parse_structured_failure,
+    read_result_log,
+)
 from .evaluator import Evaluator, extract_error_excerpt
 from .knowledge import (
     active_doc_ids,
@@ -216,7 +221,13 @@ class MultiTurnRunner:
         raise LLMCallFailure("llm_call_failed", last_error or "LLM call failed")
 
     def _normalize_evaluation(self, result: EvalResult, round_dir: Path) -> EvalResult:
-        if result.error or self._is_valid_result(result):
+        if result.error:
+            if result.structured_failure is None:
+                result.structured_failure = parse_structured_failure(
+                    stage=result.failure_stage or "unknown", output=read_result_log(result)
+                ).to_dict()
+            return result
+        if self._is_valid_result(result):
             return result
         if not result.compiled:
             stage, code, message = "ascendc_build", "evaluation_incomplete", "candidate was not compiled"
@@ -231,6 +242,7 @@ class MultiTurnRunner:
         result.failure_code = code
         result.error_excerpt = message
         result.details_path = str(path.resolve())
+        result.structured_failure = parse_structured_failure(stage=stage, output=message).to_dict()
         return result
 
     def _report_result(self, number: int, decision: str, result: EvalResult) -> None:
@@ -277,6 +289,7 @@ class MultiTurnRunner:
             "excerpt": excerpt,
             "details_path": evaluation.get("details_path"),
             "kind": evaluation.get("failure_kind", "candidate"),
+            "structured_failure": evaluation.get("structured_failure"),
         }
 
     @staticmethod
@@ -325,6 +338,7 @@ file delta and no Markdown. The response must fit within the output-token limit.
             "candidate": candidate_path,
             "plan_item": plan_item,
             "failure_fingerprint": fingerprint,
+            "structured_failure": result.structured_failure,
         }
 
     def _migrate_trajectory(self, logger: TrajectoryLogger) -> None:
@@ -566,7 +580,7 @@ file delta and no Markdown. The response must fit within the output-token limit.
                 knowledge_version=knowledge_version.knowledge_version,
                 soc=self.config.soc_version,
                 source_symbols=extract_api_symbols(evidence),
-                failure=previous.to_dict() if previous and previous.error else None,
+                failure=previous.structured_failure if previous and previous.error else None,
                 active_plan=active_plan,
             )
             bundle = KnowledgeRouterV2(SnapshotView(snapshot_path)).route(context)
