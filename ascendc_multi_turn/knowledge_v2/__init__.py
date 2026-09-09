@@ -8,6 +8,8 @@ from .extract import FactExtractor, ParameterTableFactExtractor
 from .normalize import MarkdownNormalizer
 from .query import FactQuery
 from .router import KnowledgeRouterV2, SnapshotView, locate_snapshot, render_bundle
+from .call_semantics import CallSemanticsResolver
+from .semantic_validator import SemanticIssue, SemanticValidator
 from .schema import (
     ApiCard,
     AtomicFact,
@@ -21,6 +23,7 @@ from .schema import (
     PatternCard,
     ProjectContract,
     Provenance,
+    ResolvedApiCall,
     RetrievalTraceEntry,
     StructuredFailure,
     TableNode,
@@ -30,6 +33,7 @@ __all__ = [
     "ApiCard",
     "AtomicFact",
     "CodeCandidate",
+    "CallSemanticsResolver",
     "FactExtractor",
     "FactQuery",
     "FailureCard",
@@ -44,9 +48,12 @@ __all__ = [
     "PatternCard",
     "ProjectContract",
     "Provenance",
+    "ResolvedApiCall",
     "RetrievalTraceEntry",
     "SnapshotView",
     "StructuredFailure",
+    "SemanticIssue",
+    "SemanticValidator",
     "TableNode",
     "locate_snapshot",
     "render_bundle",

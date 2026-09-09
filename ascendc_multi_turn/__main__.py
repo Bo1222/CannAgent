@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from pathlib import Path
 
 from llm_config import get_env
 
@@ -11,6 +12,9 @@ from .llm import MockProvider, OpenAICompatibleProvider
 from .models import RunConfig
 from .progress import ProgressReporter
 from .runner import MultiTurnRunner
+from .knowledge import resolve_knowledge_version
+from .knowledge_v2 import SnapshotView, locate_snapshot
+from .knowledge_v2.semantic_validator import SemanticValidator
 
 
 def parser() -> argparse.ArgumentParser:
@@ -165,6 +169,13 @@ def main() -> int:
             raise SystemExit(f"{config.provider} model and base URL must be configured in .env or CLI arguments")
     progress = ProgressReporter(enabled=not args.quiet)
     provider = MockProvider() if args.mock else OpenAICompatibleProvider.from_env(config)
+    semantic_validator = None
+    if not args.mock and config.knowledge_mode == "semantic":
+        version = resolve_knowledge_version(config)
+        snapshot_path = locate_snapshot(
+            Path(config.knowledge_store), version.knowledge_version, config.knowledge_snapshot
+        )
+        semantic_validator = SemanticValidator(SnapshotView(snapshot_path))
     evaluator = (
         MockEvaluator()
         if args.mock
@@ -173,6 +184,7 @@ def main() -> int:
             soc_version=args.soc_version,
             timeout=args.timeout,
             progress=progress,
+            semantic_validator=semantic_validator,
         )
     )
     summary = MultiTurnRunner(config, provider, evaluator, progress=progress).run()

@@ -157,6 +157,24 @@ class StructuredFailure:
         return asdict(self)
 
 
+@dataclass(frozen=True)
+class ResolvedApiCall:
+    api: str
+    source_path: str
+    line: int
+    actual_arguments: list[str]
+    argument_types: list[str | None]
+    parameter_structures: list[str]
+    resolved_overload: str | None
+    parameter_semantics: dict[str, dict[str, Any]]
+    source_fact_ids: list[str]
+    status: str
+    schema_version: int = SCHEMA_VERSION
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
 @dataclass
 class NormalizedDocument:
     document_id: str
