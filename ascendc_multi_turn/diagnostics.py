@@ -6,8 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from .models import EvalResult
-from .knowledge_v2.schema import StructuredFailure
-
+from .structured_knowledge.schema import StructuredFailure
 
 ERROR_LINE = re.compile(
     r"error:|fatal(?: error)?:|traceback|calledprocesserror|timed out|\[fail(?:ed)?\]",

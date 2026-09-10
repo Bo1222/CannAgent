@@ -288,11 +288,11 @@ def parse_knowledge_selection(
     try:
         payload = _json_object(text)
         domain = payload.get("domain")
-        legacy_skill = payload.get("skill")
+        requested_skill = payload.get("skill")
         if domain not in {None, "ascendc"}:
             raise ValueError("unsupported knowledge domain")
-        if legacy_skill not in {None, "ascendc", "ascendc-translator"}:
-            raise ValueError("unsupported legacy skill")
+        if requested_skill not in {None, "ascendc", "ascendc-translator"}:
+            raise ValueError("unsupported historical skill field")
         requested_ids = _string_list(payload, "doc_ids") if "doc_ids" in payload else []
         requested = _string_list(payload, "api_names") if "api_names" in payload else []
         supplements = _string_list(payload, "supplements")[:2]
@@ -352,7 +352,7 @@ def load_knowledge_state(
     path: Path,
     *,
     version: KnowledgeVersion,
-    legacy_selection: dict[str, Any] | None = None,
+    historical_selection: dict[str, Any] | None = None,
 ) -> KnowledgeState:
     if path.is_file():
         payload = json.loads(path.read_text(encoding="utf-8"))
@@ -367,16 +367,18 @@ def load_knowledge_state(
         ]
         return state
     state = KnowledgeState(version.runtime_version, version.knowledge_version)
-    if legacy_selection:
+    if historical_selection:
         entries = _index_entries(version)
         by_path = {entry["path"]: entry["doc_id"] for entry in entries}
         state.working_doc_ids = [
             by_path[path]
-            for path in legacy_selection.get("selected_files", [])
+            for path in historical_selection.get("selected_files", [])
             if path in by_path
         ]
         state.supplements = [
-            item for item in legacy_selection.get("supplements", []) if item in SUPPLEMENT_DOCUMENTS
+            item
+            for item in historical_selection.get("supplements", [])
+            if item in SUPPLEMENT_DOCUMENTS
         ]
         state.initialized = True
         state.migrated = True

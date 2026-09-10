@@ -4,9 +4,8 @@ import re
 from pathlib import Path
 from typing import Any
 
-from .router import SnapshotView
+from .router import KnowledgeBuild
 from .schema import ResolvedApiCall
-
 
 _DECLARATION = re.compile(
     r"\b(?:AscendC::)?([A-Z][A-Za-z0-9_]*(?:Params|Tensor|Tiling)(?:<[^;={}]+>)?)\s+([A-Za-z_]\w*)"
@@ -78,20 +77,20 @@ def _semantics(fact: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
-class CallSemanticsResolver:
-    def __init__(self, snapshot: SnapshotView):
-        self.snapshot = snapshot
+class ApiCallResolver:
+    def __init__(self, knowledge: KnowledgeBuild):
+        self.knowledge = knowledge
 
     def resolve_text(self, text: str, *, source_path: str) -> list[ResolvedApiCall]:
         variable_types = {name: _base_type(kind) for kind, name in _DECLARATION.findall(text)}
         results: list[ResolvedApiCall] = []
-        for api in sorted(self.snapshot.symbols, key=len, reverse=True):
+        for api in sorted(self.knowledge.symbols, key=len, reverse=True):
             for line, arguments in _calls(text, api):
                 argument_types = [variable_types.get(argument.strip("&* ")) for argument in arguments]
                 structures = [kind for kind in argument_types if kind and kind.endswith(("Params", "Tiling"))]
                 candidates = [
                     fact
-                    for fact in self.snapshot.facts
+                    for fact in self.knowledge.facts
                     if fact.get("applicability", {}).get("api") == api
                 ]
                 context_matches = []

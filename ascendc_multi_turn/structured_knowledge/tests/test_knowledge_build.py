@@ -7,17 +7,22 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from ascendc_multi_turn.knowledge_v2.extract import ParameterTableFactExtractor
-from ascendc_multi_turn.knowledge_v2.normalize import MarkdownNormalizer
-from ascendc_multi_turn.knowledge_v2.schema import AtomicFact, Provenance
-from ascendc_multi_turn.knowledge_v2.snapshot import build_snapshot, load_snapshot
-from ascendc_multi_turn.knowledge_v2.validate import ConflictResolver, FactValidator
-
+from ascendc_multi_turn.structured_knowledge.extract import ParameterTableFactExtractor
+from ascendc_multi_turn.structured_knowledge.knowledge_build import (
+    build_knowledge,
+    load_knowledge_build,
+)
+from ascendc_multi_turn.structured_knowledge.normalize import MarkdownNormalizer
+from ascendc_multi_turn.structured_knowledge.schema import AtomicFact, Provenance
+from ascendc_multi_turn.structured_knowledge.validate import (
+    ConflictResolver,
+    FactValidator,
+)
 
 DOC = """# DataCopyPad-API-CANN\n**页面ID:** datacopy_pad\n**来源:** https://example.test/pad\n\n#### 参数说明\n\n| 参数名称 | 含义 |\n| --- | --- |\n| blockLen | 单位为字节。AscendC::DataCopyPad(...); AscendC::DataCopy(...); AscendC::TPipepipe; AscendC::TQue<...> |\n"""
 
 
-class SnapshotBuilderTests(unittest.TestCase):
+class KnowledgeBuildTests(unittest.TestCase):
     def test_public_build_cli_is_available(self) -> None:
         completed = subprocess.run(
             [sys.executable, "-m", "ascendc_multi_turn.knowledge.build", "--help"],
@@ -29,7 +34,7 @@ class SnapshotBuilderTests(unittest.TestCase):
         self.assertEqual(completed.returncode, 0, completed.stderr)
         self.assertIn("--source", completed.stdout)
 
-    def test_snapshot_is_loadable_complete_and_reproducible(self) -> None:
+    def test_build_is_loadable_published_and_reproducible(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             source = root / "source"
@@ -37,12 +42,14 @@ class SnapshotBuilderTests(unittest.TestCase):
             (source / "pad.md").write_text(DOC, encoding="utf-8")
             output = root / "store"
 
-            first = build_snapshot(source=source, output=output, version="8.5.0")
-            second = build_snapshot(source=source, output=output, version="8.5.0")
+            first = build_knowledge(source=source, output=output, version="8.5.0")
+            second = build_knowledge(source=source, output=output, version="8.5.0")
 
             self.assertEqual(first, second)
-            manifest = load_snapshot(first)
+            manifest = load_knowledge_build(first)
             self.assertEqual(manifest["version"], "8.5.0")
+            current = json.loads((output / "cann/8.5.0/current.json").read_text())
+            self.assertEqual(current["knowledge_build_id"], first.name)
             self.assertTrue((first / "raw/pad.md").is_file())
             self.assertTrue((first / "normalized/datacopy_pad.json").is_file())
             symbols = json.loads((first / "indexes/symbols.json").read_text())

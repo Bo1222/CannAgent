@@ -3,9 +3,10 @@ from __future__ import annotations
 import unittest
 from types import SimpleNamespace
 
-from ascendc_multi_turn.knowledge_v2.call_semantics import CallSemanticsResolver
-from ascendc_multi_turn.knowledge_v2.semantic_validator import SemanticValidator
-
+from ascendc_multi_turn.structured_knowledge.api_call_resolver import ApiCallResolver
+from ascendc_multi_turn.structured_knowledge.api_constraint_validator import (
+    ApiConstraintValidator,
+)
 
 SOURCE = """
 AscendC::LocalTensor<float> dst;
@@ -18,7 +19,7 @@ AscendC::DataCopyPad(dst, src, params, pad);
 """
 
 
-def _snapshot():
+def _knowledge():
     return SimpleNamespace(
         symbols={"DataCopyPad": "api_DataCopyPad"},
         facts=[
@@ -47,9 +48,12 @@ def _snapshot():
     )
 
 
-class SemanticValidatorTests(unittest.TestCase):
+class ApiConstraintValidatorTests(unittest.TestCase):
     def test_call_resolver_binds_overload_structure_and_official_fact(self) -> None:
-        calls = CallSemanticsResolver(_snapshot()).resolve_text(SOURCE, source_path="kernel/copy.cpp")
+        calls = ApiCallResolver(_knowledge()).resolve_text(
+            SOURCE,
+            source_path="kernel/copy.cpp",
+        )
 
         self.assertEqual(len(calls), 1)
         call = calls[0]
@@ -61,7 +65,7 @@ class SemanticValidatorTests(unittest.TestCase):
         self.assertNotIn("fact_other_api", call.source_fact_ids)
 
     def test_wrong_parameter_unit_is_rejected_before_compile(self) -> None:
-        calls, issues = SemanticValidator(_snapshot()).validate_text(
+        calls, issues = ApiConstraintValidator(_knowledge()).validate_text(
             SOURCE, source_path="kernel/copy.cpp"
         )
 
@@ -71,8 +75,8 @@ class SemanticValidatorTests(unittest.TestCase):
         self.assertEqual(issues[0].fact_id, "fact_block_len_bytes")
 
     def test_project_contracts_use_generic_required_and_forbidden_rules(self) -> None:
-        snapshot = _snapshot()
-        snapshot.project_contracts = [
+        knowledge = _knowledge()
+        knowledge.project_contracts = [
             {
                 "contract_id": "contract_stream",
                 "subject": "current stream must be forwarded",
@@ -84,8 +88,11 @@ class SemanticValidatorTests(unittest.TestCase):
                 "constraint": r"forbidden_regex:ACLRT_LAUNCH_KERNEL",
             },
         ]
-        _, missing = SemanticValidator(snapshot).validate_text("void host() {}", source_path="host.cpp")
-        _, forbidden = SemanticValidator(snapshot).validate_text(
+        _, missing = ApiConstraintValidator(knowledge).validate_text(
+            "void host() {}",
+            source_path="host.cpp",
+        )
+        _, forbidden = ApiConstraintValidator(knowledge).validate_text(
             "GetCurrentNPUStream(); ACLRT_LAUNCH_KERNEL(foo);", source_path="host.cpp"
         )
         self.assertEqual(missing[0].code, "project_contract_missing")

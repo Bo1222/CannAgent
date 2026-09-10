@@ -6,29 +6,33 @@ import unittest
 from pathlib import Path
 
 from ascendc_multi_turn.evaluator import MockEvaluator
-from ascendc_multi_turn.knowledge_v2.router import KnowledgeRouterV2, SnapshotView, locate_snapshot
-from ascendc_multi_turn.knowledge_v2.schema import KnowledgeContext
-from ascendc_multi_turn.knowledge_v2.snapshot import build_snapshot
 from ascendc_multi_turn.llm import MockProvider
 from ascendc_multi_turn.models import RunConfig
 from ascendc_multi_turn.runner import MultiTurnRunner
+from ascendc_multi_turn.structured_knowledge.knowledge_build import build_knowledge
+from ascendc_multi_turn.structured_knowledge.router import (
+    KnowledgeBuild,
+    StructuredKnowledgeRouter,
+    locate_knowledge_build,
+)
+from ascendc_multi_turn.structured_knowledge.schema import KnowledgeContext
 
 
 def _document(api: str, parameter: str) -> str:
     return f"""# {api}-API-CANN\n**页面ID:** {api.lower()}\n**来源:** https://example.test/{api}\n\n#### 参数说明\n\n| 参数名称 | 含义 |\n| --- | --- |\n| {parameter} | {api} parameter semantics |\n"""
 
 
-class SemanticRouterTests(unittest.TestCase):
-    def _snapshot(self, root: Path) -> Path:
+class StructuredRouterTests(unittest.TestCase):
+    def _knowledge_build(self, root: Path) -> Path:
         source = root / "source"
         source.mkdir()
         for api in ("DataCopy", "DataCopyPad", "DataCopyExt"):
             (source / f"{api}.md").write_text(_document(api, "blockLen"), encoding="utf-8")
-        return build_snapshot(source=source, output=root / "store", version="8.5.0")
+        return build_knowledge(source=source, output=root / "store", version="8.5.0")
 
     def test_exact_api_identity_rejects_similar_names(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
-            snapshot = self._snapshot(Path(temporary))
+            knowledge_build = self._knowledge_build(Path(temporary))
             context = KnowledgeContext(
                 operator="copy",
                 phase="generate",
@@ -38,7 +42,7 @@ class SemanticRouterTests(unittest.TestCase):
                 source_symbols=["DataCopy"],
             )
 
-            bundle = KnowledgeRouterV2(SnapshotView(snapshot)).route(context)
+            bundle = StructuredKnowledgeRouter(KnowledgeBuild(knowledge_build)).route(context)
 
             self.assertEqual([item["api"] for item in bundle.api_semantics], ["DataCopy"])
             self.assertTrue(all(item["applicability"]["api"] == "DataCopy" for item in bundle.relevant_facts))
@@ -47,20 +51,30 @@ class SemanticRouterTests(unittest.TestCase):
             }
             self.assertTrue({"DataCopyPad", "DataCopyExt"} <= rejected)
 
-    def test_snapshot_selection_requires_disambiguation(self) -> None:
+    def test_current_published_build_is_selected(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            first = self._snapshot(root)
-            self.assertEqual(locate_snapshot(root / "store", "8.5.0"), first)
+            first = self._knowledge_build(root)
+            self.assertEqual(locate_knowledge_build(root / "store", "8.5.0"), first)
             second = first.parent / "another"
             second.mkdir()
-            with self.assertRaisesRegex(ValueError, "exactly one published"):
-                locate_snapshot(root / "store", "8.5.0")
+            self.assertEqual(locate_knowledge_build(root / "store", "8.5.0"), first)
+            self.assertEqual(
+                locate_knowledge_build(root / "store", "8.5.0", first.name),
+                first,
+            )
 
-    def test_semantic_runner_uses_bundle_without_router_llm_call(self) -> None:
+    def test_missing_installation_names_the_build_command(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary, self.assertRaisesRegex(
+            ValueError,
+            "python -m ascendc_multi_turn.knowledge.build",
+        ):
+            locate_knowledge_build(Path(temporary), "8.5.0")
+
+    def test_structured_runner_uses_bundle_without_router_llm_call(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            snapshot = self._snapshot(root)
+            knowledge_build = self._knowledge_build(root)
             source = root / "model.py"
             source.write_text("class Model: pass\n", encoding="utf-8")
             output = root / "generated"
@@ -70,9 +84,9 @@ class SemanticRouterTests(unittest.TestCase):
                 max_rounds=1,
                 evaluator="mock",
                 mock=True,
-                knowledge_mode="semantic",
+                knowledge_mode="structured",
                 knowledge_store=str(root / "store"),
-                knowledge_snapshot=snapshot.name,
+                knowledge_build_id=knowledge_build.name,
             )
 
             summary = MultiTurnRunner(config, MockProvider(), MockEvaluator()).run()

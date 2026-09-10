@@ -8,16 +8,29 @@ import time
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
+from typing import Any
 from unittest.mock import patch
 
-from ascendc_multi_turn.bundle import parse_file_bundle
 from ascendc_multi_turn.__main__ import main
-from ascendc_multi_turn.evaluator import LocalAscendEvaluator, MockEvaluator, _run, extract_error_excerpt
+from ascendc_multi_turn.bundle import parse_file_bundle
+from ascendc_multi_turn.evaluator import (
+    LocalAscendEvaluator,
+    MockEvaluator,
+    _run,
+    extract_error_excerpt,
+)
 from ascendc_multi_turn.llm import MockProvider
-from ascendc_multi_turn.models import EvalResult, LLMResponse, RunConfig
+from ascendc_multi_turn.models import EvalResult, LLMResponse
+from ascendc_multi_turn.models import RunConfig as RepositoryRunConfig
 from ascendc_multi_turn.progress import ProgressReporter
 from ascendc_multi_turn.prompts import build_plan_prompt, build_prompt
 from ascendc_multi_turn.runner import MultiTurnRunner
+
+
+def RunConfig(*args: Any, **kwargs: Any) -> RepositoryRunConfig:
+    """Keep document-routing tests explicit after structured became the product default."""
+    kwargs.setdefault("knowledge_mode", "document")
+    return RepositoryRunConfig(*args, **kwargs)
 
 
 class TruncatingProvider:
@@ -845,7 +858,7 @@ class RunnerTests(unittest.TestCase):
             trajectory = json.loads((output / ".llm_state" / "trajectory.json").read_text(encoding="utf-8"))
             self.assertEqual([item["round"] for item in trajectory["rounds"]], [1, 2, 3])
 
-    def test_resume_migrates_legacy_non_evaluation_failures_without_id_collision(self) -> None:
+    def test_resume_migrates_historical_non_evaluation_failures_without_id_collision(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             source = root / "model.py"
@@ -867,13 +880,13 @@ class RunnerTests(unittest.TestCase):
                         {
                             "compiled": False,
                             "correctness": False,
-                            "error": "legacy API outage",
+                            "error": "historical API outage",
                         }
                     ],
                     "evaluation": {
                         "compiled": False,
                         "correctness": False,
-                        "error": "legacy API outage",
+                        "error": "historical API outage",
                         "failure_stage": "llm_generator",
                     },
                 }
@@ -1020,6 +1033,8 @@ class RunnerTests(unittest.TestCase):
                 str(output),
                 "--max-rounds",
                 "1",
+                "--knowledge-mode",
+                "document",
                 "--mock",
                 "--quiet",
             ]
@@ -1048,6 +1063,8 @@ class RunnerTests(unittest.TestCase):
                 str(output),
                 "--max-rounds",
                 "1",
+                "--knowledge-mode",
+                "document",
                 "--mock",
             ]
 
@@ -1197,7 +1214,7 @@ class RunnerTests(unittest.TestCase):
             self.assertEqual(summary["last_round"]["decision"], "FAIL")
             self.assertEqual(summary["failure"]["stage"], "ascendc_build")
 
-    def test_legacy_failure_is_inferred_without_inventing_a_log_path(self) -> None:
+    def test_historical_failure_is_inferred_without_inventing_a_log_path(self) -> None:
         runner = object.__new__(MultiTurnRunner)
         runner.state_dir = Path("/path/that/does/not/exist")
         failure = runner._failure_summary(

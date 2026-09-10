@@ -5,6 +5,8 @@ from typing import Any
 
 from llm_config import get_env
 
+from .knowledge_paths import DEFAULT_KNOWLEDGE_STORE
+
 
 @dataclass
 class LLMResponse:
@@ -80,7 +82,7 @@ class RunConfig:
     max_rounds: int = 3
     max_bootstrap_rounds: int = 8
     temperature: float = field(default_factory=lambda: float(get_env("ASCENDC_LLM_TEMPERATURE", "0.2")))
-    # max_tokens is the legacy blanket override. New callers should use the
+    # max_tokens is the deprecated blanket override. New callers should use the
     # per-call fields below so routing cannot consume the code-generation
     # output budget.
     max_tokens: int | None = None
@@ -114,10 +116,10 @@ class RunConfig:
     # Kept at the end of the public init fields so existing positional
     # RunConfig callers retain their argument order.
     max_total_rounds: int | None = None
-    knowledge_mode: str = "legacy"
-    knowledge_store: str = ""
-    knowledge_snapshot: str | None = None
-    legacy_max_tokens_active: bool = field(default=False, init=False)
+    knowledge_mode: str = "structured"
+    knowledge_store: str = field(default_factory=lambda: str(DEFAULT_KNOWLEDGE_STORE))
+    knowledge_build_id: str | None = None
+    blanket_max_tokens_override_active: bool = field(default=False, init=False)
     deprecated_repair_options_active: bool = field(default=False, init=False)
 
     def __post_init__(self) -> None:
@@ -131,10 +133,10 @@ class RunConfig:
         if self.max_total_rounds is not None and self.max_total_rounds < 1:
             raise ValueError("max_total_rounds must be at least 1")
         self.knowledge_mode = self.knowledge_mode.lower()
-        if self.knowledge_mode not in {"legacy", "semantic"}:
-            raise ValueError("knowledge_mode must be 'legacy' or 'semantic'")
-        if self.knowledge_mode == "semantic" and not self.knowledge_store:
-            raise ValueError("knowledge_store is required in semantic knowledge mode")
+        if self.knowledge_mode not in {"document", "structured"}:
+            raise ValueError("knowledge_mode must be 'document' or 'structured'")
+        if self.knowledge_mode == "structured" and not self.knowledge_store:
+            raise ValueError("knowledge_store is required in structured knowledge mode")
         prefix = "DEEPSEEK" if self.provider == "deepseek" else "OPENAI"
         if not self.model:
             self.model = get_env(
@@ -146,30 +148,30 @@ class RunConfig:
                 f"{prefix}_BASE_URL",
                 "https://api.deepseek.com" if prefix == "DEEPSEEK" else "https://api.openai.com/v1",
             )
-        legacy_cli_limit = self.max_tokens
-        legacy_env = get_env("ASCENDC_LLM_MAX_TOKENS", "").strip()
-        legacy_env_limit = int(legacy_env) if legacy_env else None
+        blanket_cli_limit = self.max_tokens
+        blanket_env = get_env("ASCENDC_LLM_MAX_TOKENS", "").strip()
+        blanket_env_limit = int(blanket_env) if blanket_env else None
         specific_overrides = (
             self.router_max_tokens is not None or bool(get_env("ASCENDC_ROUTER_MAX_TOKENS", "").strip()),
             self.generator_max_tokens is not None or bool(get_env("ASCENDC_GENERATOR_MAX_TOKENS", "").strip()),
             self.planner_max_tokens is not None or bool(get_env("ASCENDC_PLANNER_MAX_TOKENS", "").strip()),
             self.repair_max_tokens is not None or bool(get_env("ASCENDC_REPAIR_MAX_TOKENS", "").strip()),
         )
-        self.legacy_max_tokens_active = legacy_cli_limit is not None or bool(
-            legacy_env_limit is not None and not all(specific_overrides)
+        self.blanket_max_tokens_override_active = blanket_cli_limit is not None or bool(
+            blanket_env_limit is not None and not all(specific_overrides)
         )
 
         def resolve_limit(value: int | None, env_name: str, default: int) -> int:
             if value is not None:
                 resolved = value
-            elif legacy_cli_limit is not None:
-                resolved = legacy_cli_limit
+            elif blanket_cli_limit is not None:
+                resolved = blanket_cli_limit
             else:
                 env_value = get_env(env_name, "").strip()
                 if env_value:
                     resolved = int(env_value)
-                elif legacy_env_limit is not None:
-                    resolved = legacy_env_limit
+                elif blanket_env_limit is not None:
+                    resolved = blanket_env_limit
                 else:
                     resolved = default
             if resolved < 1:

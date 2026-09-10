@@ -14,7 +14,7 @@ from .normalize import MarkdownNormalizer
 from .schema import SCHEMA_VERSION, ApiCard, AtomicFact, NormalizedDocument, Provenance
 from .validate import ConflictResolver, FactValidator
 
-COMPILER_VERSION = "3"
+COMPILER_VERSION = "4"
 _API_SYMBOL = re.compile(r"\b(?:AscendC::)?([A-Z][A-Za-z0-9_]{2,})\b")
 _SQUASHED_CORE_SYMBOL = re.compile(r"AscendC::(DataCopyPad|DataCopy|TPipe|TQue)")
 
@@ -31,7 +31,7 @@ def _discover(source: Path) -> list[Path]:
     return sorted(path for path in source.rglob("*.md") if path.is_file())
 
 
-def _snapshot_id(
+def _knowledge_build_id(
     source: Path,
     documents: list[tuple[Path, NormalizedDocument]],
     version: str,
@@ -89,18 +89,30 @@ def _project_cards(
     return result
 
 
-def build_snapshot(*, source: Path, output: Path, version: str) -> Path:
+def _publish_current(version_root: Path, knowledge_build_id: str) -> None:
+    current = version_root / "current.json"
+    temporary = version_root / f".current-{os.getpid()}.json"
+    temporary.write_text(
+        json.dumps({"knowledge_build_id": knowledge_build_id}, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    os.replace(temporary, current)
+
+
+def build_knowledge(*, source: Path, output: Path, version: str) -> Path:
     source = source.resolve()
     normalizer = MarkdownNormalizer()
     normalized = [(path, normalizer.parse_path(path)) for path in _discover(source)]
     if not normalized:
         raise ValueError(f"no Markdown documents found under {source}")
-    snapshot_id = _snapshot_id(source, normalized, version)
-    snapshots_root = output.resolve() / "cann" / version / "snapshots"
-    destination = snapshots_root / snapshot_id
+    knowledge_build_id = _knowledge_build_id(source, normalized, version)
+    version_root = output.resolve() / "cann" / version
+    builds_root = version_root / "builds"
+    destination = builds_root / knowledge_build_id
     if destination.is_dir():
+        _publish_current(version_root, knowledge_build_id)
         return destination
-    staging = snapshots_root / f".{snapshot_id}.staging-{os.getpid()}"
+    staging = builds_root / f".{knowledge_build_id}.staging-{os.getpid()}"
     staging.mkdir(parents=True, exist_ok=False)
     try:
         raw_root = staging / "raw"
@@ -183,7 +195,10 @@ def build_snapshot(*, source: Path, output: Path, version: str) -> Path:
             json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
         )
         if not report["valid"]:
-            raise ValueError(f"snapshot validation failed: {len(issues)} issues, {len(conflicts)} conflicts")
+            raise ValueError(
+                f"knowledge build validation failed: {len(issues)} issues, "
+                f"{len(conflicts)} conflicts"
+            )
         source_documents = [
             {"path": str(path.relative_to(source)), "sha256": document.source_hash}
             for path, document in normalized
@@ -200,7 +215,7 @@ def build_snapshot(*, source: Path, output: Path, version: str) -> Path:
             "compiler_version": COMPILER_VERSION,
             "platform": "cann",
             "version": version,
-            "snapshot_id": snapshot_id,
+            "knowledge_build_id": knowledge_build_id,
             "source": str(source),
             "source_documents": source_documents,
             "counts": {key: report[key] for key in ("document_count", "fact_count", "api_card_count")},
@@ -208,19 +223,20 @@ def build_snapshot(*, source: Path, output: Path, version: str) -> Path:
         (staging / "build_manifest.json").write_text(
             json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
         )
-        snapshots_root.mkdir(parents=True, exist_ok=True)
+        builds_root.mkdir(parents=True, exist_ok=True)
         os.replace(staging, destination)
+        _publish_current(version_root, knowledge_build_id)
     except Exception:
         shutil.rmtree(staging, ignore_errors=True)
         raise
     return destination
 
 
-def load_snapshot(path: Path) -> dict[str, Any]:
+def load_knowledge_build(path: Path) -> dict[str, Any]:
     manifest = json.loads((path / "build_manifest.json").read_text(encoding="utf-8"))
     report = json.loads((path / "validation_report.json").read_text(encoding="utf-8"))
     if not report.get("valid"):
-        raise ValueError("knowledge snapshot is not valid")
-    if path.name != manifest.get("snapshot_id"):
-        raise ValueError("snapshot directory does not match manifest ID")
+        raise ValueError("knowledge build is not valid")
+    if path.name != manifest.get("knowledge_build_id"):
+        raise ValueError("knowledge build directory does not match manifest ID")
     return manifest

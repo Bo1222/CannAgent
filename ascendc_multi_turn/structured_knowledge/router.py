@@ -7,32 +7,42 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
+from .knowledge_build import load_knowledge_build
 from .schema import KnowledgeBundle, KnowledgeContext, RetrievalTraceEntry
-from .snapshot import load_snapshot
 
 _TOKEN = re.compile(r"[A-Za-z_][A-Za-z0-9_]*|[\u4e00-\u9fff]{2,}")
 
 
-def locate_snapshot(store: Path, version: str, snapshot_id: str | None = None) -> Path:
-    root = store.expanduser().resolve() / "cann" / version / "snapshots"
-    if snapshot_id:
-        candidate = root / snapshot_id
-        load_snapshot(candidate)
+def locate_knowledge_build(
+    store: Path,
+    version: str,
+    knowledge_build_id: str | None = None,
+) -> Path:
+    version_root = store.expanduser().resolve() / "cann" / version
+    builds_root = version_root / "builds"
+    if knowledge_build_id:
+        candidate = builds_root / knowledge_build_id
+        load_knowledge_build(candidate)
         return candidate
-    candidates = sorted(path for path in root.iterdir() if path.is_dir() and not path.name.startswith(".")) if root.is_dir() else []
-    if len(candidates) != 1:
+    current = version_root / "current.json"
+    if not current.is_file():
         raise ValueError(
-            f"semantic knowledge requires exactly one published CANN {version} snapshot "
-            f"or an explicit snapshot ID; found {len(candidates)} under {root}"
+            f"structured knowledge for CANN {version} is not installed under {version_root}; "
+            "run python -m ascendc_multi_turn.knowledge.build first"
         )
-    load_snapshot(candidates[0])
-    return candidates[0]
+    payload = json.loads(current.read_text(encoding="utf-8"))
+    selected_id = payload.get("knowledge_build_id")
+    if not isinstance(selected_id, str) or not selected_id:
+        raise ValueError(f"invalid structured knowledge publication pointer: {current}")
+    candidate = builds_root / selected_id
+    load_knowledge_build(candidate)
+    return candidate
 
 
-class SnapshotView:
+class KnowledgeBuild:
     def __init__(self, path: Path):
         self.path = path
-        self.manifest = load_snapshot(path)
+        self.manifest = load_knowledge_build(path)
         self.symbols: dict[str, str] = json.loads((path / "indexes/symbols.json").read_text())
         self.facts: list[dict[str, Any]] = json.loads(
             (path / "facts/atomic_facts.json").read_text()
@@ -64,26 +74,33 @@ def _cosine(left: set[str], right: set[str]) -> float:
     return len(left & right) / math.sqrt(len(left) * len(right))
 
 
-class KnowledgeRouterV2:
-    """Deterministic semantic router over a validated snapshot."""
+class StructuredKnowledgeRouter:
+    """Deterministic router over a validated structured knowledge build."""
 
-    def __init__(self, snapshot: SnapshotView):
-        self.snapshot = snapshot
+    def __init__(self, knowledge: KnowledgeBuild):
+        self.knowledge = knowledge
 
     def route(self, context: KnowledgeContext) -> KnowledgeBundle:
         trace: list[RetrievalTraceEntry] = []
         selected_cards: list[dict[str, Any]] = []
         exact = set(context.source_symbols)
         for symbol in sorted(exact):
-            card_id = self.snapshot.symbols.get(symbol)
+            card_id = self.knowledge.symbols.get(symbol)
             if card_id:
-                card = self.snapshot.cards_by_id[card_id]
+                card = self.knowledge.cards_by_id[card_id]
                 selected_cards.append(card)
                 trace.append(RetrievalTraceEntry("exact_api", symbol, "selected", "exact source symbol"))
             else:
-                trace.append(RetrievalTraceEntry("exact_api", symbol, "rejected", "no exact snapshot symbol"))
+                trace.append(
+                    RetrievalTraceEntry(
+                        "exact_api",
+                        symbol,
+                        "rejected",
+                        "no exact symbol in the selected knowledge build",
+                    )
+                )
         selected_names = {item["api"] for item in selected_cards}
-        for candidate in self.snapshot.api_cards:
+        for candidate in self.knowledge.api_cards:
             name = candidate["api"]
             if name in selected_names:
                 continue
@@ -102,7 +119,7 @@ class KnowledgeRouterV2:
         }
         relevant_facts = []
         for fact_id in sorted(selected_fact_ids):
-            fact = self.snapshot.facts_by_id.get(fact_id)
+            fact = self.knowledge.facts_by_id.get(fact_id)
             if not fact:
                 continue
             applicability = fact.get("applicability", {})
@@ -115,7 +132,7 @@ class KnowledgeRouterV2:
 
         failure_cards = []
         failure_tokens = _tokens(context.failure or {})
-        for card in self.snapshot.failure_cards:
+        for card in self.knowledge.failure_cards:
             score = _cosine(failure_tokens, _tokens(card.get("signals", [])))
             if score > 0:
                 failure_cards.append(card)
@@ -132,12 +149,12 @@ class KnowledgeRouterV2:
         )
         examples: list[str] = []
         supplemental = []
-        for card in self.snapshot.pattern_cards:
+        for card in self.knowledge.pattern_cards:
             lexical_score = len(query_tokens & _tokens(card))
             if lexical_score:
                 supplemental.append((float(lexical_score), card, "fts"))
         if not supplemental:
-            for card in self.snapshot.pattern_cards:
+            for card in self.knowledge.pattern_cards:
                 vector_score = _cosine(query_tokens, _tokens(card))
                 if vector_score > 0:
                     supplemental.append((vector_score, card, "vector"))
@@ -157,7 +174,7 @@ class KnowledgeRouterV2:
         for knowledge in [
             *relevant_facts,
             *failure_cards,
-            *self.snapshot.project_contracts,
+            *self.knowledge.project_contracts,
             *selected_patterns,
         ]:
             item = knowledge.get("provenance", {})
@@ -173,7 +190,7 @@ class KnowledgeRouterV2:
             relevant_facts=relevant_facts,
             examples=examples,
             failure_cards=failure_cards,
-            project_contracts=self.snapshot.project_contracts,
+            project_contracts=self.knowledge.project_contracts,
             provenance=provenance,
             retrieval_trace=trace,
         )
@@ -182,7 +199,7 @@ class KnowledgeRouterV2:
 def render_bundle(bundle: KnowledgeBundle, *, max_chars: int = 24000) -> str:
     payload = bundle.to_dict()
     payload["retrieval_trace"] = [asdict(item) for item in bundle.retrieval_trace]
-    text = "# Verified semantic AscendC knowledge\n" + json.dumps(
+    text = "# Verified structured AscendC knowledge\n" + json.dumps(
         payload, ensure_ascii=False, indent=2
     )
     return text[:max_chars]

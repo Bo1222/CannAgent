@@ -22,7 +22,7 @@ python -m ascendc_multi_turn
 
 - 已实现跨轮状态、上一轮反馈、最佳版本保存和断点续跑，可视为“短期工作记忆/工程状态记忆”。
 - 没有 embedding、向量数据库、跨任务经验库等独立长期 Memory 系统。
-- 初始实现只会全量注入三份固定文档；当前已升级为版本感知的 AscendC API 文档选择流程，并从直接路径排除 TileLang/DSL 转译资料。
+- 初始实现只会全量注入三份固定文档；当前默认读取预编译、版本化且经过验证的结构化 AscendC 知识，原始 API 文档选择仅作为显式 `document` 模式。
 - 当前非 Claude 的完整直接 LLM 路径只覆盖 AscendC，没有发现对等的 Triton 直接 LLM 多轮入口。
 
 ## 2. 非 Claude 执行架构
@@ -34,7 +34,8 @@ python -m ascendc_multi_turn
 | `ascendc_multi_turn/__main__.py` | 命令行入口、参数解析、Provider 和 Evaluator 选择 |
 | `ascendc_multi_turn/runner.py` | 多轮主循环、KEEP/DISCARD、恢复与最终汇总 |
 | `ascendc_multi_turn/llm.py` | DeepSeek/OpenAI `/chat/completions` 客户端 |
-| `ascendc_multi_turn/knowledge.py` | CANN 版本检测、AscendC API 文档路由和受控上下文装载 |
+| `ascendc_multi_turn/knowledge/` | CANN 版本检测和可选的原始文档检索 |
+| `ascendc_multi_turn/structured_knowledge/` | 知识编译、发布、精确检索、API 调用解析和约束验证 |
 | `ascendc_multi_turn/prompts.py` | 组合参考模型、用例、当前源码、反馈和知识文档 |
 | `ascendc_multi_turn/bundle.py` | 解析模型返回、校验路径、写入和恢复源码 |
 | `ascendc_multi_turn/evaluator.py` | 静态检查、编译、正确性验证和性能测试 |
@@ -51,7 +52,7 @@ flowchart TD
     C --> E[读取参考模型和测试用例]
     D --> E
     E --> F{round <= max_rounds}
-    F -->|是| G[检测 CANN 版本并进行知识路由]
+    F -->|是| G[检测 CANN 版本并构造结构化 KnowledgeBundle]
     G --> H{是否需要 PLAN}
     H -->|是| H1[基于同一 AscendC 知识创建计划]
     H -->|否| I[构建生成 Prompt]
@@ -83,6 +84,8 @@ flowchart TD
 
 ```bash
 export DEEPSEEK_API_KEY=<API_KEY>
+
+python -m ascendc_multi_turn.knowledge.build --version 8.5.0
 
 python -m ascendc_multi_turn \
   --op-file benchmarks/NPUKernelBench/level1/1_GELU.py \
@@ -126,7 +129,7 @@ python -m ascendc_multi_turn \
 2. 同名 JSON 测试用例。
 3. 当前完整 AscendC 实现。
 4. 最近一轮 `EvalResult`，包括编译、正确性、性能和错误输出。
-5. 由直接知识路由器选出的版本化 AscendC/CANN 资料：精简核心规则、相关 API 页、安装版公共头文件声明，以及纯 AscendC 项目知识；不包含 TileLang 或旧 DSL 转译指南。
+5. 由结构化知识构建中精确检索出的 API Card、AtomicFact、FailureCard、PatternCard、ProjectContract 和 provenance；不包含 TileLang 或旧 DSL 转译指南。
 6. 模型必须遵守的 JSON 输出协议和文件约束。
 
 LLM 请求是一个普通的 Chat Completions 请求：
@@ -145,7 +148,7 @@ LLM 请求是一个普通的 Chat Completions 请求：
 }
 ```
 
-知识路由默认关闭 thinking 并使用 4096 token；PLAN 默认关闭 thinking 并使用 8192
+`document` 模式的文档路由关闭 thinking 并使用 4096 token；PLAN 默认关闭 thinking 并使用 8192
 token；代码生成默认 high thinking 且上限为 65536。thinking 模式不发送 temperature。客户端先
 读取同级的 `reasoning_content`、`content`、usage 和 finish reason，因此 reasoning
 耗尽预算导致的空正文不再退化为无法解释的 `LLM API returned empty content`。
@@ -312,24 +315,20 @@ score = exp(sum(log(speedup)) / case_count)
 
 ## 9. AscendC 知识检索实现判断
 
-原始版本没有真正实现 RAG；当前版本实现了受控的 version-aware AscendC 文档选择。
-
-首次生成前调用知识路由器查看完整 API manifest，并以唯一 `doc_id` 建立任务级工作集。该工作集不接受 DSL 转译补充文档。初始 PLAN 与 generator 复用同一份知识；后续轮默认复用工作集，只有源码或编译诊断出现新 API 时，才通过符号匹配直接扩展，或把最多 5 个候选交给路由模型增量选择。完整 manifest 在一个任务中只路由一次，重复错误也只允许候选子集增量路由。该实现不使用 embedding 或向量数据库。
+原始版本没有真正实现 RAG；当前默认模式读取离线构建的结构化知识。运行时先通过精确符号索引确定 API，再按 API applicability 取得 AtomicFact，并根据结构化失败和活动计划补充 FailureCard、PatternCard 与 ProjectContract。整个选择过程写入 retrieval trace，且不调用文档路由 LLM。显式 `document` 模式仍提供受控 Markdown 选择，用于对照和诊断。
 
 | 能力 | 是否存在 |
 |---|---:|
 | 外部知识注入 | 是 |
-| 固定参考文档 | 是 |
-| 根据任务选择相关 API 文档 | 是 |
-| 文档分块 | 是，按 API 页关键章节截取 |
+| 原始文档运行时注入 | 默认否；仅 `document` 模式 |
+| 精确 API 索引 | 是 |
+| 带上下文 AtomicFact | 是 |
 | Embedding | 否 |
 | 向量索引 | 否 |
 | BM25 / Top-K / Rerank | 轻量确定性符号/词项 Top-K，无 BM25/embedding |
-| 引用来源追踪 | 是，唯一 `doc_id`、文件路径和实际渲染列表 |
+| 引用来源追踪 | 是，fact/card provenance 和 retrieval trace |
 
-因此更准确的定义是带持久工作集的轻量确定性检索与受控上下文注入，而不是向量 RAG。
-
-每轮只固定加载精简核心规则，当前相关 API 页最多 5 篇，并优先注入从安装版 CANN 公共头文件抽取的声明。工作集最多 8 篇，知识上下文默认不超过 24000 字符；完整原始文档只作为归档证据，不再每轮塞入 prompt。
+因此更准确的定义是结构化事实的确定性检索与受控上下文注入，而不是向量 RAG。知识上下文默认不超过 24000 字符；完整原始文档只作为构建输入和审计证据。
 
 ## 10. 生成文件
 

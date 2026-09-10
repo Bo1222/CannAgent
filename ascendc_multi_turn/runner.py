@@ -7,7 +7,12 @@ import shutil
 from pathlib import Path
 from typing import Any
 
-from .bundle import capture_bundle, parse_file_bundle, restore_bundle, validate_initial_bundle
+from .bundle import (
+    capture_bundle,
+    parse_file_bundle,
+    restore_bundle,
+    validate_initial_bundle,
+)
 from .diagnostics import (
     diagnostic_fingerprint,
     extract_api_symbols,
@@ -29,21 +34,21 @@ from .knowledge import (
     selection_from_state,
 )
 from .llm import LLMProvider
-from .knowledge_v2 import (
-    FrontierManager,
-    KnowledgeContext,
-    KnowledgeRouterV2,
-    SnapshotView,
-    build_incident,
-    locate_snapshot,
-    persist_incident,
-    render_bundle,
-)
 from .logging import TrajectoryLogger
 from .models import EvalResult, FileBundle, LLMCallConfig, LLMResponse, RunConfig
 from .progress import ProgressReporter, token_detail
 from .prompts import build_plan_prompt, build_prompt, parse_plan
 from .runtime_knowledge import collect_runtime_facts
+from .structured_knowledge import (
+    FrontierManager,
+    KnowledgeBuild,
+    KnowledgeContext,
+    StructuredKnowledgeRouter,
+    build_incident,
+    locate_knowledge_build,
+    persist_incident,
+    render_bundle,
+)
 
 
 class LLMCallFailure(RuntimeError):
@@ -587,11 +592,11 @@ file delta and no Markdown. The response must fit within the output-token limit.
         if previous:
             evidence_parts.append(read_result_log(previous))
         evidence = "\n".join(evidence_parts)
-        if self.config.knowledge_mode == "semantic":
-            snapshot_path = locate_snapshot(
+        if self.config.knowledge_mode == "structured":
+            knowledge_build_path = locate_knowledge_build(
                 Path(self.config.knowledge_store),
                 knowledge_version.knowledge_version,
-                self.config.knowledge_snapshot,
+                self.config.knowledge_build_id,
             )
             context = KnowledgeContext(
                 operator=Path(self.config.op_file).stem,
@@ -603,7 +608,9 @@ file delta and no Markdown. The response must fit within the output-token limit.
                 failure=previous.structured_failure if previous and previous.error else None,
                 active_plan=active_plan,
             )
-            bundle = KnowledgeRouterV2(SnapshotView(snapshot_path)).route(context)
+            bundle = StructuredKnowledgeRouter(KnowledgeBuild(knowledge_build_path)).route(
+                context
+            )
             payload = bundle.to_dict()
             (round_dir / "knowledge_bundle.json").write_text(
                 json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
@@ -763,7 +770,7 @@ file delta and no Markdown. The response must fit within the output-token limit.
         if logger.pending_state().get("pending_phase") == "EVAL" and checkpoint.is_file():
             candidate = self._read_bundle(checkpoint)
             restore_bundle(self.task_dir, candidate)
-            if self.config.knowledge_mode == "semantic":
+            if self.config.knowledge_mode == "structured":
                 selection, _ = self._knowledge_context(
                     logger=logger,
                     knowledge_state=knowledge_state,
@@ -888,8 +895,8 @@ file delta and no Markdown. The response must fit within the output-token limit.
             f"planner={self.config.planner_max_tokens}/{self.config.planner_thinking}/"
             f"{self.config.planner_reasoning_effort}"
         )
-        if self.config.legacy_max_tokens_active:
-            self.progress.emit("WARNING: legacy --max-tokens blanket override is active")
+        if self.config.blanket_max_tokens_override_active:
+            self.progress.emit("WARNING: deprecated --max-tokens blanket override is active")
 
         reference, cases = self._inputs()
         current, best_bundle, previous, best_result, best_round = self._resume_state(logger)
@@ -918,7 +925,7 @@ file delta and no Markdown. The response must fit within the output-token limit.
             )
         logger.save_knowledge(knowledge_version.to_dict())
         max_api_docs, max_knowledge_chars = knowledge_limits()
-        legacy_selection = next(
+        historical_selection = next(
             (
                 item.get("knowledge")
                 for item in reversed(logger.data.get("rounds", []))
@@ -930,7 +937,7 @@ file delta and no Markdown. The response must fit within the output-token limit.
         knowledge_state = load_knowledge_state(
             knowledge_state_path,
             version=knowledge_version,
-            legacy_selection=legacy_selection,
+            historical_selection=historical_selection,
         )
 
         preflight = getattr(self.evaluator, "preflight", None)

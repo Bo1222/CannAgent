@@ -1,6 +1,6 @@
-"""Stable public CLI for the semantic knowledge snapshot compiler."""
+"""Public CLI for compiling and publishing structured AscendC knowledge."""
 
-from ..knowledge_v2.build import main, parser
+from ..structured_knowledge.build import main, parser
 
 
 __all__ = ["main", "parser"]

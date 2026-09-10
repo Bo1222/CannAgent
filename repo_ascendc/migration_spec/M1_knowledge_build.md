@@ -1,4 +1,4 @@
-在 Phase0 完成基础上，实现 Offline Knowledge Snapshot。
+在 Phase0 完成基础上，实现离线结构化知识构建与发布。
 
 禁止修改：
 
@@ -8,7 +8,7 @@
 
 只修改：
 
-knowledge_v2/
+structured_knowledge/
 
 
 目标：
@@ -19,7 +19,7 @@ CANN docs
 
 ↓
 
-Knowledge Snapshot
+Published Knowledge Build
 
 
 实现：
@@ -28,8 +28,9 @@ knowledge_store/
 
 cann/
  8.5.0/
-   snapshots/
-      snapshot_id/
+   current.json
+   builds/
+      knowledge_build_id/
 
         raw/
         normalized/
@@ -40,7 +41,7 @@ cann/
 
 要求：
 
-1. Snapshot immutable。
+1. 已发布的知识构建不可变。
 
 构建流程：
 
@@ -52,7 +53,7 @@ validate
 
 ↓
 
-publish snapshot
+publish knowledge build and update current.json
 
 
 2. 增加：
@@ -103,7 +104,7 @@ python -m ascendc_multi_turn.knowledge.build
 
 验收：
 
-生成CANN8.5 snapshot
+生成并发布 CANN 8.5 结构化知识
 
 包含：
 
@@ -115,6 +116,6 @@ python -m ascendc_multi_turn.knowledge.build
 
 测试：
 
-snapshot load成功
+knowledge build load成功
 source provenance正确
 重复build结果一致

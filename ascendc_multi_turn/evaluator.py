@@ -15,8 +15,7 @@ from .diagnostics import parse_structured_failure
 from .models import EvalResult
 from .progress import ProgressReporter
 from .source_validation import render_issues, validate_source_tree
-from .knowledge_v2.semantic_validator import SemanticValidator
-
+from .structured_knowledge.api_constraint_validator import ApiConstraintValidator
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -136,13 +135,13 @@ class LocalAscendEvaluator:
         soc_version: str,
         timeout: int = 600,
         progress: ProgressReporter | None = None,
-        semantic_validator: SemanticValidator | None = None,
+        api_constraint_validator: ApiConstraintValidator | None = None,
     ):
         self.device = device
         self.soc_version = soc_version
         self.timeout = timeout
         self.progress = progress or ProgressReporter()
-        self.semantic_validator = semantic_validator
+        self.api_constraint_validator = api_constraint_validator
 
     def preflight(self, task_dir: Path, state_dir: Path) -> EvalResult | None:
         log_path = state_dir / "environment_preflight.log"
@@ -224,30 +223,35 @@ class LocalAscendEvaluator:
                 compile_output=source_output,
             )
 
-        if self.semantic_validator is not None:
-            semantic_log = round_dir / "semantic_validation.log"
-            task = self.progress.start(f"{round_dir.name} · semantic validation")
-            resolved_calls, semantic_issues = self.semantic_validator.validate_tree(task_dir)
-            semantic_output = "\n".join(issue.render() for issue in semantic_issues)
-            _write_log(semantic_log, semantic_output + ("\n" if semantic_output else ""))
+        if self.api_constraint_validator is not None:
+            validation_log = round_dir / "api_constraint_validation.log"
+            task = self.progress.start(f"{round_dir.name} · API constraint validation")
+            resolved_calls, constraint_issues = self.api_constraint_validator.validate_tree(
+                task_dir
+            )
+            validation_output = "\n".join(issue.render() for issue in constraint_issues)
+            _write_log(
+                validation_log,
+                validation_output + ("\n" if validation_output else ""),
+            )
             (round_dir / "resolved_api_calls.json").write_text(
                 json.dumps([call.to_dict() for call in resolved_calls], ensure_ascii=False, indent=2),
                 encoding="utf-8",
             )
             task.finish(
-                status="failed" if semantic_issues else "passed",
-                detail=f"calls={len(resolved_calls)}, issues={len(semantic_issues)}",
+                status="failed" if constraint_issues else "passed",
+                detail=f"calls={len(resolved_calls)}, issues={len(constraint_issues)}",
             )
-            if semantic_issues:
+            if constraint_issues:
                 return _failure(
                     compiled=False,
                     correctness=False,
-                    stage="semantic_validation",
-                    code="semantic_validation_failed",
-                    message="AscendC semantic validation failed",
-                    output=semantic_output,
-                    details_path=semantic_log,
-                    compile_output=semantic_output,
+                    stage="api_constraint_validation",
+                    code="api_constraint_validation_failed",
+                    message="AscendC API constraint validation failed",
+                    output=validation_output,
+                    details_path=validation_log,
+                    compile_output=validation_output,
                 )
 
         validator = REPO_ROOT / "skills/ascendc/ascendc-translator/scripts/validate_ascendc_impl.py"

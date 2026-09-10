@@ -8,7 +8,6 @@ from typing import Any
 
 from ..models import EvalResult, FileBundle
 
-
 FRONTIERS = ("source", "compile", "runtime", "correctness", "performance")
 
 
@@ -26,7 +25,7 @@ def reached_frontier(result: EvalResult) -> str | None:
         "response_format",
         "static_validation",
         "ascendc_source_validation",
-        "semantic_validation",
+        "api_constraint_validation",
         "bundle_validation",
     }:
         return None

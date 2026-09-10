@@ -18,6 +18,15 @@ cp .env.example .env
 `DEEPSEEK_API_KEY` 或 `OPENAI_API_KEY`。命令行参数仍可覆盖 Provider、模型和地址。
 `.env` 已被 Git 忽略，不应提交真实密钥。
 
+首次运行或知识源更新后，先编译并发布当前 CANN 版本的结构化知识：
+
+```bash
+python -m ascendc_multi_turn.knowledge.build --version 8.5.0
+```
+
+普通运行默认使用 `structured` 模式并自动读取 `knowledge_store/cann/8.5.0/current.json`。
+构建步骤、数据结构和运行时作用见 [structured-ascendc-knowledge.md](structured-ascendc-knowledge.md)。
+
 DeepSeek 示例：
 
 ```bash
@@ -48,9 +57,11 @@ python -m ascendc_multi_turn \
 ```
 
 `--mock` 不调用模型 API，也不编译代码，仅验证多轮状态机、文件协议、best 选择与日志。它不能证明生成算子的正确性。
+如果尚未安装结构化知识，可在仅测试文档检索路径时显式增加
+`--knowledge-mode document`。
 
-默认情况下，程序把带时间戳的阶段进度写到 `stderr`，包括当前轮次、知识路由
-LLM、生成 LLM、静态检查、编译、正确性和性能阶段。耗时阶段每 15 秒输出一次
+默认情况下，程序把带时间戳的阶段进度写到 `stderr`，包括当前轮次、结构化知识
+检索、生成 LLM、API 约束检查、静态检查、编译、正确性和性能阶段。耗时阶段每 15 秒输出一次
 心跳，结束时显示 KEEP/DISCARD 和失败摘要。最终机器可读 JSON 单独写到
 `stdout`，因此仍可安全重定向或交给 `jq`。使用 `--quiet` 可关闭所有进度输出。
 
@@ -70,7 +81,7 @@ agent runtime 自动管理输出，因此使用分调用预算：
 
 | 调用 | 默认 max tokens | DeepSeek thinking | effort |
 |---|---:|---|---|
-| knowledge router | 4096 | disabled | — |
+| document-mode router（仅 `document`） | 4096 | disabled | — |
 | generator | 65536 | enabled | high |
 | PLAN / DIAGNOSE | 8192 | disabled | low（仅在启用 thinking 时发送） |
 
@@ -87,9 +98,9 @@ DeepSeek thinking 请求不发送无效的 temperature，并启用 JSON Output�
 
 1. 读取参考 PyTorch 模型、同名 JSON 用例、当前 best 源码及上轮评测反馈。
 2. 检测运行时 CANN 版本，选择完全匹配或同主版本的本地知识版本。
-3. 首轮调用知识路由器查看带唯一 `doc_id` 的完整 API 清单，建立最多 8 篇文档的纯 AscendC 任务级工作集；直接流程只允许 AscendC API 页、运行时头文件事实、核心规则和纯 AscendC 项目知识，不允许选择旧 DSL 转译资料。稳定的后续轮次直接复用，不再调用路由模型。
-4. 若源码或编译诊断出现工作集之外的新 API，先进行确定性符号匹配；有歧义时只把最多 5 个候选交给知识路由器，并最多新增 2 篇。完整清单只在任务首次路由时读取一次，重复错误也不会重新注入全量索引。
-5. 从工作集中选最多 5 篇当前相关 API 页，按照编译诊断出现顺序优先注入当前安装 CANN 的公共头文件声明、冲突提示和精简核心规则。`rg` 仅用于加速，缺失时自动使用 Python 扫描。默认知识上下文上限为 24000 字符。
+3. 默认读取当前 CANN 知识版本已经发布的 `current.json`，由代码符号、SoC、阶段、当前计划和结构化失败构造 `KnowledgeContext`。
+4. `StructuredKnowledgeRouter` 先精确匹配 API，再按 applicability 选择事实；FailureCard 和 PatternCard 只提供诊断与实现模式，不得用相似名称替代 API 精确匹配。
+5. 把选择结果保存为 `KnowledgeBundle` 和 `retrieval_trace.json`，并在 24000 字符上限内投影给当前 Agent。仅当显式使用 `--knowledge-mode document` 时，才调用文档路由模型选择原始 Markdown。
 6. 生成首个候选前先创建一个直接 AscendC baseline 计划，覆盖算法、block/tiling、内存与搬运、dtype/shape/尾块、Host ABI 和文件布局；禁止 TileLang、其他 DSL、中间实现和源码转换。
 7. 首个候选评估后，根据真实结果创建 3–5 个计划项；每个后续 EDIT 只执行一个可检验假设。
 8. 限制模型只能修改 `model_new_ascendc.py` 和 `kernel/` 下的源码，阻止绝对路径、目录穿越和 build 文件写入。
@@ -107,8 +118,8 @@ DeepSeek thinking 请求不发送无效的 temperature，并启用 JSON Output�
 - `orchestration_attempts.jsonl`：未进入候选评测、因而不消耗 round 的失败 checkpoint；
 - `run_state.json`：当前 pending evaluation round 与稳定 attempt id；
 - `token_usage.json`：总 token以及按 `knowledge_router`/`planner`/`diagnose`/`generator` 分类的汇总；
-- `knowledge_state.json`：任务级文档工作集、已知 API 符号、路由次数和失败指纹；
-- `round_NN/{knowledge_prompt.txt,knowledge_response.txt}`：仅在该轮实际调用知识路由 LLM 时存在；复用轮写 `knowledge_reuse.json`；
+- `round_NN/{knowledge_bundle.json,retrieval_trace.json}`：默认结构化检索的知识结果和选择依据；
+- `knowledge_state.json`、`knowledge_prompt.txt`、`knowledge_response.txt`：仅用于显式的 `document` 模式；
 - `round_NN/{selected_knowledge.json,references.md,runtime_header_facts.json}`：`domain=ascendc` 的选择结果、实际注入内容和运行时头文件证据；
 - `round_NN/{prompt.txt,response.txt,candidate.json}`：可复现的生成输入、输出和源码快照；
 - `round_NN/{static_validation.log,source_validation.log,build.log,correctness.log,performance.log}`：各个已执行评测阶段的完整输出；

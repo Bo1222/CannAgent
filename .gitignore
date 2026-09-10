@@ -27,6 +27,7 @@ autoresearch/.claude/settings.local.json
 autoresearch/.claude/scheduled_tasks.lock
 /autoresearch/workspace
 workspace/
+/knowledge_store/
 
 # Outer .claude/ (used by triton-coder / ascendc setup mv chains)
 .claude/settings.local.json

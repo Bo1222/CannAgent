@@ -71,7 +71,7 @@ error_excerpt
 结构化字段。
 
 
-然后接入 KnowledgeRouterV2。
+然后接入 StructuredKnowledgeRouter。
 
 
 流程：
@@ -101,4 +101,3 @@ Diagnose prompt
 subsystem:"MTE",
 reason:"illegal configuration"
 }
-

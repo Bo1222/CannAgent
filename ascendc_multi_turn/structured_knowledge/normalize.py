@@ -6,7 +6,6 @@ from pathlib import Path
 
 from .schema import CodeCandidate, HeadingNode, NormalizedDocument, Paragraph, TableNode
 
-
 _HEADING = re.compile(r"^(#{1,6})\s+(.+?)\s*$")
 _PAGE_ID = re.compile(r"^\*\*页面ID:\*\*\s*(.+?)\s*$")
 _SOURCE = re.compile(r"^\*\*来源:\*\*\s*(\S+)\s*$")

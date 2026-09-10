@@ -37,11 +37,11 @@ Query API
 
 1. 新增：
 
-ascendc_multi_turn/knowledge_v2/
+ascendc_multi_turn/structured_knowledge/
 
 结构：
 
-knowledge_v2/
+structured_knowledge/
 ├── schema.py
 ├── normalize.py
 ├── extract.py

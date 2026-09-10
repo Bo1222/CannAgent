@@ -1,4 +1,4 @@
-实现 Semantic Validator。
+实现 API Constraint Validator。
 
 
 禁止：
@@ -8,7 +8,7 @@
 
 新增：
 
-CallSemanticsResolver。
+ApiCallResolver。
 
 
 目标：
@@ -29,7 +29,7 @@ parameter binding
 
 然后查询：
 
-Knowledge Snapshot。
+已发布的 Structured Knowledge Build。
 
 
 输出：

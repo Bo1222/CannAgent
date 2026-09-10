@@ -4,9 +4,9 @@ import unittest
 from types import SimpleNamespace
 
 from ascendc_multi_turn.diagnostics import compact_evaluation, parse_structured_failure
-from ascendc_multi_turn.knowledge_v2.router import KnowledgeRouterV2
-from ascendc_multi_turn.knowledge_v2.schema import KnowledgeContext
 from ascendc_multi_turn.models import EvalResult
+from ascendc_multi_turn.structured_knowledge.router import StructuredKnowledgeRouter
+from ascendc_multi_turn.structured_knowledge.schema import KnowledgeContext
 
 
 class StructuredFailureTests(unittest.TestCase):
@@ -60,7 +60,7 @@ class StructuredFailureTests(unittest.TestCase):
         self.assertNotIn("details_path", compact)
 
     def test_structured_failure_retrieves_matching_failure_card(self) -> None:
-        snapshot = SimpleNamespace(
+        knowledge = SimpleNamespace(
             symbols={},
             api_cards=[],
             facts_by_id={},
@@ -88,7 +88,7 @@ class StructuredFailureTests(unittest.TestCase):
             failure=failure,
         )
 
-        bundle = KnowledgeRouterV2(snapshot).route(context)
+        bundle = StructuredKnowledgeRouter(knowledge).route(context)
 
         self.assertEqual(bundle.failure_cards[0]["card_id"], "failure_mte_illegal")
 

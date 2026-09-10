@@ -1,4 +1,4 @@
-# AscendC Kernel Agent Semantic Knowledge Architecture
+# AscendC Kernel Agent Structured Knowledge Architecture
 
 ## Purpose
 
@@ -22,7 +22,7 @@ Official Documentation
 Knowledge Compiler
     |
     v
-Versioned Semantic Knowledge Store
+Versioned Structured Knowledge Store
     |
     v
 Context-aware Knowledge Router
@@ -73,7 +73,7 @@ Knowledge Cards
 
         v
 
-Snapshot + Index
+Published Knowledge Build + Index
 
 
 Responsibilities:
@@ -81,7 +81,7 @@ Responsibilities:
 - Parse official CANN documents
 - Extract verified API semantics
 - Store provenance
-- Build versioned knowledge snapshots
+- Build versioned structured knowledge packages
 - Provide deterministic retrieval
 
 
@@ -131,7 +131,7 @@ Knowledge Bundle
 
         v
 
-Semantic Validator
+API Constraint Validator
 
 
         |
@@ -194,16 +194,16 @@ Phase0:
 Knowledge Compiler MVP
 
 Phase1:
-Knowledge Snapshot
+Published Knowledge Build
 
 Phase2:
-Semantic Router
+Structured Knowledge Router
 
 Phase3:
 Structured Failure
 
 Phase4:
-Semantic Validator
+API Constraint Validator
 
 Phase5:
 Experience Loop

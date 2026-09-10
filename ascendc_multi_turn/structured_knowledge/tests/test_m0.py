@@ -4,14 +4,13 @@ import json
 import unittest
 from pathlib import Path
 
-from ascendc_multi_turn.knowledge_v2 import (
+from ascendc_multi_turn.structured_knowledge import (
     AtomicFact,
     FactQuery,
     MarkdownNormalizer,
     NormalizedDocument,
     ParameterTableFactExtractor,
 )
-
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 DATACOPY_PAD = (

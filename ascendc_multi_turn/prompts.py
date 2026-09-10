@@ -109,7 +109,7 @@ def build_prompt(
     plan_text = (
         json.dumps(plan_item, ensure_ascii=False, indent=2)
         if plan_item
-        else "(no active plan item; only valid for a legacy EVAL checkpoint)"
+        else "(no active plan item; only valid for a historical EVAL checkpoint)"
     )
     return f"""# AscendC {phase.lower()} edit attempt {round_num}
 

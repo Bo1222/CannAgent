@@ -8,13 +8,17 @@ from pathlib import Path
 from llm_config import get_env
 
 from .evaluator import LocalAscendEvaluator, MockEvaluator
+from .knowledge import resolve_knowledge_version
+from .knowledge_paths import DEFAULT_KNOWLEDGE_STORE
 from .llm import MockProvider, OpenAICompatibleProvider
 from .models import RunConfig
 from .progress import ProgressReporter
 from .runner import MultiTurnRunner
-from .knowledge import resolve_knowledge_version
-from .knowledge_v2 import SnapshotView, locate_snapshot
-from .knowledge_v2.semantic_validator import SemanticValidator
+from .structured_knowledge import (
+    ApiConstraintValidator,
+    KnowledgeBuild,
+    locate_knowledge_build,
+)
 
 
 def parser() -> argparse.ArgumentParser:
@@ -50,7 +54,7 @@ def parser() -> argparse.ArgumentParser:
         "--max-tokens",
         type=int,
         default=None,
-        help="legacy blanket output-token override for every LLM call",
+        help="deprecated blanket output-token override for every LLM call",
     )
     result.add_argument("--router-max-tokens", type=int, default=None)
     result.add_argument("--generator-max-tokens", type=int, default=None)
@@ -92,9 +96,13 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--device", type=int, default=0)
     result.add_argument("--soc-version", default="Ascend910B3")
     result.add_argument("--cann-version", default="auto", help="installed CANN version or 'auto'")
-    result.add_argument("--knowledge-mode", choices=("legacy", "semantic"), default="legacy")
-    result.add_argument("--knowledge-store", default="")
-    result.add_argument("--knowledge-snapshot", default=None)
+    result.add_argument(
+        "--knowledge-mode",
+        choices=("document", "structured"),
+        default="structured",
+    )
+    result.add_argument("--knowledge-store", default=str(DEFAULT_KNOWLEDGE_STORE))
+    result.add_argument("--knowledge-build-id", default=None)
     result.add_argument("--resume", action="store_true")
     result.add_argument("--quiet", action="store_true", help="suppress progress and failure details on stderr")
     result.add_argument("--mock", action="store_true", help="exercise orchestration without API calls, compilation, or NPU")
@@ -146,7 +154,7 @@ def main() -> int:
         cann_version=args.cann_version,
         knowledge_mode=args.knowledge_mode,
         knowledge_store=args.knowledge_store,
-        knowledge_snapshot=args.knowledge_snapshot,
+        knowledge_build_id=args.knowledge_build_id,
         evaluator="mock" if args.mock else "local",
         resume=args.resume,
         mock=args.mock,
@@ -169,13 +177,15 @@ def main() -> int:
             raise SystemExit(f"{config.provider} model and base URL must be configured in .env or CLI arguments")
     progress = ProgressReporter(enabled=not args.quiet)
     provider = MockProvider() if args.mock else OpenAICompatibleProvider.from_env(config)
-    semantic_validator = None
-    if not args.mock and config.knowledge_mode == "semantic":
+    knowledge_validator = None
+    if not args.mock and config.knowledge_mode == "structured":
         version = resolve_knowledge_version(config)
-        snapshot_path = locate_snapshot(
-            Path(config.knowledge_store), version.knowledge_version, config.knowledge_snapshot
+        knowledge_build_path = locate_knowledge_build(
+            Path(config.knowledge_store),
+            version.knowledge_version,
+            config.knowledge_build_id,
         )
-        semantic_validator = SemanticValidator(SnapshotView(snapshot_path))
+        knowledge_validator = ApiConstraintValidator(KnowledgeBuild(knowledge_build_path))
     evaluator = (
         MockEvaluator()
         if args.mock
@@ -184,7 +194,7 @@ def main() -> int:
             soc_version=args.soc_version,
             timeout=args.timeout,
             progress=progress,
-            semantic_validator=semantic_validator,
+            api_constraint_validator=knowledge_validator,
         )
     )
     summary = MultiTurnRunner(config, provider, evaluator, progress=progress).run()

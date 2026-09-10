@@ -5,13 +5,16 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from ascendc_multi_turn.knowledge_v2.experience import (
+from ascendc_multi_turn.models import EvalResult, FileBundle
+from ascendc_multi_turn.structured_knowledge.experience import (
     build_incident,
     persist_incident,
     promote_confirmed_experience,
 )
-from ascendc_multi_turn.knowledge_v2.frontier import FrontierManager, reached_frontier
-from ascendc_multi_turn.models import EvalResult, FileBundle
+from ascendc_multi_turn.structured_knowledge.frontier import (
+    FrontierManager,
+    reached_frontier,
+)
 
 
 def _bundle(marker: str) -> FileBundle:

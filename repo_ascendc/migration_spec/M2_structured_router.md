@@ -1,6 +1,6 @@
-基于已经存在的 Knowledge Snapshot。
+基于已经发布的结构化 Knowledge Build。
 
-实现 KnowledgeRouterV2。
+实现 StructuredKnowledgeRouter。
 
 
 禁止修改：
@@ -24,7 +24,7 @@ doc retrieval
 
 升级为：
 
-semantic knowledge retrieval。
+structured knowledge retrieval。
 
 
 输入：
@@ -97,9 +97,9 @@ DataCopyExt
 不会混淆。
 
 
-legacy router保持可用。
+document router保持可用。
 
 
 新增：
 
---knowledge-mode legacy|semantic
+--knowledge-mode document|structured

@@ -145,8 +145,8 @@ class KnowledgeSelectionTests(unittest.TestCase):
         for doc_id in selection.rendered_doc_ids:
             self.assertIn(doc_id, rendered)
 
-    def test_legacy_selection_migrates_to_task_state(self) -> None:
-        legacy = {
+    def test_historical_selection_migrates_to_task_state(self) -> None:
+        historical = {
             "selected_files": ["pages/atlasascendc_api_07_0265.md"],
             "supplements": [
                 "dsl2Ascendc_compute_vector.md",
@@ -157,7 +157,7 @@ class KnowledgeSelectionTests(unittest.TestCase):
             state = load_knowledge_state(
                 Path(temporary) / "knowledge_state.json",
                 version=self.version,
-                legacy_selection=legacy,
+                historical_selection=historical,
             )
         self.assertTrue(state.initialized)
         self.assertTrue(state.migrated)
@@ -172,7 +172,7 @@ class KnowledgeSelectionTests(unittest.TestCase):
                     "topics": ["vector"],
                     "doc_ids": [],
                     "supplements": ["dsl2Ascendc_compute_vector.md"],
-                    "reason": "legacy translation request",
+                    "reason": "historical translation request",
                 }
             ),
             version=self.version,
@@ -342,7 +342,7 @@ class ProviderTests(unittest.TestCase):
         self.assertEqual(response.reasoning_content, "reasoning only")
         self.assertEqual(response.model, "deepseek-v4-flash-0731")
 
-    def test_run_config_uses_per_call_defaults_and_legacy_blanket_override(self) -> None:
+    def test_run_config_uses_per_call_defaults_and_blanket_override(self) -> None:
         names = {
             "ASCENDC_LLM_MAX_TOKENS": "",
             "ASCENDC_ROUTER_MAX_TOKENS": "",
@@ -352,15 +352,16 @@ class ProviderTests(unittest.TestCase):
         }
         with patch.dict(os.environ, names):
             config = RunConfig("model.py", "output", mock=True)
-            legacy = RunConfig("model.py", "output", max_tokens=1234, mock=True)
+            blanket = RunConfig("model.py", "output", max_tokens=1234, mock=True)
 
         self.assertEqual(config.router_max_tokens, 4096)
+        self.assertEqual(config.knowledge_mode, "structured")
         self.assertEqual(config.generator_max_tokens, 65536)
         self.assertEqual(config.planner_max_tokens, 8192)
         self.assertEqual(config.repair_max_tokens, 65536)
-        self.assertEqual(legacy.router_max_tokens, 1234)
-        self.assertEqual(legacy.generator_max_tokens, 1234)
-        self.assertEqual(legacy.planner_max_tokens, 1234)
+        self.assertEqual(blanket.router_max_tokens, 1234)
+        self.assertEqual(blanket.generator_max_tokens, 1234)
+        self.assertEqual(blanket.planner_max_tokens, 1234)
 
     def test_planner_and_diagnose_have_an_independent_compact_budget(self) -> None:
         config = RunConfig("model.py", "output", mock=True)
@@ -376,6 +377,19 @@ class ProviderTests(unittest.TestCase):
     def test_total_round_budget_must_be_positive_when_set(self) -> None:
         with self.assertRaisesRegex(ValueError, "max_total_rounds must be at least 1"):
             RunConfig("model.py", "output", max_total_rounds=0, mock=True)
+
+    def test_old_knowledge_mode_names_are_rejected(self) -> None:
+        for old_name in ("legacy", "semantic"):
+            with self.subTest(old_name=old_name), self.assertRaisesRegex(
+                ValueError,
+                "document.*structured",
+            ):
+                RunConfig(
+                    "model.py",
+                    "output",
+                    knowledge_mode=old_name,
+                    mock=True,
+                )
 
 
 if __name__ == "__main__":

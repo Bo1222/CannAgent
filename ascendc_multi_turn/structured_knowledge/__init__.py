@@ -1,27 +1,29 @@
-"""Offline semantic knowledge compiler primitives.
+"""Structured AscendC knowledge build and runtime query components."""
 
-This package is intentionally independent from the runtime knowledge router
-until the migration reaches the semantic-router phase.
-"""
-
+from .api_call_resolver import ApiCallResolver
+from .api_constraint_validator import ApiConstraintIssue, ApiConstraintValidator
+from .experience import build_incident, persist_incident, promote_confirmed_experience
 from .extract import FactExtractor, ParameterTableFactExtractor
+from .frontier import FrontierDecision, FrontierManager, reached_frontier
+from .knowledge_build import build_knowledge, load_knowledge_build
 from .normalize import MarkdownNormalizer
 from .query import FactQuery
-from .router import KnowledgeRouterV2, SnapshotView, locate_snapshot, render_bundle
-from .call_semantics import CallSemanticsResolver
-from .semantic_validator import SemanticIssue, SemanticValidator
-from .experience import build_incident, persist_incident, promote_confirmed_experience
-from .frontier import FrontierDecision, FrontierManager, reached_frontier
+from .router import (
+    KnowledgeBuild,
+    StructuredKnowledgeRouter,
+    locate_knowledge_build,
+    render_bundle,
+)
 from .schema import (
     ApiCard,
     AtomicFact,
     CodeCandidate,
-    FailureCard,
     ConfirmedExperience,
+    FailureCard,
     HeadingNode,
+    IncidentRecord,
     KnowledgeBundle,
     KnowledgeContext,
-    IncidentRecord,
     NormalizedDocument,
     Paragraph,
     PatternCard,
@@ -34,21 +36,23 @@ from .schema import (
 )
 
 __all__ = [
+    "ApiCallResolver",
     "ApiCard",
+    "ApiConstraintIssue",
+    "ApiConstraintValidator",
     "AtomicFact",
     "CodeCandidate",
-    "CallSemanticsResolver",
+    "ConfirmedExperience",
     "FactExtractor",
     "FactQuery",
     "FailureCard",
-    "ConfirmedExperience",
     "FrontierDecision",
     "FrontierManager",
     "HeadingNode",
+    "IncidentRecord",
+    "KnowledgeBuild",
     "KnowledgeBundle",
     "KnowledgeContext",
-    "IncidentRecord",
-    "KnowledgeRouterV2",
     "MarkdownNormalizer",
     "NormalizedDocument",
     "Paragraph",
@@ -58,15 +62,15 @@ __all__ = [
     "Provenance",
     "ResolvedApiCall",
     "RetrievalTraceEntry",
-    "SnapshotView",
     "StructuredFailure",
-    "SemanticIssue",
-    "SemanticValidator",
+    "StructuredKnowledgeRouter",
     "TableNode",
-    "locate_snapshot",
-    "render_bundle",
     "build_incident",
+    "build_knowledge",
+    "load_knowledge_build",
+    "locate_knowledge_build",
     "persist_incident",
     "promote_confirmed_experience",
     "reached_frontier",
+    "render_bundle",
 ]

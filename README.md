@@ -156,7 +156,7 @@ flowchart TD
 - **SETTLE**：基线前失败为 FAIL；基线后更快为 KEEP、有效但不快为 DISCARD、无效为 FAIL。连续三次 FAIL 进入 DIAGNOSE。
 - **文件协议与安全**：`bundle.py` —— 模型只能返回 `model_new_ascendc.py` 和 `kernel/` 下的源码（`validate_relative_path` 阻止绝对路径 / `..` 穿越 / build 文件），`validate_initial_bundle` 强制首轮必须包含完整 wrapper + pybind + kernel cpp。
 - **评测反馈**：先校验 pybind 声明/调用 `*_do`、kernel 源定义 wrapper 并使用 `kernel<<<...>>>`，再执行 wrapper 检查、编译、正确性和性能评测；几何平均 speedup 作为分数。
-- **知识控制**：首次完整路由建立纯 AscendC 任务级工作集；后续稳定轮不调用路由模型，新 API 仅在最多 5 个候选中增量选择。直接流程不允许选择旧 DSL 转译资料；安装版 CANN 公共头文件优先于回退版本文档，实际注入默认限制为 24000 字符。
+- **知识控制**：默认读取预先验证的结构化知识，按 API 精确符号、适用上下文和结构化失败生成每轮 `KnowledgeBundle`，不调用 LLM 选择原始文档。`--knowledge-mode document` 仅保留为直接文档检索路径。安装、更新、结构和运行时作用见 [AscendC Structured Knowledge Build and Runtime Use](docs/structured-ascendc-knowledge.md)。
 - **状态保存**：phase、plan、双预算、pending checkpoint、baseline 和 best 均持久化；EVAL 环境失败后 resume 直接重评候选，不重复调用模型。
 - **终止与退出**：无基线且 bootstrap 用尽为 `blocked`，不创建 DONE；完成全部性能轮才为 `completed`。
 
@@ -303,6 +303,7 @@ DeepSeek 示例：
 pip install -r requirements.txt
 cp .env.example .env
 # 编辑 .env，填写 DEEPSEEK_API_KEY
+python -m ascendc_multi_turn.knowledge.build --version 8.5.0
 python -m ascendc_multi_turn \
   --op-file benchmarks/NPUKernelBench/level1/1_GELU.py \
   --output-dir outputs/1_GELU \
@@ -315,14 +316,14 @@ python -m ascendc_multi_turn \
 
 使用 OpenAI/GPT 测试时，在 `.env` 填写 `OPENAI_API_KEY`、`OPENAI_MODEL`、
 `OPENAI_BASE_URL`，并改用 `--provider openai`。直接流程会选择与 CANN 版本匹配的
-AscendC API 文档；首轮先生成直接 AscendC 实现计划，再执行代码生成和评测，不加载
+预编译的结构化 AscendC 知识；首轮先生成直接 AscendC 实现计划，再执行代码生成和评测，不加载
 TileLang 转译指南。
 命令默认在 stderr 显示当前轮次、各阶段和每 15 秒心跳，stdout 只保留最终
 JSON；需要静默运行时增加 `--quiet`。每轮完整的静态检查、编译、正确性与性能
 输出保存在 `.llm_state/round_NN/*.log`，最终 JSON 的 `failure.details_path` 会指向
 失败阶段日志。
 
-DeepSeek V4 默认给知识路由 4096 token 且关闭 thinking，代码生成使用 65536 token、
+DeepSeek V4 的 `document` 模式路由使用 4096 token 且关闭 thinking；默认 `structured` 模式不调用路由模型。代码生成使用 65536 token、
 `high` thinking；结构化 PLAN/DIAGNOSE 独立使用 8192 token 且默认关闭 thinking，避免
 短计划继承代码生成预算。旧 `--repair-*` 参数暂时接受但已弃用，不再触发额外 repair
 调用。终端和 `calls.jsonl` 会记录模型、thinking、reasoning token 和结束原因。

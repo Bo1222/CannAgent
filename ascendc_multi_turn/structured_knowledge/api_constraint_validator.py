@@ -4,13 +4,13 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-from .call_semantics import CallSemanticsResolver
-from .router import SnapshotView
+from .api_call_resolver import ApiCallResolver
+from .router import KnowledgeBuild
 from .schema import ResolvedApiCall
 
 
 @dataclass(frozen=True)
-class SemanticIssue:
+class ApiConstraintIssue:
     path: str
     line: int
     code: str
@@ -33,10 +33,10 @@ def _expression_unit(expression: str) -> str | None:
     return None
 
 
-class SemanticValidator:
-    def __init__(self, snapshot: SnapshotView):
-        self.snapshot = snapshot
-        self.resolver = CallSemanticsResolver(snapshot)
+class ApiConstraintValidator:
+    def __init__(self, knowledge: KnowledgeBuild):
+        self.knowledge = knowledge
+        self.resolver = ApiCallResolver(knowledge)
 
     @staticmethod
     def _assignments(text: str, variable: str, parameter: str) -> list[tuple[int, str]]:
@@ -45,9 +45,11 @@ class SemanticValidator:
         )
         return [(text[: match.start()].count("\n") + 1, match.group(1).strip()) for match in pattern.finditer(text)]
 
-    def validate_text(self, text: str, *, source_path: str) -> tuple[list[ResolvedApiCall], list[SemanticIssue]]:
+    def validate_text(
+        self, text: str, *, source_path: str
+    ) -> tuple[list[ResolvedApiCall], list[ApiConstraintIssue]]:
         calls = self.resolver.resolve_text(text, source_path=source_path)
-        issues: list[SemanticIssue] = []
+        issues: list[ApiConstraintIssue] = []
         for call in calls:
             fact_id = call.source_fact_ids[0] if call.source_fact_ids else None
             for argument, kind in zip(call.actual_arguments, call.argument_types):
@@ -60,7 +62,7 @@ class SemanticValidator:
                         actual_unit = _expression_unit(expression)
                         if expected_unit and actual_unit and expected_unit != actual_unit:
                             issues.append(
-                                SemanticIssue(
+                                ApiConstraintIssue(
                                     source_path,
                                     line,
                                     "parameter_unit_mismatch",
@@ -72,7 +74,7 @@ class SemanticValidator:
                         numeric = re.fullmatch(r"\d+", expression)
                         if alignment and numeric and int(expression) % int(alignment):
                             issues.append(
-                                SemanticIssue(
+                                ApiConstraintIssue(
                                     source_path,
                                     line,
                                     "parameter_alignment_mismatch",
@@ -80,22 +82,24 @@ class SemanticValidator:
                                     fact_id,
                                 )
                             )
-        for contract in self.snapshot.project_contracts:
+        for contract in self.knowledge.project_contracts:
             constraint = str(contract.get("constraint", ""))
             if constraint.startswith("required_regex:"):
                 pattern = constraint.removeprefix("required_regex:")
                 if not re.search(pattern, text, re.MULTILINE):
-                    issues.append(SemanticIssue(source_path, 1, "project_contract_missing", contract.get("subject", "required contract"), contract.get("contract_id")))
+                    issues.append(ApiConstraintIssue(source_path, 1, "project_contract_missing", contract.get("subject", "required contract"), contract.get("contract_id")))
             elif constraint.startswith("forbidden_regex:"):
                 pattern = constraint.removeprefix("forbidden_regex:")
                 match = re.search(pattern, text, re.MULTILINE)
                 if match:
-                    issues.append(SemanticIssue(source_path, text[: match.start()].count("\n") + 1, "project_contract_forbidden", contract.get("subject", "forbidden contract"), contract.get("contract_id")))
+                    issues.append(ApiConstraintIssue(source_path, text[: match.start()].count("\n") + 1, "project_contract_forbidden", contract.get("subject", "forbidden contract"), contract.get("contract_id")))
         return calls, issues
 
-    def validate_tree(self, task_dir: Path) -> tuple[list[ResolvedApiCall], list[SemanticIssue]]:
+    def validate_tree(
+        self, task_dir: Path
+    ) -> tuple[list[ResolvedApiCall], list[ApiConstraintIssue]]:
         calls: list[ResolvedApiCall] = []
-        issues: list[SemanticIssue] = []
+        issues: list[ApiConstraintIssue] = []
         for path in sorted((task_dir / "kernel").rglob("*")):
             if path.is_file() and path.suffix in {".cpp", ".cc", ".cxx", ".h", ".hpp"}:
                 current_calls, current_issues = self.validate_text(
