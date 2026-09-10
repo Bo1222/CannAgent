@@ -14,6 +14,7 @@ Secrets must never be included.
 - Replaced ambiguous knowledge names across the CLI, Python package, build layout, tests, and architecture documents: `document` now means raw Markdown retrieval, `structured` means compiled fact retrieval, and immutable outputs are `knowledge builds` rather than snapshots.
 - Made `structured` the default knowledge mode, added repository-local source/store defaults, and publish `current.json` after a validated build so ordinary Kernel runs do not require a build ID.
 - Renamed `knowledge_v2` to `structured_knowledge`, `KnowledgeRouterV2` to `StructuredKnowledgeRouter`, and the compile-time checker to `ApiConstraintValidator`; added a detailed install/update and runtime-data-flow guide.
+- Added an AscendC multi-turn README covering execution, phase behavior, every knowledge-build artifact, per-round routing, trajectory analysis, and knowledge-update validation.
 
 ### Analysis
 
@@ -23,6 +24,7 @@ Secrets must never be included.
 - The full 8.5.0 source rebuild produced 121 normalized documents, 930 atomic facts, 341 API cards, 3 project contracts, 2 failure cards, and 5 pattern cards without indexing project-guide headings as API symbols.
 - Structured knowledge compilation remains an installation/update operation, not a per-Kernel step: it normalizes sources, extracts and validates facts/cards/indexes, publishes an immutable content-addressed build, and advances `current.json` only after validation succeeds.
 - The generated `knowledge_store/` is local runtime data and is ignored by Git; `--knowledge-build-id` exists only for reproducing an older run.
+- `ARARARAR` is a valid axis-pattern enum member found in compressed official Reduce tables, but its presence in `symbols.json` exposed an API-identity extraction bug rather than an invalid official-document value.
 
 ### Validation
 
@@ -32,6 +34,7 @@ Secrets must never be included.
 - Passed all 25 structured-knowledge tests and all 80 repository tests after the rename.
 - Built the complete CANN 8.5.0 source into knowledge build `df3113d5fa2f6c82f46f1dfc`: 121 documents, 930 facts, 341 API cards, zero validation issues, and zero conflicts; verified `current.json` selects it.
 - Ran the GELU mock workflow without specifying `--knowledge-mode`; it completed through the default structured path with only planner/generator calls and no document-router LLM call.
+- Verified the new README against the active CLI, knowledge-build tree, runtime router, and the source evidence responsible for the `ARARARAR` index entry; no structured output or compiler behavior was changed.
 
 ## 2026-09-09
 

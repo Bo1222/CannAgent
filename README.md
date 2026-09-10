@@ -156,7 +156,7 @@ flowchart TD
 - **SETTLE**：基线前失败为 FAIL；基线后更快为 KEEP、有效但不快为 DISCARD、无效为 FAIL。连续三次 FAIL 进入 DIAGNOSE。
 - **文件协议与安全**：`bundle.py` —— 模型只能返回 `model_new_ascendc.py` 和 `kernel/` 下的源码（`validate_relative_path` 阻止绝对路径 / `..` 穿越 / build 文件），`validate_initial_bundle` 强制首轮必须包含完整 wrapper + pybind + kernel cpp。
 - **评测反馈**：先校验 pybind 声明/调用 `*_do`、kernel 源定义 wrapper 并使用 `kernel<<<...>>>`，再执行 wrapper 检查、编译、正确性和性能评测；几何平均 speedup 作为分数。
-- **知识控制**：默认读取预先验证的结构化知识，按 API 精确符号、适用上下文和结构化失败生成每轮 `KnowledgeBundle`，不调用 LLM 选择原始文档。`--knowledge-mode document` 仅保留为直接文档检索路径。安装、更新、结构和运行时作用见 [AscendC Structured Knowledge Build and Runtime Use](docs/structured-ascendc-knowledge.md)。
+- **知识控制**：默认读取预先验证的结构化知识，按 API 精确符号、适用上下文和结构化失败生成每轮 `KnowledgeBundle`，不调用 LLM 选择原始文档。`--knowledge-mode document` 仅保留为直接文档检索路径。完整运行方法见 [AscendC 多轮算子生成与优化](ascendc_multi_turn/README.md)，知识安装和数据流见 [AscendC Structured Knowledge Build and Runtime Use](docs/structured-ascendc-knowledge.md)。
 - **状态保存**：phase、plan、双预算、pending checkpoint、baseline 和 best 均持久化；EVAL 环境失败后 resume 直接重评候选，不重复调用模型。
 - **终止与退出**：无基线且 bootstrap 用尽为 `blocked`，不创建 DONE；完成全部性能轮才为 `completed`。
 
