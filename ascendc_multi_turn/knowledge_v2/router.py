@@ -10,7 +10,6 @@ from typing import Any
 from .schema import KnowledgeBundle, KnowledgeContext, RetrievalTraceEntry
 from .snapshot import load_snapshot
 
-
 _TOKEN = re.compile(r"[A-Za-z_][A-Za-z0-9_]*|[\u4e00-\u9fff]{2,}")
 
 
@@ -148,8 +147,22 @@ class KnowledgeRouterV2:
 
         provenance = []
         seen_provenance = set()
-        for fact in relevant_facts:
-            item = fact.get("provenance", {})
+        selected_patterns = [
+            card
+            for _, card, _ in sorted(
+                supplemental,
+                key=lambda item: (-item[0], item[1]["card_id"]),
+            )[:3]
+        ]
+        for knowledge in [
+            *relevant_facts,
+            *failure_cards,
+            *self.snapshot.project_contracts,
+            *selected_patterns,
+        ]:
+            item = knowledge.get("provenance", {})
+            if not item:
+                continue
             key = json.dumps(item, ensure_ascii=False, sort_keys=True)
             if key not in seen_provenance:
                 seen_provenance.add(key)

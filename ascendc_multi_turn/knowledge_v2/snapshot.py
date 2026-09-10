@@ -11,11 +11,10 @@ from typing import Any
 
 from .extract import ParameterTableFactExtractor
 from .normalize import MarkdownNormalizer
-from .schema import ApiCard, AtomicFact, NormalizedDocument, SCHEMA_VERSION
+from .schema import SCHEMA_VERSION, ApiCard, AtomicFact, NormalizedDocument, Provenance
 from .validate import ConflictResolver, FactValidator
 
-
-COMPILER_VERSION = "2"
+COMPILER_VERSION = "3"
 _API_SYMBOL = re.compile(r"\b(?:AscendC::)?([A-Z][A-Za-z0-9_]{2,})\b")
 _SQUASHED_CORE_SYMBOL = re.compile(r"AscendC::(DataCopyPad|DataCopy|TPipe|TQue)")
 
@@ -32,13 +31,23 @@ def _discover(source: Path) -> list[Path]:
     return sorted(path for path in source.rglob("*.md") if path.is_file())
 
 
-def _snapshot_id(source: Path, documents: list[tuple[Path, NormalizedDocument]], version: str) -> str:
+def _snapshot_id(
+    source: Path,
+    documents: list[tuple[Path, NormalizedDocument]],
+    version: str,
+) -> str:
+    project_manifest = source / "project_knowledge.json"
     payload = {
         "platform": "cann",
         "version": version,
         "schema_version": SCHEMA_VERSION,
         "compiler_version": COMPILER_VERSION,
         "documents": [(str(path.relative_to(source)), document.source_hash) for path, document in documents],
+        "project_manifest": (
+            hashlib.sha256(project_manifest.read_bytes()).hexdigest()
+            if project_manifest.is_file()
+            else None
+        ),
     }
     return hashlib.sha256(_canonical(payload).encode()).hexdigest()[:24]
 
@@ -50,6 +59,34 @@ def _card_symbols(document: NormalizedDocument) -> set[str]:
         + [cell for table in document.tables for row in table.rows for cell in row]
     )
     return set(_API_SYMBOL.findall(text)) | set(_SQUASHED_CORE_SYMBOL.findall(text))
+
+
+def _project_cards(
+    source: Path,
+    documents: list[tuple[Path, NormalizedDocument]],
+) -> dict[str, list[dict[str, Any]]]:
+    manifest = source / "project_knowledge.json"
+    empty = {"project_contracts": [], "failure_cards": [], "pattern_cards": []}
+    if not manifest.is_file():
+        return empty
+    payload = json.loads(manifest.read_text(encoding="utf-8"))
+    by_relative = {path.relative_to(source).as_posix(): document for path, document in documents}
+    result = {key: [] for key in empty}
+    for key, cards in result.items():
+        for raw in payload.get(key, []):
+            item = dict(raw)
+            guide = item.pop("guide")
+            section = item.pop("section")
+            evidence = item.pop("evidence")
+            document = by_relative.get(guide)
+            if document is None or evidence not in Path(document.source_path).read_text(encoding="utf-8"):
+                raise ValueError(f"project knowledge evidence is missing: {guide}: {evidence}")
+            item["authority"] = "PROJECT_CONTRACT"
+            item["provenance"] = asdict(
+                Provenance(document.document_id, guide, document.source_hash, section, evidence)
+            )
+            cards.append(item)
+    return result
 
 
 def build_snapshot(*, source: Path, output: Path, version: str) -> Path:
@@ -73,6 +110,9 @@ def build_snapshot(*, source: Path, output: Path, version: str) -> Path:
         indexes_root = staging / "indexes"
         for directory in (raw_root, normalized_root, facts_root, cards_root, indexes_root):
             directory.mkdir(parents=True, exist_ok=True)
+        project_manifest = source / "project_knowledge.json"
+        if project_manifest.is_file():
+            shutil.copy2(project_manifest, raw_root / project_manifest.name)
         documents_by_id: dict[str, NormalizedDocument] = {}
         for path, document in normalized:
             relative = path.relative_to(source)
@@ -93,6 +133,7 @@ def build_snapshot(*, source: Path, output: Path, version: str) -> Path:
             for issue in validator.validate(fact, documents_by_id)
         ]
         conflicts = ConflictResolver().find_conflicts(facts)
+        project_cards = _project_cards(source, normalized)
         facts_payload = [{"fact_id": _fact_id(fact), **fact.to_dict()} for fact in facts]
         (facts_root / "atomic_facts.json").write_text(
             json.dumps(facts_payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
@@ -103,7 +144,9 @@ def build_snapshot(*, source: Path, output: Path, version: str) -> Path:
                 item["fact_id"]
             )
         document_ids_by_symbol: dict[str, list[str]] = {}
-        for _, document in normalized:
+        for path, document in normalized:
+            if path.relative_to(source).parts[0] == "project_guides":
+                continue
             for symbol in _card_symbols(document):
                 document_ids_by_symbol.setdefault(symbol, []).append(document.document_id)
         cards = [
@@ -119,9 +162,10 @@ def build_snapshot(*, source: Path, output: Path, version: str) -> Path:
             json.dumps([asdict(card) for card in cards], ensure_ascii=False, indent=2) + "\n",
             encoding="utf-8",
         )
-        (cards_root / "failure_cards.json").write_text("[]\n", encoding="utf-8")
-        (cards_root / "pattern_cards.json").write_text("[]\n", encoding="utf-8")
-        (cards_root / "project_contracts.json").write_text("[]\n", encoding="utf-8")
+        for name in ("failure_cards", "pattern_cards", "project_contracts"):
+            (cards_root / f"{name}.json").write_text(
+                json.dumps(project_cards[name], ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+            )
         symbol_index = {card.api: card.card_id for card in cards}
         (indexes_root / "symbols.json").write_text(
             json.dumps(symbol_index, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
@@ -140,6 +184,17 @@ def build_snapshot(*, source: Path, output: Path, version: str) -> Path:
         )
         if not report["valid"]:
             raise ValueError(f"snapshot validation failed: {len(issues)} issues, {len(conflicts)} conflicts")
+        source_documents = [
+            {"path": str(path.relative_to(source)), "sha256": document.source_hash}
+            for path, document in normalized
+        ]
+        if project_manifest.is_file():
+            source_documents.append(
+                {
+                    "path": "project_knowledge.json",
+                    "sha256": hashlib.sha256(project_manifest.read_bytes()).hexdigest(),
+                }
+            )
         manifest = {
             "schema_version": SCHEMA_VERSION,
             "compiler_version": COMPILER_VERSION,
@@ -147,10 +202,7 @@ def build_snapshot(*, source: Path, output: Path, version: str) -> Path:
             "version": version,
             "snapshot_id": snapshot_id,
             "source": str(source),
-            "source_documents": [
-                {"path": str(path.relative_to(source)), "sha256": document.source_hash}
-                for path, document in normalized
-            ],
+            "source_documents": source_documents,
             "counts": {key: report[key] for key in ("document_count", "fact_count", "api_card_count")},
         }
         (staging / "build_manifest.json").write_text(

@@ -156,7 +156,7 @@ flowchart TD
 - **SETTLE**：基线前失败为 FAIL；基线后更快为 KEEP、有效但不快为 DISCARD、无效为 FAIL。连续三次 FAIL 进入 DIAGNOSE。
 - **文件协议与安全**：`bundle.py` —— 模型只能返回 `model_new_ascendc.py` 和 `kernel/` 下的源码（`validate_relative_path` 阻止绝对路径 / `..` 穿越 / build 文件），`validate_initial_bundle` 强制首轮必须包含完整 wrapper + pybind + kernel cpp。
 - **评测反馈**：先校验 pybind 声明/调用 `*_do`、kernel 源定义 wrapper 并使用 `kernel<<<...>>>`，再执行 wrapper 检查、编译、正确性和性能评测；几何平均 speedup 作为分数。
-- **知识控制**：首次完整路由建立纯 AscendC 任务级工作集；后续稳定轮不调用路由模型，新 API 仅在最多 5 个候选中增量选择。直接流程不允许选择 `dsl2Ascendc_*` 文档；安装版 CANN 公共头文件优先于回退版本文档，实际注入默认限制为 24000 字符。
+- **知识控制**：首次完整路由建立纯 AscendC 任务级工作集；后续稳定轮不调用路由模型，新 API 仅在最多 5 个候选中增量选择。直接流程不允许选择旧 DSL 转译资料；安装版 CANN 公共头文件优先于回退版本文档，实际注入默认限制为 24000 字符。
 - **状态保存**：phase、plan、双预算、pending checkpoint、baseline 和 best 均持久化；EVAL 环境失败后 resume 直接重评候选，不重复调用模型。
 - **终止与退出**：无基线且 bootstrap 用尽为 `blocked`，不创建 DONE；完成全部性能轮才为 `completed`。
 

@@ -3,6 +3,28 @@
 All repository modifications must be recorded here. Dates use `YYYY-MM-DD`.
 Secrets must never be included.
 
+## 2026-09-10
+
+### Changes
+
+- Replaced eight unused TileLang-to-AscendC and legacy verification documents with direct, authority-labelled Host, Vector, Cube, C/V, and cross-core project guides under `AscendC_knowledge`.
+- Added deterministic project contract, failure card, and pattern card compilation with evidence provenance; legacy routing now always includes the Host contract and can select the direct kernel patterns.
+- Reframed the retained `ascendc-translator` Skill as a direct AscendC entry point without a TileLang prerequisite.
+- Updated repository workflow documentation and the retained TileLang Skill boundary so no active instruction references the deleted translation documents or treats TileLang output as an AscendC generation prerequisite.
+
+### Analysis
+
+- Physical documents outside the direct runner allowlist do not affect its prompt. The actionable gap was that the API corpus contained Kernel API pages but no systematic Host binding/launch contract.
+- Migrated project-authored guidance remains `PROJECT_CONTRACT`; it is not promoted to official CANN truth. Official API Markdown and its image evidence remain intact.
+- Tests retain legacy DSL filenames only as negative migration and allowlist assertions; those strings are not runtime knowledge sources.
+- The full 8.5.0 source rebuild produced 121 normalized documents, 930 atomic facts, 341 API cards, 3 project contracts, 2 failure cards, and 5 pattern cards without indexing project-guide headings as API symbols.
+
+### Validation
+
+- Built and validated a complete CANN 8.5.0 snapshot: zero fact issues, zero conflicts, and no project-guide symbol-index pollution.
+- Passed all 24 semantic knowledge tests and all 79 repository tests; Python bytecode compilation also passed.
+- Verified deleted-document references remain only in four negative regression assertions. Ruff still reports pre-existing repository-wide lint findings; the files changed for semantic compilation and routing pass when the existing `TRY004` policy violation in legacy knowledge parsing is excluded.
+
 ## 2026-09-09
 
 ### Changes

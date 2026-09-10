@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "project_contracts": [
+    {"contract_id":"host_literal_module","subject":"Python must literally import the PYBIND11_MODULE name and forward must call that module directly","constraint":"guidance","guide":"project_guides/host_binding.md","section":"Python extension binding","evidence":"Use a literal `PYBIND11_MODULE(module_name, m)` declaration."},
+    {"contract_id":"host_wrapper_launch","subject":"pybind must call a matching extern C *_do wrapper that launches an AI Core kernel","constraint":"guidance","guide":"project_guides/host_binding.md","section":"Host wrapper and launch","evidence":"`kernel/pybind11.cpp` declares and calls an `extern \"C\"` function ending in `_do`."},
+    {"contract_id":"host_no_acl_launch","subject":"Direct ACL launch macros and acl_rt_launch.h are forbidden by the project build contract","constraint":"forbidden_regex:ACLRT_LAUNCH_KERNEL|acl/acl_rt_launch\\.h","guide":"project_guides/host_binding.md","section":"Host wrapper and launch","evidence":"Do not use `ACLRT_LAUNCH_KERNEL` or include `acl/acl_rt_launch.h`."}
+  ],
+  "failure_cards": [
+    {"card_id":"failure_host_binding","signals":["static_validation","ascendc_ext_imported","kernel_called_from_forward","PYBIND11_MODULE"],"subsystem":"HOST_BINDING","inspection_targets":["literal module import","direct forward extension call","PYBIND11_MODULE name"],"guide":"project_guides/host_binding.md","section":"Python extension binding","evidence":"must use a module-level literal `import module_name`"},
+    {"card_id":"failure_host_launch","signals":["missing_kernel_launch","missing_host_wrapper","signature_mismatch","missing_local_include"],"subsystem":"HOST_LAUNCH","inspection_targets":["*_do declaration and definition","kernel launch","installed include paths","current NPU stream"],"guide":"project_guides/host_binding.md","section":"Host wrapper and launch","evidence":"Template kernel launches are valid."}
+  ],
+  "pattern_cards": [
+    {"card_id":"pattern_host_binding","name":"host binding","description":"Use literal module import, direct forward call, matching *_do wrapper, current stream, and an in-kernel-source launch.","keywords":["host","pybind","PYBIND11_MODULE","static_validation","launch"],"guide":"project_guides/host_binding.md","section":"Host wrapper and launch","evidence":"Core tensor computation remains in AscendC."},
+    {"card_id":"pattern_vector_kernel","name":"vector kernel","description":"Use bounded GM/UB tiling with TPipe, TQue, TBuf and CopyIn/Compute/CopyOut lifecycle.","keywords":["vector","TQue","TPipe","DataCopy","elementwise"],"guide":"project_guides/vector_kernel.md","section":"Direct AscendC Vector Kernel Pattern","evidence":"organize `Process` as bounded CopyIn, Compute, and CopyOut stages."},
+    {"card_id":"pattern_cube_kernel","name":"cube kernel","description":"Map Cube memory positions and resolved LoadData/Mmad/Fixpipe semantics explicitly.","keywords":["cube","matmul","Mmad","Fixpipe","AIC"],"guide":"project_guides/cube_kernel.md","section":"Direct AscendC Cube Kernel Pattern","evidence":"map A1/A2/B1/B2/CO1 positions explicitly"},
+    {"card_id":"pattern_cv_kernel","name":"cube vector kernel","description":"Define AIC/AIV roles, workspace ownership, and producer-consumer ordering.","keywords":["AIC","AIV","workspace","mixed core"],"guide":"project_guides/cv_kernel.md","section":"Direct AscendC Cube/Vector Kernel Pattern","evidence":"make the core-role branch explicit"},
+    {"card_id":"pattern_cross_core_sync","name":"cross core synchronization","description":"Track producer, consumer, slot, set/wait/reset and reuse generation for each flag.","keywords":["cross core","synchronization","flag","workspace queue","hang"],"guide":"project_guides/cross_core_sync.md","section":"Direct AscendC Cross-Core Synchronization Pattern","evidence":"For every flag, record"}
+  ]
+}

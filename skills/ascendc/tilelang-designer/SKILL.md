@@ -19,7 +19,7 @@ argument-hint: >
 - 只允许修改或新增 `{output_dir}/` 目录中的文件，不要改动其他目录中的文件。
 - 只允许读取当前工作区目录结构内的文件与子目录；禁止读取当前工作区之外的任何路径，包括父目录、兄弟目录、用户目录、绝对路径以及系统其他目录。
 - 禁止读取 `@references/AscendC_knowledge/` 目录及其下任何文件；该目录仅供 AscendC 阶段使用，与本阶段无关。
-- 禁止读取 `@references/TileLang-AscendC-API-Mapping.md`；该文档是 TileLang 到 AscendC 的转译映射，仅供 AscendC 阶段使用，与本阶段无关。
+- 禁止读取 `ascendc-translator/references/AscendC_knowledge/` 下的 API 与项目指南；这些资料仅供独立的直接 AscendC 阶段使用，与本阶段无关。
 
 ## 任务目录结构
 ```text

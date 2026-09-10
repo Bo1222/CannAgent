@@ -280,14 +280,14 @@ while tl_iteration < max_tl_iterations:
 
 ---
 
-## Phase 4: AscendC 转译与验证（迭代循环）
+## Phase 4: AscendC 直接生成与验证（迭代循环）
 
-Agent 自身维护迭代状态，编排 "转译/生成 → 退化检测 → 功能验证 → Conductor 分析" 的循环。
+Agent 自身维护迭代状态，编排 "规划/生成 → 退化检测 → 功能验证 → Conductor 分析" 的循环。AscendC 候选直接根据算子任务、当前代码、结构化失败和版本化知识生成，不把 TileLang 代码作为转译输入。
 
 ### 前置条件
 
-- `{output_dir}/design/tile_level/` TileLang 代码已存在
-- `{output_dir}/model_new_tilelang.py` 已存在
+- `{output_dir}/model.py` 与测试用例已存在
+- 已解析当前 CANN runtime、SoC 和可用的版本化 AscendC 知识
 
 ### 状态变量
 
@@ -299,11 +299,11 @@ ac_verifier_error = ""
 ac_conductor_suggestion = ""
 ```
 
-### 前置：TileLang → AscendC 转译（仅首次）
+### 前置：AscendC 任务规划（仅首次）
 
-首轮（ac_iteration == 0）执行一次性转译步骤，后续迭代不再重复：
+首轮（ac_iteration == 0）执行一次性规划，后续根据评测证据更新计划：
 
-1. **AscendC 转译**：调用 `ascendc-translator` skill，读取 `@references/TileLang-AscendC-API-Mapping.md`，将 `{output_dir}/design/tile_level/` 中的 TileLang kernel 转译为 AscendC kernel，输出到 `{output_dir}/kernel/`
+1. **AscendC 规划**：读取 `model.py`、测试元数据、Host 项目契约和与当前 API/SoC/CANN 版本匹配的知识，形成直接 AscendC 实现计划。
 
 ### 迭代循环
 
@@ -315,7 +315,7 @@ while ac_iteration < max_ac_iterations:
 
     首次 (ac_iteration == 0):
       传入: output_dir
-      基于 kernel/ 中的 AscendC kernel 生成 wrapper
+      根据直接 AscendC 计划同时生成 kernel、Host wrapper 和 Python binding
 
     重试 (ac_iteration > 0):
       传入: output_dir + ac_verifier_error + ac_conductor_suggestion
@@ -487,7 +487,7 @@ while ac_iteration < max_ac_iterations:
 
 **Skill 参考资料**（各 skill 独立维护，位于 `skills/<skill-name>/references/`）：
 - `tilelang-designer`：BlockLevelDesign.md、TileLangAscendProgrammingGuide.md、TileLangDebug.md、evaluate_tilelang.sh
-- `ascendc-translator`：dsl2Ascendc.md、TileLang-AscendC-API-Mapping.md、AscendC_knowledge/、AscendCVerification.md、evaluate_ascendc.sh
+- `ascendc-translator`：AscendC_knowledge/project_guides/、AscendC_knowledge/api_reference/、direct_llm_core.md、evaluate_ascendc.sh
 - `performance-analyzer`：performance.py（性能测试脚本）
 - `trace-recorder`：evaluate_tilelang.sh、evaluate_ascendc.sh
 

@@ -126,7 +126,7 @@ python -m ascendc_multi_turn \
 2. 同名 JSON 测试用例。
 3. 当前完整 AscendC 实现。
 4. 最近一轮 `EvalResult`，包括编译、正确性、性能和错误输出。
-5. 由直接知识路由器选出的版本化 AscendC/CANN 资料：精简核心规则、相关 API 页、安装版公共头文件声明，以及纯 AscendC 专项资料；不包含 TileLang 或 `dsl2Ascendc_*` 转译指南。
+5. 由直接知识路由器选出的版本化 AscendC/CANN 资料：精简核心规则、相关 API 页、安装版公共头文件声明，以及纯 AscendC 项目知识；不包含 TileLang 或旧 DSL 转译指南。
 6. 模型必须遵守的 JSON 输出协议和文件约束。
 
 LLM 请求是一个普通的 Chat Completions 请求：

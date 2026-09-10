@@ -70,6 +70,7 @@ class KnowledgeSelectionTests(unittest.TestCase):
         rendered = render_knowledge(selection, version=self.version, max_chars=60000)
         self.assertIn("Runtime CANN: 8.5.0", rendered)
         self.assertIn("AscendC Direct-LLM Core Rules", rendered)
+        self.assertIn("Direct AscendC Host Binding Contract", rendered)
         self.assertLessEqual(len(rendered), 60100)
 
     def test_invalid_router_output_uses_deterministic_fallback(self) -> None:

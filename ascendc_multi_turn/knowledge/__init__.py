@@ -12,7 +12,6 @@ from llm_config import get_env
 from ..diagnostics import compact_evaluation, extract_api_symbols
 from ..models import EvalResult, FileBundle
 
-
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 SHARED_ASCENDC_ROOT = REPO_ROOT / "skills/ascendc/ascendc-translator"
 REFERENCES_ROOT = SHARED_ASCENDC_ROOT / "references"
@@ -22,6 +21,7 @@ MANIFEST_PATH = KNOWLEDGE_ROOT / "api_reference/manifest.json"
 
 CORE_DOCUMENTS = (
     REFERENCES_ROOT / "direct_llm_core.md",
+    KNOWLEDGE_ROOT / "project_guides/host_binding.md",
 )
 
 SUPPLEMENT_DOCUMENTS = {
@@ -29,6 +29,10 @@ SUPPLEMENT_DOCUMENTS = {
     for path in (
         REFERENCES_ROOT / "ascendc_dynamic_quant_kb.md",
         REFERENCES_ROOT / "dequant_kernel_patterns.md",
+        KNOWLEDGE_ROOT / "project_guides/vector_kernel.md",
+        KNOWLEDGE_ROOT / "project_guides/cube_kernel.md",
+        KNOWLEDGE_ROOT / "project_guides/cv_kernel.md",
+        KNOWLEDGE_ROOT / "project_guides/cross_core_sync.md",
     )
 }
 
