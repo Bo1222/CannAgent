@@ -171,7 +171,139 @@ Reduce 轴；它不是 API。当前构建中的 `api_ARARARAR` 来自已确认�
 
 默认结构化模式不调用一个额外的 LLM 去阅读和选择完整官方文档。
 
-## 6. 轨迹和排障文件
+## 6. `output-dir` 中会生成什么
+
+一次完整运行的输出目录大致如下。标记为“条件生成”的文件只会在对应阶段实际执行、
+失败、重试或获得正确基线后出现。
+
+```text
+outputs/1_GELU/
+├── model.py
+├── 1_GELU.json
+├── model_new_ascendc.py
+├── kernel/
+│   ├── pybind11.cpp
+│   ├── <kernel-source>.cpp
+│   ├── <optional-header>.h
+│   └── build/                         # 编译期间临时存在
+└── .llm_state/
+    ├── trajectory.json
+    ├── run_state.json
+    ├── summary.json
+    ├── token_usage.json
+    ├── calls.jsonl
+    ├── invocations.jsonl
+    ├── orchestration_attempts.jsonl
+    ├── environment_preflight.log
+    ├── plan.json
+    ├── plan.md
+    ├── baseline.json
+    ├── best.json
+    ├── DONE
+    ├── frontiers/
+    ├── incidents/
+    ├── experience_candidates/
+    ├── planner_v<NN>/ 或 diagnose_v<NN>/
+    └── round_<NN>/
+```
+
+实际目录只包含已经运行到的阶段。例如首轮在 Source Validation 失败时，不会存在
+`build.log`、`correctness.log` 或 `performance.json`。
+
+### 顶层输入与最终源码
+
+- `model.py`：从 `--op-file` 复制的原始 PyTorch 参考实现，用于定义算子语义和正确性基准，
+  不是生成结果。
+- `<operator>.json`，例如 `1_GELU.json`：与参考实现同名的测试 case 描述；源文件不存在时
+  不生成。
+- `model_new_ascendc.py`：最终保留候选的 Python wrapper。正常情况下应导入生成的 AscendC
+  扩展，并在 `forward()` 中调用它。
+- `kernel/pybind11.cpp`：Host 侧 PyBind/ACL 绑定、参数检查、stream 获取和 Kernel launch
+  入口。
+- `kernel/<kernel-source>.cpp`：包含 `__aicore__` Kernel 及相关 AscendC 计算代码。具体文件名
+  由 Generator 决定。
+- `kernel/<optional-header>.h|hpp`：可选的 tiling 数据结构、声明或公共辅助代码。
+- `kernel/build/`：`utils/build_ascendc.py` 在评测期间产生的编译中间文件和扩展产物，内容
+  依赖 CANN 工具链；它是不可编辑的临时生成目录，最终恢复最佳源码时通常会被清理。
+
+运行结束时，顶层 `model_new_ascendc.py` 和 `kernel/` 会恢复为性能最优的正确候选；如果还
+没有正确基线，则恢复到已到达的最深 frontier，不能把它们简单理解为“最后一轮输出”。
+
+### `.llm_state/` 全局运行状态
+
+- `trajectory.json`：整个多轮实验的主记录，包含每轮 decision、评测结果、失败指纹、
+  StructuredFailure、计划项、候选路径、frontier 和知识版本。
+- `run_state.json`：可恢复检查点，记录当前 attempt、待执行 evaluation round 和
+  `PLAN/EDIT/EVAL/DIAGNOSE` 等 pending phase。`--resume` 主要依据它继续。
+- `summary.json`：本次命令结束时打印到终端的最终摘要副本，包括是否成功、停止原因、
+  baseline/best round、token 用量和最后失败。
+- `token_usage.json`：总 token 和 planner、generator、diagnose 等调用类型的分类统计。
+- `calls.jsonl`：每次 LLM 调用一行，记录模型、耗时、finish reason、token 和重试序号；
+  不重复保存完整模型正文。
+- `invocations.jsonl`：每次启动或 `--resume` 的配置快照，一次命令一行。
+- `orchestration_attempts.jsonl`：不计入候选评估预算的编排失败，例如 LLM 传输、格式或本地
+  基础设施失败；没有这类失败时可能不存在。
+- `environment_preflight.log`：CANN、设备和运行环境预检查日志。
+- `plan.json`：当前可执行计划及每个 item 的状态、决策、hypothesis 和 expected signal。
+- `plan.md`：`plan.json` 的人类可读版本。
+- `baseline.json`：第一个通过编译、正确性和性能评测的完整源码 bundle；建立基线前不存在。
+- `best.json`：当前性能最佳正确候选的完整源码 bundle。
+- `DONE`：运行正常完成时创建的空标记；`paused` 或未建立基线的 `blocked` 状态不会创建。
+- `knowledge_state.json`：失败指纹或 document 模式工作集等可恢复知识状态，按需要生成。
+- `planning_error_<NN>.log`：Planner/Diagnose 输出无法调用或解析时的错误，条件生成。
+
+### `frontiers/`、`incidents/` 和经验候选
+
+- `frontiers/manifest.json`：记录当前最深 evaluation frontier 及对应 attempt。
+- `frontiers/source.json`、`compile.json`、`runtime.json`、`correctness.json`、
+  `performance.json`：到达相应阶段时保存的完整源码 bundle，用于失败后的稳定回滚；只有
+  实际跨过该 frontier 才生成。
+- `incidents/incident-*.json`：每个已评估候选的审计记录，包含修复前后 diff、活动假设、
+  关联事实、评测结果和旧失败信号是否消失。
+- `experience_candidates/experience-*.json`：只有修复后通过 correctness 且原失败信号消失
+  才产生的已确认经验候选；它不会覆盖官方事实。
+
+### `planner_v<NN>/` 与 `diagnose_v<NN>/`
+
+- `prompt.txt`：该次 Planner 或 Diagnose 实际收到的完整 prompt。
+- `response.txt`：模型原始文本响应；发生传输重试时还可能有 `response_retry_<NN>.txt`。
+- `result.json`：从响应解析出的结构化计划。
+
+`planner_v<NN>` 用于初始规划或常规重新规划，`diagnose_v<NN>` 用于连续失败触发的诊断规划。
+
+### `round_<NN>/` 每轮候选目录
+
+- `knowledge_bundle.json`：structured 模式为本轮选择的硬约束、API 语义、Cards、项目约束和
+  evidence；这是分析“本轮实际拿到了什么知识”的首要文件。
+- `retrieval_trace.json`：每项知识的命中、拒绝和选择原因，用于检查错检、漏检和相似 API
+  污染。
+- `selected_knowledge.json`：本轮最终知识选择的持久化表示；structured 模式下与 bundle
+  内容接近，document 模式下记录选中的文档集合。
+- `references.md`：经过长度限制、真正拼入 Planner/Generator 上下文的可读知识文本。
+- `prompt.txt`：Generator 本轮实际收到的完整 prompt。
+- `response.txt`：Generator 的原始输出正文。
+- `retry_prompt.txt`、`response_retry_<NN>.txt`：输出被截断或调用重试时生成。
+- `candidate.json`：解析并合并增量修改后的完整候选源码 bundle，也是进入 EVAL 前的恢复
+  检查点；它最适合用来比较某轮是否整体替换代码。
+- `bundle_validation.log`：候选缺少 wrapper、pybind 或 Kernel 源码时生成。
+- `response_format.log`：Generator 输出不是合法文件 bundle 时生成。
+- `source_validation.log`：AscendC 文件、include、Kernel launch、扩展连接等源码结构检查。
+- `api_constraint_validation.log`：基于结构化事实执行的 API 参数约束检查。
+- `resolved_api_calls.json`：API Constraint Validator 解析出的调用、overload、参数单位、对齐
+  和来源事实；仅启用并执行该 Validator 后生成。
+- `static_validation.log`：检查扩展导入、`forward()` Kernel 调用等项目静态契约。
+- `build.log`：AscendC 编译命令的完整输出。
+- `correctness.log`：NPU 正确性测试输出和设备错误信息。
+- `performance.log`：性能脚本执行日志。
+- `performance.json`：逐 case 性能与 speedup 的机器可读结果。
+- `evaluation_incomplete.log`：Evaluator 返回信息不完整时的规范化错误。
+- `evaluation_error.log`：Evaluator 自身抛出未处理异常时生成。
+- `llm_error.log`：Knowledge Router 或 Generator 调用耗尽重试时生成。
+- `knowledge_prompt.txt`、`knowledge_response.txt`、`knowledge_reuse.json`、
+  `runtime_header_facts.json`：仅 `document` 模式使用的文档路由、复用和运行时头文件事实记录；
+  默认 `structured` 模式通常不会生成。
+
+## 7. 轨迹和排障文件
 
 每轮数据位于：
 
@@ -190,7 +322,7 @@ Reduce 轴；它不是 API。当前构建中的 `api_ARARARAR` 来自已确认�
 如果连续多轮停留在相同 failure fingerprint，应检查检索结果是否包含对应 API/Host 合同、
 Planner 是否提出新假设、Generator 是否落实局部修改，以及未推进 frontier 的候选是否正确回滚。
 
-## 7. 更新知识后的检查
+## 8. 更新知识后的检查
 
 ```bash
 python -m unittest discover \

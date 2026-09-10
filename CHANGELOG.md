@@ -15,6 +15,7 @@ Secrets must never be included.
 - Made `structured` the default knowledge mode, added repository-local source/store defaults, and publish `current.json` after a validated build so ordinary Kernel runs do not require a build ID.
 - Renamed `knowledge_v2` to `structured_knowledge`, `KnowledgeRouterV2` to `StructuredKnowledgeRouter`, and the compile-time checker to `ApiConstraintValidator`; added a detailed install/update and runtime-data-flow guide.
 - Added an AscendC multi-turn README covering execution, phase behavior, every knowledge-build artifact, per-round routing, trajectory analysis, and knowledge-update validation.
+- Expanded the multi-turn README with the complete output-directory contract: final source files, resumable global state, plans, candidate bundles, evaluation frontiers, incident records, per-round knowledge artifacts, conditional validation logs, and generated build outputs.
 
 ### Analysis
 
@@ -35,6 +36,7 @@ Secrets must never be included.
 - Built the complete CANN 8.5.0 source into knowledge build `df3113d5fa2f6c82f46f1dfc`: 121 documents, 930 facts, 341 API cards, zero validation issues, and zero conflicts; verified `current.json` selects it.
 - Ran the GELU mock workflow without specifying `--knowledge-mode`; it completed through the default structured path with only planner/generator calls and no document-router LLM call.
 - Verified the new README against the active CLI, knowledge-build tree, runtime router, and the source evidence responsible for the `ARARARAR` index entry; no structured output or compiler behavior was changed.
+- Verified the documented output names and conditional creation rules against the runner, trajectory logger, bundle manager, evaluator, frontier manager, and incident persistence implementation.
 
 ## 2026-09-09
 
