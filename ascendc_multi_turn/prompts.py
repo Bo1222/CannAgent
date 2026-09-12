@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from typing import Any
 
 from .diagnostics import compact_evaluation
 from .models import EvalResult, FileBundle
@@ -76,6 +77,137 @@ Do not use or propose TileLang, another DSL, an intermediate implementation, or 
 """.strip()
 
 
+def render_stage_context(selection: Any) -> str:
+    """Render a stage-selected context without slicing through atomic entries."""
+
+    payload = selection.to_dict() if hasattr(selection, "to_dict") else dict(selection)
+    audience = str(payload.get("audience", "generator"))
+    budget = payload.setdefault("budget", {})
+    max_chars = int(budget.get("max_chars", 12000))
+    truncated: list[str] = []
+    chunks = [
+        "# Selected AscendC reference context",
+        f"Audience: {audience}",
+        "Stages: " + ", ".join(payload.get("stages", [])),
+        (
+            "This is reference knowledge, not a workflow to execute. Resolve conflicts in this order: "
+            + " > ".join(payload.get("authority_order", []))
+            + "."
+        ),
+    ]
+
+    quotas = (
+        {
+            "hard": 2500,
+            "failure": 3000,
+            "api": 1500,
+            "skills": 4000,
+            "other": 1000,
+        }
+        if audience == "planner"
+        else {
+            "hard": 3000,
+            "failure": 4000,
+            "api": 6000,
+            "skills": 5000,
+            "other": 2000,
+        }
+    )
+
+    def append_section(title: str, entries: list[str], quota: int) -> None:
+        if not entries:
+            return
+        section = [f"\n## {title}"]
+        used = len(section[0])
+        accepted = 0
+        for index, entry in enumerate(entries):
+            item = entry.strip()
+            addition = len(item) + 2
+            projected_global = len("\n".join([*chunks, *section, item]))
+            if used + addition > quota or projected_global > max_chars:
+                truncated.append(f"{title}[{index}]")
+                continue
+            section.append(item)
+            used += addition
+            accepted += 1
+        if accepted:
+            chunks.extend(section)
+
+    append_section(
+        "Task and platform facts",
+        [json.dumps(payload.get("task_facts", {}), ensure_ascii=False, indent=2)],
+        quotas["other"],
+    )
+    append_section(
+        "Hard project constraints",
+        [
+            json.dumps(item, ensure_ascii=False, indent=2)
+            for item in payload.get("hard_constraints", [])
+        ],
+        quotas["hard"],
+    )
+    append_section(
+        "Explicit exclusions",
+        [f"- {item}" for item in payload.get("exclusions", [])],
+        quotas["other"],
+    )
+
+    failure_entries = [
+        json.dumps(item, ensure_ascii=False, indent=2)
+        for item in payload.get("failure_guidance", [])
+    ]
+    append_section("Failure-specific guidance", failure_entries, quotas["failure"])
+
+    api_entries = []
+    runtime_facts = str(payload.get("runtime_facts", "")).strip()
+    if runtime_facts:
+        api_entries.append("Installed public-header facts:\n" + runtime_facts)
+    api_entries.extend(
+        json.dumps(item, ensure_ascii=False, indent=2)
+        for item in payload.get("api_facts", [])
+    )
+    append_section("Exact API and runtime facts", api_entries, quotas["api"])
+
+    skill_entries: list[str] = []
+    for capsule in payload.get("skill_capsules", []):
+        skill_entries.append(
+            "\n".join(
+                [
+                    f"### {capsule.get('skill_id')} [{capsule.get('stage')}]",
+                    f"Purpose: {capsule.get('purpose', '')}",
+                    f"Triggered because: {capsule.get('trigger_reason', '')}",
+                    f"Expected artifact: {capsule.get('expected_artifact', '')}",
+                ]
+            )
+        )
+        for excerpt in capsule.get("excerpts", []):
+            headings = ", ".join(excerpt.get("headings", [])) or "bounded file excerpt"
+            skill_entries.append(
+                f"#### {capsule.get('skill_id')} source: {excerpt.get('source')} ({headings})\n"
+                + str(excerpt.get("text", ""))
+            )
+    append_section("Selected CANNBot skill capsules", skill_entries, quotas["skills"])
+
+    other_entries = [
+        f"- {item}" for item in payload.get("design_patterns", [])
+    ]
+    append_section("Selected design patterns", other_entries, quotas["other"])
+    append_section(
+        "Compact provenance",
+        [
+            json.dumps(item, ensure_ascii=False, separators=(",", ":"))
+            for item in payload.get("provenance", [])
+        ],
+        quotas["other"],
+    )
+    text = "\n".join(chunks)
+    budget["used_chars"] = len(text)
+    budget["truncated_sections"] = truncated
+    if hasattr(selection, "budget"):
+        selection.budget = budget
+    return text
+
+
 def _bundle_text(bundle: FileBundle | None) -> str:
     if bundle is None or not bundle.files:
         return "(no implementation exists yet)"
@@ -143,7 +275,7 @@ def build_prompt(
 
 Previously observed normalized failure fingerprints: {json.dumps(failure_fingerprints or [])}
 
-## AscendC runtime and versioned references
+## Stage-selected AscendC references
 {knowledge_context}
 
 ## Output contract
@@ -234,7 +366,7 @@ nullptr, stream>>>. acl/acl_rt_launch.h and ACLRT_LAUNCH_KERNEL are unsupported.
 {feedback}
 ```
 
-## AscendC runtime and versioned references
+## Stage-selected AscendC references
 {knowledge_context or "(no additional reference material selected)"}
 
 ## Recent settled attempts

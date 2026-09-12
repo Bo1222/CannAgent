@@ -13,6 +13,7 @@ from .bundle import (
     restore_bundle,
     validate_initial_bundle,
 )
+from .context_selector import ContextSelector
 from .diagnostics import (
     diagnostic_fingerprint,
     extract_api_symbols,
@@ -37,12 +38,15 @@ from .llm import LLMProvider
 from .logging import TrajectoryLogger
 from .models import EvalResult, FileBundle, LLMCallConfig, LLMResponse, RunConfig
 from .progress import ProgressReporter, token_detail
-from .prompts import build_plan_prompt, build_prompt, parse_plan
+from .prompts import build_plan_prompt, build_prompt, parse_plan, render_stage_context
 from .runtime_knowledge import collect_runtime_facts
+from .skill_adapter import SkillAdapter
 from .structured_knowledge import (
     FrontierManager,
     KnowledgeBuild,
+    KnowledgeBundle,
     KnowledgeContext,
+    RetrievalTraceEntry,
     StructuredKnowledgeRouter,
     build_incident,
     locate_knowledge_build,
@@ -81,6 +85,22 @@ class MultiTurnRunner:
         self.task_dir = Path(config.output_dir).expanduser().resolve()
         self.state_dir = self.task_dir / ".llm_state"
         self.progress = progress or ProgressReporter()
+        self.skill_adapter = (
+            SkillAdapter(
+                mapping_path=config.skill_mapping or None,
+                source_root=config.cannbot_skills_root or None,
+            )
+            if config.uses_skills
+            else None
+        )
+        self.context_selector = (
+            ContextSelector(self.skill_adapter) if self.skill_adapter is not None else None
+        )
+        if self.skill_adapter is not None and not self.skill_adapter.source_root.is_dir():
+            self.progress.emit(
+                "WARNING: CANNBot skill source is unavailable; continuing with empty "
+                f"skill capsules: {self.skill_adapter.source_root}"
+            )
 
     def _prepare_task(self) -> None:
         source = Path(self.config.op_file).expanduser().resolve()
@@ -585,6 +605,8 @@ file delta and no Markdown. The response must fit within the output-token limit.
         max_knowledge_chars: int,
         knowledge_state_path: Path,
         active_plan: dict[str, Any] | None = None,
+        audience: str = "generator",
+        workflow_phase: str = "bootstrap",
     ) -> tuple[Any, str]:
         evidence_parts = [reference, cases]
         if current:
@@ -593,14 +615,28 @@ file delta and no Markdown. The response must fit within the output-token limit.
             evidence_parts.append(read_result_log(previous))
         evidence = "\n".join(evidence_parts)
         if self.config.knowledge_mode == "structured":
-            knowledge_build_path = locate_knowledge_build(
-                Path(self.config.knowledge_store),
-                knowledge_version.knowledge_version,
-                self.config.knowledge_build_id,
+            stage_request = (
+                self.context_selector.request(
+                    audience=audience,
+                    workflow_phase=workflow_phase,
+                    operator=Path(self.config.op_file).stem,
+                    soc=self.config.soc_version,
+                    runtime_version=knowledge_version.runtime_version,
+                    knowledge_version=knowledge_version.knowledge_version,
+                    current_exists=bool(current and current.files),
+                    previous=previous,
+                    evidence=evidence,
+                )
+                if self.context_selector is not None
+                else None
             )
             context = KnowledgeContext(
                 operator=Path(self.config.op_file).stem,
-                phase="diagnose" if previous and previous.error else "plan_generate",
+                phase=(
+                    ",".join(stage_request.stages)
+                    if stage_request is not None
+                    else "diagnose" if previous and previous.error else "plan_generate"
+                ),
                 runtime_version=knowledge_version.runtime_version,
                 knowledge_version=knowledge_version.knowledge_version,
                 soc=self.config.soc_version,
@@ -608,22 +644,112 @@ file delta and no Markdown. The response must fit within the output-token limit.
                 failure=previous.structured_failure if previous and previous.error else None,
                 active_plan=active_plan,
             )
-            bundle = StructuredKnowledgeRouter(KnowledgeBuild(knowledge_build_path)).route(
-                context
-            )
+            if self.config.uses_structured_prompt:
+                knowledge_build_path = locate_knowledge_build(
+                    Path(self.config.knowledge_store),
+                    knowledge_version.knowledge_version,
+                    self.config.knowledge_build_id,
+                )
+                bundle = StructuredKnowledgeRouter(
+                    KnowledgeBuild(knowledge_build_path)
+                ).route(context)
+            else:
+                bundle = KnowledgeBundle(
+                    context=context,
+                    retrieval_trace=[
+                        RetrievalTraceEntry(
+                            "source_policy",
+                            "structured",
+                            "rejected",
+                            "structured prompt source disabled by knowledge_source=skills",
+                        )
+                    ],
+                )
             payload = bundle.to_dict()
-            (round_dir / "knowledge_bundle.json").write_text(
+            bundle_path = round_dir / (
+                f"knowledge_bundle_{audience}.json"
+                if self.context_selector is not None
+                else "knowledge_bundle.json"
+            )
+            bundle_path.write_text(
                 json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
             )
-            (round_dir / "retrieval_trace.json").write_text(
+            trace_path = round_dir / (
+                f"retrieval_trace_{audience}.json"
+                if self.context_selector is not None
+                else "retrieval_trace.json"
+            )
+            trace_path.write_text(
                 json.dumps(payload["retrieval_trace"], ensure_ascii=False, indent=2),
                 encoding="utf-8",
             )
-            rendered = render_bundle(bundle, max_chars=max_knowledge_chars)
-            (round_dir / "references.md").write_text(rendered, encoding="utf-8")
-            (round_dir / "selected_knowledge.json").write_text(
-                json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
-            )
+            if self.context_selector is not None and stage_request is not None:
+                runtime_text = ""
+                if audience == "generator" or any(
+                    stage.endswith("_debug") for stage in stage_request.stages
+                ):
+                    symbols = (
+                        stage_request.failure_symbols
+                        if any(
+                            stage.endswith("_debug") for stage in stage_request.stages
+                        )
+                        and stage_request.failure_symbols
+                        else extract_api_symbols(evidence)
+                    )
+                    runtime_facts = collect_runtime_facts(
+                        symbols,
+                        runtime_version=knowledge_version.runtime_version,
+                        cache_path=round_dir
+                        / f"runtime_header_facts_{audience}.json",
+                        max_chars=4000,
+                    )
+                    runtime_text = runtime_facts.text
+                selected_context, skill_selection = self.context_selector.select(
+                    bundle=bundle,
+                    request=stage_request,
+                    runtime_facts=runtime_text,
+                )
+                selected_context.task_facts["knowledge_source"] = (
+                    self.config.knowledge_source
+                )
+                selected_context.budget["max_chars"] = min(
+                    int(selected_context.budget["max_chars"]),
+                    max_knowledge_chars,
+                )
+                rendered = render_stage_context(selected_context)
+                context_payload = selected_context.to_dict()
+                (round_dir / f"{audience}_context.json").write_text(
+                    json.dumps(context_payload, ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
+                (round_dir / f"skill_selection_{audience}.json").write_text(
+                    json.dumps(skill_selection.to_dict(), ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
+                references_name = (
+                    "planner_references.md" if audience == "planner" else "references.md"
+                )
+                (round_dir / references_name).write_text(rendered, encoding="utf-8")
+                # Preserve the established generic artifacts for downstream tools.
+                if audience == "generator":
+                    (round_dir / "knowledge_bundle.json").write_text(
+                        json.dumps(payload, ensure_ascii=False, indent=2),
+                        encoding="utf-8",
+                    )
+                    (round_dir / "retrieval_trace.json").write_text(
+                        json.dumps(payload["retrieval_trace"], ensure_ascii=False, indent=2),
+                        encoding="utf-8",
+                    )
+                    (round_dir / "selected_knowledge.json").write_text(
+                        json.dumps(context_payload, ensure_ascii=False, indent=2),
+                        encoding="utf-8",
+                    )
+            else:
+                rendered = render_bundle(bundle, max_chars=max_knowledge_chars)
+                (round_dir / "references.md").write_text(rendered, encoding="utf-8")
+                (round_dir / "selected_knowledge.json").write_text(
+                    json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
+                )
             return bundle, rendered
         candidates = candidate_doc_ids(
             evidence,
@@ -786,6 +912,8 @@ file delta and no Markdown. The response must fit within the output-token limit.
                     max_knowledge_chars=max_knowledge_chars,
                     knowledge_state_path=knowledge_state_path,
                     active_plan=active_item,
+                    audience="generator",
+                    workflow_phase=budget_phase,
                 )
             else:
                 selection = selection_from_state(
@@ -812,6 +940,8 @@ file delta and no Markdown. The response must fit within the output-token limit.
                 max_knowledge_chars=max_knowledge_chars,
                 knowledge_state_path=knowledge_state_path,
                 active_plan=active_item,
+                audience="generator",
+                workflow_phase=budget_phase,
             )
         else:
             selection, knowledge_context = prepared_knowledge
@@ -880,6 +1010,21 @@ file delta and no Markdown. The response must fit within the output-token limit.
         self.progress.emit("Preparing task and resume state")
         self._prepare_task()
         logger = TrajectoryLogger(self.state_dir, self.config.to_dict())
+        recorded_config = logger.data.get("config", {})
+        if self.config.resume and isinstance(recorded_config, dict):
+            recorded_source = str(recorded_config.get("knowledge_source") or "").lower()
+            if not recorded_source:
+                if str(recorded_config.get("knowledge_mode", "structured")).lower() == "document":
+                    recorded_source = "document"
+                elif recorded_config.get("skill_adapter"):
+                    recorded_source = "hybrid"
+                else:
+                    recorded_source = "structured"
+            if recorded_source != self.config.knowledge_source:
+                raise ValueError(
+                    "cannot resume with different knowledge source: "
+                    f"recorded={recorded_source}, current={self.config.knowledge_source}"
+                )
         self._migrate_trajectory(logger)
         logger.mark_running()
         logger.save_invocation(self.config.to_dict())
@@ -888,6 +1033,7 @@ file delta and no Markdown. The response must fit within the output-token limit.
         self.progress.emit(
             "LLM configuration: "
             f"provider={self.config.provider}, requested_model={self.config.model}, "
+            f"knowledge_source={self.config.knowledge_source}, "
             f"bootstrap={self.config.max_bootstrap_rounds}, optimization={self.config.max_rounds}, "
             f"total={self.config.max_total_rounds or 'unlimited'}, "
             f"generator={self.config.generator_max_tokens}/{self.config.generator_thinking}/"
@@ -1027,6 +1173,8 @@ file delta and no Markdown. The response must fit within the output-token limit.
                             max_knowledge_chars=max_knowledge_chars,
                             knowledge_state_path=knowledge_state_path,
                             active_plan=active_item,
+                            audience="planner",
+                            workflow_phase=budget_phase,
                         )
                     except LLMCallFailure as error:
                         path = round_dir / "llm_error.log"
@@ -1091,6 +1239,9 @@ file delta and no Markdown. The response must fit within the output-token limit.
 
             round_dir = self.state_dir / f"round_{attempt_id:02d}"
             round_dir.mkdir(parents=True, exist_ok=True)
+            generator_knowledge = (
+                None if self.context_selector is not None else prepared_knowledge
+            )
             try:
                 candidate, base_bundle, selection, response, generation_attempts, candidate_path = (
                     self._prepare_candidate(
@@ -1109,7 +1260,7 @@ file delta and no Markdown. The response must fit within the output-token limit.
                     attempt_id=attempt_id,
                     max_api_docs=max_api_docs,
                     max_knowledge_chars=max_knowledge_chars,
-                    prepared_knowledge=prepared_knowledge,
+                    prepared_knowledge=generator_knowledge,
                     )
                 )
             except LLMCallFailure as error:
@@ -1386,6 +1537,11 @@ file delta and no Markdown. The response must fit within the output-token limit.
             "failure": orchestration_failure or last_evaluation_failure,
             "token_usage": totals,
             "token_usage_by_call_type": totals_by_type,
+            "knowledge_source": {
+                "mode": self.config.knowledge_source,
+                "structured_prompt_enabled": self.config.uses_structured_prompt,
+                "skills_enabled": self.config.uses_skills,
+            },
             "knowledge": knowledge_version.to_dict(),
             "task_dir": str(self.task_dir),
         }

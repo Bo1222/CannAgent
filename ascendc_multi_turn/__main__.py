@@ -101,8 +101,29 @@ def parser() -> argparse.ArgumentParser:
         choices=("document", "structured"),
         default="structured",
     )
+    result.add_argument(
+        "--knowledge-source",
+        choices=("structured", "skills", "hybrid"),
+        default="",
+        help="prompt knowledge source; defaults to structured, while --skill-adapter remains a hybrid alias",
+    )
     result.add_argument("--knowledge-store", default=str(DEFAULT_KNOWLEDGE_STORE))
     result.add_argument("--knowledge-build-id", default=None)
+    result.add_argument(
+        "--skill-adapter",
+        action="store_true",
+        help="legacy alias for --knowledge-source hybrid",
+    )
+    result.add_argument(
+        "--cannbot-skills-root",
+        default="",
+        help="path to cannbot-skills/ops; otherwise use CANNBOT_SKILLS_ROOT or the sibling repository",
+    )
+    result.add_argument(
+        "--skill-mapping",
+        default="",
+        help="override ascendc_multi_turn/skill_mapping.yaml",
+    )
     result.add_argument("--resume", action="store_true")
     result.add_argument("--quiet", action="store_true", help="suppress progress and failure details on stderr")
     result.add_argument("--mock", action="store_true", help="exercise orchestration without API calls, compilation, or NPU")
@@ -155,6 +176,10 @@ def main() -> int:
         knowledge_mode=args.knowledge_mode,
         knowledge_store=args.knowledge_store,
         knowledge_build_id=args.knowledge_build_id,
+        knowledge_source=args.knowledge_source,
+        skill_adapter=args.skill_adapter,
+        cannbot_skills_root=args.cannbot_skills_root,
+        skill_mapping=args.skill_mapping,
         evaluator="mock" if args.mock else "local",
         resume=args.resume,
         mock=args.mock,

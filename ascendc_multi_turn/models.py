@@ -119,6 +119,10 @@ class RunConfig:
     knowledge_mode: str = "structured"
     knowledge_store: str = field(default_factory=lambda: str(DEFAULT_KNOWLEDGE_STORE))
     knowledge_build_id: str | None = None
+    skill_adapter: bool = False
+    cannbot_skills_root: str = ""
+    skill_mapping: str = ""
+    knowledge_source: str = ""
     blanket_max_tokens_override_active: bool = field(default=False, init=False)
     deprecated_repair_options_active: bool = field(default=False, init=False)
 
@@ -135,6 +139,33 @@ class RunConfig:
         self.knowledge_mode = self.knowledge_mode.lower()
         if self.knowledge_mode not in {"document", "structured"}:
             raise ValueError("knowledge_mode must be 'document' or 'structured'")
+        requested_source = self.knowledge_source.strip().lower()
+        valid_sources = {"document", "structured", "skills", "hybrid"}
+        if requested_source and requested_source not in valid_sources:
+            raise ValueError(
+                "knowledge_source must be 'structured', 'skills', or 'hybrid'"
+            )
+        if self.knowledge_mode == "document":
+            if requested_source and requested_source != "document":
+                raise ValueError(
+                    "knowledge_source skills/structured/hybrid requires structured knowledge mode"
+                )
+            if self.skill_adapter:
+                raise ValueError("skill_adapter requires structured knowledge mode")
+            self.knowledge_source = "document"
+        else:
+            if requested_source == "document":
+                raise ValueError(
+                    "knowledge_source=document requires knowledge_mode=document"
+                )
+            if self.skill_adapter and requested_source not in {"", "hybrid"}:
+                raise ValueError(
+                    "--skill-adapter is a legacy alias for knowledge_source=hybrid"
+                )
+            self.knowledge_source = requested_source or (
+                "hybrid" if self.skill_adapter else "structured"
+            )
+            self.skill_adapter = self.knowledge_source in {"skills", "hybrid"}
         if self.knowledge_mode == "structured" and not self.knowledge_store:
             raise ValueError("knowledge_store is required in structured knowledge mode")
         prefix = "DEEPSEEK" if self.provider == "deepseek" else "OPENAI"
@@ -223,6 +254,14 @@ class RunConfig:
             thinking=self.generator_thinking,
             reasoning_effort=self.generator_reasoning_effort,
         )
+
+    @property
+    def uses_structured_prompt(self) -> bool:
+        return self.knowledge_source in {"structured", "hybrid"}
+
+    @property
+    def uses_skills(self) -> bool:
+        return self.knowledge_source in {"skills", "hybrid"}
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

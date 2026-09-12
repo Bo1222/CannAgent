@@ -3,6 +3,11 @@
 All repository modifications must be recorded here. Dates use `YYYY-MM-DD`.
 Secrets must never be included.
 
+## 2026-09-11
+
+### Changes
+- 做关于cannskills中生成ascendc算子的skills 的适配器
+主要目的就是改善cannagent的知识库，当前知识库的内容太差，llm利用不到有效的知识内容
 ## 2026-09-10
 
 ### Changes

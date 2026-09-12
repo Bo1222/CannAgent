@@ -45,6 +45,37 @@ python -m ascendc_multi_turn \
 无需传入 `--knowledge-mode`，默认值是 `structured`。`--knowledge-mode document`
 只用于直接检索原始 Markdown 的对照或诊断实验。
 
+### 可插拔 prompt knowledge source
+
+`--knowledge-source` 可选择原 structured knowledge、CANNBot Skills 或两者的
+stage-aware 合并。它只控制 Planner/Generator 的 prompt knowledge；evaluator 的
+API constraint validation、fixed rules、installed headers 和评测流程保持不变。
+
+```bash
+# 原 structured baseline（默认）
+python -m ascendc_multi_turn ... --knowledge-source structured
+
+# 只把 CANNBot Skills 注入 prompt
+python -m ascendc_multi_turn ... --knowledge-source skills
+
+# structured + CANNBot Skills
+python -m ascendc_multi_turn \
+  --op-file benchmarks/NPUKernelBench/level1/1_GELU.py \
+  --output-dir outputs/1_GELU_skill_adapter \
+  --knowledge-source hybrid \
+  --soc-version Ascend910B3
+```
+
+默认从工作区同级的 `cannbot-skills/ops` 读取白名单引用。也可通过
+`--cannbot-skills-root /path/to/cannbot-skills/ops` 或
+`CANNBOT_SKILLS_ROOT` 指定。映射默认使用
+`ascendc_multi_turn/skill_mapping.yaml`；`--skill-mapping` 仅用于受控实验。
+
+旧 `--skill-adapter` 保留为 `--knowledge-source hybrid` 的兼容别名。没有新参数
+时仍使用原 `structured` baseline。`skills` 只关闭旧 knowledge store 的 prompt
+注入，不删除知识库；为了保持三组验证标准一致，local evaluator 仍可使用同一
+structured build 执行 API constraint validation。`document` mode 不与 Skills 组合。
+
 ## 3. 多轮执行流程
 
 ```text
@@ -303,7 +334,50 @@ outputs/1_GELU/
   `runtime_header_facts.json`：仅 `document` 模式使用的文档路由、复用和运行时头文件事实记录；
   默认 `structured` 模式通常不会生成。
 
-## 7. 轨迹和排障文件
+使用 `skills` 或 `hybrid` source 后还会生成：
+
+- `planner_context.json` / `generator_context.json`：分 audience 的阶段、Skill、
+  引用、排除项和字符预算审计；
+- `planner_references.md` / `references.md`：Planner 和 Generator 实际收到的不同知识投影；
+- `skill_selection_planner.json` / `skill_selection_generator.json`：Skill 触发与引用选择；
+- `knowledge_bundle_planner.json` / `knowledge_bundle_generator.json`：两次投影所基于的
+  official knowledge 包；`skills` source 下为空并记录 source-policy trace；
+- `runtime_header_facts_planner.json` / `runtime_header_facts_generator.json`：
+  按需对当前精确符号查询的已安装 CANN 公共头文件事实。
+
+## 7. Knowledge source 对照评测
+
+同一个 commit、模型、温度、CANN/SoC、设备、case 和轮数分别运行：
+
+```bash
+# Structured baseline
+python -m ascendc_multi_turn \
+  --op-file <case.py> \
+  --output-dir <structured-output> \
+  --knowledge-source structured \
+  <共同参数>
+
+# Skills-only
+python -m ascendc_multi_turn \
+  --op-file <case.py> \
+  --output-dir <skills-output> \
+  --knowledge-source skills \
+  <共同参数>
+
+# Hybrid
+python -m ascendc_multi_turn \
+  --op-file <case.py> \
+  --output-dir <hybrid-output> \
+  --knowledge-source hybrid \
+  <共同参数>
+```
+
+从三组 `.llm_state/summary.json` 和 `calls.jsonl` 统计 compile success、
+correctness、首次成功迭代数、token 和总耗时；只对相互比较且都正确的算子比较
+`best_score` 及 `round_*/performance.json`。非确定模型建议每个算子至少重复三次。
+完整指标定义、控制变量和有效性规则见 `architecture.md` 的 Evaluation plan。
+
+## 8. 轨迹和排障文件
 
 每轮数据位于：
 
@@ -322,7 +396,7 @@ outputs/1_GELU/
 如果连续多轮停留在相同 failure fingerprint，应检查检索结果是否包含对应 API/Host 合同、
 Planner 是否提出新假设、Generator 是否落实局部修改，以及未推进 frontier 的候选是否正确回滚。
 
-## 8. 更新知识后的检查
+## 9. 更新知识后的检查
 
 ```bash
 python -m unittest discover \
