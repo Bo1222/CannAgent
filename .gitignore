@@ -44,3 +44,4 @@ workspace/
 # Agent.md and log files
 AGENTS.md
 CHANGELOG.md
+.vscode/
