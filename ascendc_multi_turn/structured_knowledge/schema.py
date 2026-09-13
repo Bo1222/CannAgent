@@ -175,6 +175,55 @@ class ResolvedApiCall:
 
 
 @dataclass(frozen=True)
+class DiagnosticRecord:
+    """One compiler/evaluator diagnostic derived from direct tool evidence."""
+
+    error_id: str
+    stage: str
+    category: str
+    symbol: str | None
+    source_file: str | None
+    normalized_message: str
+    evidence_origin: str
+    excerpt: str
+    schema_version: int = SCHEMA_VERSION
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class AttemptRecord:
+    """Run-local episode. This is never promoted to stable Skill/API knowledge."""
+
+    attempt_id: int
+    evaluation_round: int
+    base_attempt_id: int | None
+    phase: str
+    target_error_ids: list[str]
+    error_ids_before: list[str]
+    error_ids_after: list[str]
+    cleared_error_ids: list[str]
+    new_error_ids: list[str]
+    reintroduced_error_ids: list[str]
+    hypothesis: str
+    change: str
+    touched_files: list[str]
+    diff_sha256: str
+    selected_skill_ids: list[str]
+    selected_fact_ids: list[str]
+    route: dict[str, Any]
+    outcome: str
+    frontier_before: str | None
+    frontier_after: str | None
+    result: dict[str, Any]
+    schema_version: int = SCHEMA_VERSION
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
 class IncidentRecord:
     incident_id: str
     attempt_id: int
@@ -184,6 +233,14 @@ class IncidentRecord:
     resolved_fact_ids: list[str]
     result: dict[str, Any]
     failure_disappeared: bool
+    base_attempt_id: int | None = None
+    error_ids_before: list[str] = field(default_factory=list)
+    error_ids_after: list[str] = field(default_factory=list)
+    cleared_error_ids: list[str] = field(default_factory=list)
+    new_error_ids: list[str] = field(default_factory=list)
+    reintroduced_error_ids: list[str] = field(default_factory=list)
+    attempt_outcome: str | None = None
+    route: dict[str, Any] = field(default_factory=dict)
     schema_version: int = SCHEMA_VERSION
 
     def to_dict(self) -> dict[str, Any]:

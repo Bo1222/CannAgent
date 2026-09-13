@@ -1,18 +1,12 @@
 from __future__ import annotations
 
-import re
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
-
 _PIPE_DECLARATION = re.compile(r"\b(?:AscendC::)?TPipe\s*(?:[&*]\s*)?([A-Za-z_][A-Za-z0-9_]*)")
 _INVALID_PIPE_METHODS = ("EnQue", "DeQue", "AllocTensor", "FreeTensor")
-_FILE_VALUE = re.compile(
-    r"^(?:inline\s+|static\s+|constexpr\s+|const\s+)*"
-    r"(?:auto|bool|char|float|double|half|bfloat16_t|u?int(?:8|16|32|64)_t)\s+"
-    r"([A-Za-z_][A-Za-z0-9_]*)\s*(?:=|\{)"
-)
 _INCLUDE = re.compile(r'^\s*#\s*include\s*([<"])([^>"]+)[>"]')
 _DO_DECLARATION = re.compile(
     r'extern\s+"C"\s+void\s+([A-Za-z_]\w*_do(?:_\w+)?)\s*\((.*?)\)\s*;',
@@ -28,6 +22,76 @@ _EXTERNAL_QUOTED_HEADERS = {
     "kernel_tiling/kernel_tiling.h",
 }
 _EXTERNAL_QUOTED_PREFIXES = ("acl/", "torch/", "torch_npu/", "pybind11/", "ATen/", "c10/")
+_CUDA_HEADERS = (
+    "ATen/cuda/",
+    "c10/cuda/",
+    "torch/csrc/cuda/",
+    "cuda.h",
+    "cuda_runtime.h",
+    "cuda_runtime_api.h",
+)
+_HOST_NEGATIVE_PATTERNS = (
+    (re.compile(r"\.\s*is_cuda\s*\("), "cuda_tensor_check", "use the locally verified NPU tensor check, not is_cuda()"),
+    (re.compile(r"\bat\s*::\s*cuda\b"), "cuda_namespace", "at::cuda is not valid in the CannAgent NPU host binding"),
+    (re.compile(r"\bc10\s*::\s*cuda\b"), "cuda_namespace", "c10::cuda is not valid in the CannAgent NPU host binding"),
+    (re.compile(r"\bgetCurrentCUDAStream\s*\("), "cuda_stream_api", "use the locally verified torch_npu current-stream API"),
+    (re.compile(r"\b(?:CUDAStream|CUDAContext)\b"), "cuda_host_type", "CUDA host types are not valid in the CannAgent NPU binding"),
+    (re.compile(r"\baclrtGetCurrentStream\s*\("), "unsupported_stream_api", "aclrtGetCurrentStream is not an allowed current-stream API for this project"),
+)
+
+
+def _mask_cpp(text: str, *, mask_literals: bool = True) -> str:
+    """Mask comments and, optionally, literals while preserving offsets/newlines."""
+
+    chars = list(text)
+    index = 0
+    size = len(chars)
+
+    def blank(start: int, end: int) -> None:
+        for cursor in range(start, min(end, size)):
+            if chars[cursor] != "\n":
+                chars[cursor] = " "
+
+    while index < size:
+        if text.startswith("//", index):
+            end = text.find("\n", index + 2)
+            end = size if end < 0 else end
+            blank(index, end)
+            index = end
+            continue
+        if text.startswith("/*", index):
+            end = text.find("*/", index + 2)
+            end = size if end < 0 else end + 2
+            blank(index, end)
+            index = end
+            continue
+        raw = re.match(r'(?:u8|u|U|L)?R"([^\s\\()]*)\(', text[index:])
+        if raw:
+            delimiter = raw.group(1)
+            end_marker = ")" + delimiter + '"'
+            end = text.find(end_marker, index + raw.end())
+            end = size if end < 0 else end + len(end_marker)
+            if mask_literals:
+                blank(index, end)
+            index = end
+            continue
+        literal = re.match(r"(?:u8|u|U|L)?(['\"])", text[index:])
+        if literal:
+            quote = literal.group(1)
+            cursor = index + literal.end()
+            while cursor < size:
+                if text[cursor] == "\\":
+                    cursor += 2
+                    continue
+                cursor += 1
+                if text[cursor - 1] == quote:
+                    break
+            if mask_literals:
+                blank(index, cursor)
+            index = cursor
+            continue
+        index += 1
+    return "".join(chars)
 
 
 def _cann_include_roots() -> list[Path]:
@@ -84,8 +148,10 @@ def validate_source_tree(task_dir: Path) -> list[SourceIssue]:
         if path.suffix not in {".cpp", ".cc", ".cxx", ".h", ".hpp"} or not path.is_file():
             continue
         relative = str(path.relative_to(task_dir))
-        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
-        text = "\n".join(lines)
+        text = path.read_text(encoding="utf-8", errors="replace")
+        lines = text.splitlines()
+        masked_text = _mask_cpp(text)
+        masked_lines = masked_text.splitlines()
         source_text[path] = text
         for line_number, line in enumerate(lines, 1):
             include = _INCLUDE.match(line)
@@ -125,7 +191,12 @@ def validate_source_tree(task_dir: Path) -> list[SourceIssue]:
                         issues.append(
                             SourceIssue(relative, line_number, "missing_cann_include", f"CANN include {header!r} does not exist in the active installation")
                         )
-            if "ACLRT_LAUNCH_KERNEL" in line:
+                if any(header == item or header.startswith(item) for item in _CUDA_HEADERS):
+                    issues.append(
+                        SourceIssue(relative, line_number, "cuda_header", f"CUDA header {header!r} is not valid in the CannAgent NPU build")
+                    )
+            masked_line = masked_lines[line_number - 1] if line_number <= len(masked_lines) else ""
+            if "ACLRT_LAUNCH_KERNEL" in masked_line:
                 issues.append(
                     SourceIssue(
                         relative,
@@ -134,12 +205,18 @@ def validate_source_tree(task_dir: Path) -> list[SourceIssue]:
                         "pybind/direct ACL launch macros are unsupported; define extern \"C\" *_do beside the __aicore__ kernel and launch it with kernel<<<blockDim, nullptr, stream>>>",
                     )
                 )
-        pipe_names = set(_PIPE_DECLARATION.findall(text))
+        for pattern, code, message in _HOST_NEGATIVE_PATTERNS:
+            for match in pattern.finditer(masked_text):
+                issues.append(
+                    SourceIssue(relative, masked_text.count("\n", 0, match.start()) + 1, code, message)
+                )
+
+        pipe_names = set(_PIPE_DECLARATION.findall(masked_text))
         for pipe_name in pipe_names:
             method_pattern = re.compile(
                 rf"\b{re.escape(pipe_name)}\s*(?:->|\.)\s*({'|'.join(_INVALID_PIPE_METHODS)})\s*\("
             )
-            for line_number, line in enumerate(lines, 1):
+            for line_number, line in enumerate(masked_lines, 1):
                 match = method_pattern.search(line)
                 if match:
                     issues.append(
@@ -151,43 +228,22 @@ def validate_source_tree(task_dir: Path) -> list[SourceIssue]:
                         )
                     )
 
-        depth = 0
-        declarations: dict[tuple[int, str], int] = {}
-        for line_number, line in enumerate(lines, 1):
-            stripped = re.sub(r"//.*$", "", line).strip()
-            if depth <= 1:
-                match = _FILE_VALUE.match(stripped)
-                if match:
-                    key = (depth, match.group(1))
-                    previous = declarations.get(key)
-                    if previous is not None:
-                        issues.append(
-                            SourceIssue(
-                                relative,
-                                line_number,
-                                "duplicate_file_symbol",
-                                f"{match.group(1)!r} duplicates a declaration at line {previous}",
-                            )
-                        )
-                    else:
-                        declarations[key] = line_number
-            depth += stripped.count("{") - stripped.count("}")
-            depth = max(0, depth)
-
     pybind_path = kernel_dir / "pybind11.cpp"
     pybind_text = source_text.get(pybind_path, "")
+    pybind_parse_text = _mask_cpp(pybind_text, mask_literals=False)
     declarations = {
-        name: (parameters, pybind_text[:match.start()].count("\n") + 1)
-        for match in _DO_DECLARATION.finditer(pybind_text)
+        name: (parameters, pybind_parse_text[:match.start()].count("\n") + 1)
+        for match in _DO_DECLARATION.finditer(pybind_parse_text)
         for name, parameters in [match.groups()]
     }
     definitions: dict[str, tuple[str, str, Path, int]] = {}
     for path, text in source_text.items():
         if path == pybind_path:
             continue
-        for match in _DO_DEFINITION.finditer(text):
+        parse_text = _mask_cpp(text, mask_literals=False)
+        for match in _DO_DEFINITION.finditer(parse_text):
             name, parameters, body = match.groups()
-            definitions[name] = (parameters, body, path, text[:match.start()].count("\n") + 1)
+            definitions[name] = (parameters, body, path, parse_text[:match.start()].count("\n") + 1)
 
     if pybind_text and "PYBIND11_MODULE" in pybind_text and not declarations:
         issues.append(

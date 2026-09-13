@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "format_note": "JSON-compatible YAML keeps the runtime dependency-free.",
   "source_root_env": "CANNBOT_SKILLS_ROOT",
   "default_source_root": "../../cannbot-skills/ops",
@@ -84,6 +84,23 @@
             {"path": "references/api-reduce-pattern.md", "operator_families": ["reduction"], "max_chars": 2800},
             {"path": "references/api-matmul.md", "operator_families": ["matmul"], "max_chars": 3000}
           ]
+        },
+        {
+          "id": "cannagent-operator-invariants",
+          "origin": "adapter",
+          "source": ".",
+          "role": "support",
+          "purpose": "Constrain generated algorithms with task semantics before selecting API spellings.",
+          "expected_artifact": "An implementation whose indexing, reduction, dtype, broadcasting, and tail behavior matches the reference contract.",
+          "knowledge_type": ["semantic_invariant", "algorithm", "formula"],
+          "when": {"always": true},
+          "provide": ["operator identity", "reference semantics", "cases", "current failure"],
+          "exclude": ["complete copyable implementation", "unverified API signatures", "unrelated operators"],
+          "references": [
+            {"path": "verified_operator_patterns.md", "operators": ["gelu"], "headings": ["GELU semantic invariants"], "confidence_level": 1, "provenance": "task_and_project_contract", "max_chars": 3200},
+            {"path": "verified_operator_patterns.md", "operators": ["layernorm", "layer_norm"], "headings": ["LayerNorm semantic invariants"], "confidence_level": 1, "provenance": "task_and_project_contract", "max_chars": 3600},
+            {"path": "verified_operator_patterns.md", "operators": ["permute"], "headings": ["Permute semantic invariants"], "confidence_level": 1, "provenance": "task_and_project_contract", "max_chars": 4200}
+          ]
         }
       ]
     },
@@ -104,6 +121,40 @@
               "headings": ["内存层次与数据流", "同步机制", "如何处理不对齐的数据？"],
               "max_chars": 3600
             }
+          ]
+        },
+        {
+          "id": "cannagent-host-abi",
+          "origin": "adapter",
+          "source": ".",
+          "role": "support",
+          "purpose": "Adapt direct invocation to the CannAgent torch_npu build and wrapper contract.",
+          "expected_artifact": "A locally grounded NPU pybind, stream, wrapper, and kernel-launch integration.",
+          "knowledge_type": ["project_contract", "host_abi", "negative_fact"],
+          "when": {"always": true},
+          "provide": ["installed Host facts", "current wrapper", "module name"],
+          "exclude": ["CUDA APIs", "unverified stream signatures", "CANNBot project scaffold"],
+          "references": [
+            {"path": "cannagent_host_abi.md", "headings": ["Positive Host ABI facts", "Negative Host ABI facts"], "confidence_level": 1, "provenance": "project_contract", "max_chars": 3800}
+          ]
+        }
+      ]
+    },
+    "host_integration_debug": {
+      "skills": [
+        {
+          "id": "cannagent-host-abi",
+          "origin": "adapter",
+          "source": ".",
+          "role": "support",
+          "purpose": "Repair only the failing CannAgent NPU Host integration layer.",
+          "expected_artifact": "One minimal tensor-check, stream, wrapper, link, or import correction.",
+          "knowledge_type": ["host_abi", "integration_debug", "negative_fact"],
+          "when": {"failure_stages": ["bundle_validation", "ascendc_source_validation", "api_constraint_validation", "static_validation", "ascendc_build", "compile"]},
+          "provide": ["Host diagnostic", "current pybind source", "installed/probed Host facts"],
+          "exclude": ["kernel math changes", "tiling changes", "CUDA APIs", "unverified signatures"],
+          "references": [
+            {"path": "cannagent_host_abi.md", "headings": ["Positive Host ABI facts", "Negative Host ABI facts", "Host repair checklist"], "confidence_level": 1, "provenance": "project_and_runtime_contract", "max_chars": 5200}
           ]
         }
       ]
@@ -169,7 +220,7 @@
           "purpose": "Classify numerical symptoms and select one bounded experiment or fix for a correctness mismatch.",
           "expected_artifact": "Symptom class, testable root cause, minimal instrumentation/fix, and expected comparison signal.",
           "knowledge_type": ["numerical_rule", "diagnostic_playbook", "instrumentation_pattern"],
-          "when": {"failure_stages": ["correctness"], "any_terms": ["mismatch", "not close", "rtol", "atol", "nan", "inf", "zero", "random", "precision", "max error", "incorrect"]},
+          "when": {"failure_stages": ["correctness"], "any_terms": ["fp32 pass", "float32 pass", "fp16 fail", "float16 fail", "cast precision", "accumulation dtype", "accumulator precision", "epsilon", "roundmode", "round mode", "rounding", "overflow", "underflow", "tolerance boundary"]},
           "provide": ["failing and passing dtype/shape cases", "tolerances", "error/output summary", "current kernel dataflow and buffers"],
           "exclude": ["all precision traps", "runtime environment checks", "performance optimization", "blind fix sequences", "debug summary bureaucracy"],
           "references": [

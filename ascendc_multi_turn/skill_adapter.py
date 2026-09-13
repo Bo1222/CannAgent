@@ -25,6 +25,18 @@ class SkillAdapterContext:
     failure_symbols: list[str]
     has_correct_baseline: bool
     evidence: str
+    source_symbols: list[str] = field(default_factory=list)
+    planned_symbols: list[str] = field(default_factory=list)
+    symbol_evidence: list[dict[str, Any]] = field(default_factory=list)
+    primary_skill: str = "kernel_design"
+    route_reason: str = "default_kernel_design"
+    secondary_skill: str | None = None
+    secondary_reason: str | None = None
+    debug_category: str = "kernel_design"
+    routing_confidence: str = "fallback"
+    route_evidence_origin: str = "workflow"
+    matched_route_trigger: str | None = None
+    environment_fingerprint: str | None = None
 
 
 @dataclass
@@ -32,6 +44,9 @@ class SkillExcerpt:
     source: str
     headings: list[str]
     text: str
+    origin: str = "cannbot"
+    confidence_level: int = 1
+    provenance: str = "documented_skill"
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -48,6 +63,7 @@ class SkillCapsule:
     provided_context: list[str]
     exclusions: list[str]
     excerpts: list[SkillExcerpt] = field(default_factory=list)
+    role: str = "support"
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -56,7 +72,7 @@ class SkillCapsule:
 @dataclass
 class SkillAdapterSelection:
     capsules: list[SkillCapsule]
-    trace: list[dict[str, str]]
+    trace: list[dict[str, Any]]
     source_root: str | None
     source_available: bool
 
@@ -91,7 +107,9 @@ def _markdown_blocks(text: str) -> list[str]:
     return [item for item in blocks if item]
 
 
-def _fit_markdown_blocks(text: str, max_chars: int) -> str:
+def _fit_markdown_blocks(text: str, max_chars: int | None) -> str:
+    if max_chars is None:
+        return "\n\n".join(_markdown_blocks(text))
     selected: list[str] = []
     used = 0
     for block in _markdown_blocks(text):
@@ -104,7 +122,7 @@ def _fit_markdown_blocks(text: str, max_chars: int) -> str:
 
 
 def _extract_markdown_sections(
-    text: str, headings: list[str], *, max_chars: int
+    text: str, headings: list[str], *, max_chars: int | None
 ) -> str:
     if not headings:
         return _fit_markdown_blocks(text, max_chars).rstrip()
@@ -127,7 +145,9 @@ def _extract_markdown_sections(
                     break
             end += 1
         section = "\n".join(lines[index:end]).strip()
-        remaining = max_chars - len("\n\n".join(selected))
+        remaining = (
+            None if max_chars is None else max_chars - len("\n\n".join(selected))
+        )
         bounded = _fit_markdown_blocks(section, remaining)
         if bounded:
             selected.append(bounded)
@@ -147,12 +167,13 @@ class SkillAdapter:
         *,
         mapping_path: Path | str | None = None,
         source_root: Path | str | None = None,
+        full_selected_input: bool = False,
     ):
         self.mapping_path = (
             Path(mapping_path or DEFAULT_MAPPING_PATH).expanduser().resolve()
         )
         self.mapping = json.loads(self.mapping_path.read_text(encoding="utf-8"))
-        if int(self.mapping.get("schema_version", 0)) != 1:
+        if int(self.mapping.get("schema_version", 0)) not in {1, 2}:
             raise ValueError(f"unsupported skill mapping schema: {self.mapping_path}")
         configured = os.getenv(str(self.mapping.get("source_root_env", "")), "").strip()
         root_value = (
@@ -162,6 +183,8 @@ class SkillAdapter:
         if not root.is_absolute():
             root = self.mapping_path.parent / root
         self.source_root = root.resolve()
+        self.adapter_root = (self.mapping_path.parent / "knowledge_capsules").resolve()
+        self.full_selected_input = full_selected_input
 
     @property
     def audience_budgets(self) -> dict[str, int]:
@@ -240,11 +263,12 @@ class SkillAdapter:
             reasons.append("correct baseline exists")
         return True, "; ".join(reasons) or "mapping conditions matched"
 
-    def _safe_reference(self, skill_root: Path, relative: str) -> Path | None:
+    @staticmethod
+    def _safe_reference(skill_root: Path, allowed_root: Path, relative: str) -> Path | None:
         candidate = (skill_root / relative).resolve()
         try:
             candidate.relative_to(skill_root)
-            candidate.relative_to(self.source_root)
+            candidate.relative_to(allowed_root)
         except ValueError:
             return None
         if candidate.suffix.lower() != ".md" or not candidate.is_file():
@@ -255,15 +279,16 @@ class SkillAdapter:
     def _reference_matches(
         reference: dict[str, Any], context: SkillAdapterContext
     ) -> tuple[bool, str]:
+        operators = [str(item).lower() for item in reference.get("operators", [])]
+        if operators and context.operator.lower() not in operators:
+            return False, "reference operator mismatch"
         families = [str(item) for item in reference.get("operator_families", [])]
         if families and not set(families).intersection(context.operator_families):
             return False, "reference operator family mismatch"
         terms = [str(item).lower() for item in reference.get("when_any", [])]
         if terms:
             evidence = _normalized_text(
-                context.failure_evidence
-                if context.failure_stage and context.failure_evidence
-                else context.evidence
+                f"{context.failure_evidence} {context.evidence}"
             )
             matched = [term for term in terms if term in evidence]
             if not matched:
@@ -272,7 +297,7 @@ class SkillAdapter:
         return True, "reference mapping matched"
 
     def select(self, context: SkillAdapterContext) -> SkillAdapterSelection:
-        trace: list[dict[str, str]] = []
+        trace: list[dict[str, Any]] = []
         capsules: list[SkillCapsule] = []
         source_available = self.source_root.is_dir()
         if not source_available:
@@ -283,13 +308,32 @@ class SkillAdapter:
                     "reason": "source_unavailable",
                 }
             )
-            return SkillAdapterSelection(capsules, trace, str(self.source_root), False)
-
         stage_mappings = self.mapping.get("stages", {})
         for stage in context.stages:
             stage_mapping = stage_mappings.get(stage, {})
             for skill in stage_mapping.get("skills", []):
                 skill_id = str(skill.get("id", ""))
+                role = str(skill.get("role", "support"))
+                if role == "primary" and skill_id != context.primary_skill:
+                    trace.append(
+                        {
+                            "candidate": f"{stage}:{skill_id}",
+                            "decision": "rejected",
+                            "reason": f"primary route is {context.primary_skill}",
+                            "role": role,
+                        }
+                    )
+                    continue
+                if role == "secondary" and skill_id != context.secondary_skill:
+                    trace.append(
+                        {
+                            "candidate": f"{stage}:{skill_id}",
+                            "decision": "rejected",
+                            "reason": "secondary route not selected",
+                            "role": role,
+                        }
+                    )
+                    continue
                 matches, reason = self._condition_matches(
                     skill.get("when", {}), context
                 )
@@ -302,17 +346,28 @@ class SkillAdapter:
                         }
                     )
                     continue
-                skill_root = (
-                    self.source_root / str(skill.get("source", skill_id))
-                ).resolve()
+                origin = str(skill.get("origin", "cannbot"))
+                allowed_root = self.adapter_root if origin == "adapter" else self.source_root
+                if origin == "cannbot" and not source_available:
+                    trace.append(
+                        {
+                            "candidate": f"{stage}:{skill_id}",
+                            "decision": "rejected",
+                            "reason": "source_unavailable",
+                            "role": role,
+                            "origin": origin,
+                        }
+                    )
+                    continue
+                skill_root = (allowed_root / str(skill.get("source", skill_id))).resolve()
                 try:
-                    skill_root.relative_to(self.source_root)
+                    skill_root.relative_to(allowed_root)
                 except ValueError:
                     trace.append(
                         {
                             "candidate": f"{stage}:{skill_id}",
                             "decision": "rejected",
-                            "reason": "unsafe skill source",
+                            "reason": f"unsafe {origin} skill source",
                         }
                     )
                     continue
@@ -332,7 +387,7 @@ class SkillAdapter:
                             }
                         )
                         continue
-                    path = self._safe_reference(skill_root, relative)
+                    path = self._safe_reference(skill_root, allowed_root, relative)
                     if path is None:
                         trace.append(
                             {
@@ -346,7 +401,11 @@ class SkillAdapter:
                     excerpt = _extract_markdown_sections(
                         path.read_text(encoding="utf-8", errors="replace"),
                         headings,
-                        max_chars=int(reference.get("max_chars", 3000)),
+                        max_chars=(
+                            None
+                            if self.full_selected_input
+                            else int(reference.get("max_chars", 3000))
+                        ),
                     )
                     if not excerpt:
                         trace.append(
@@ -357,12 +416,23 @@ class SkillAdapter:
                             }
                         )
                         continue
-                    excerpts.append(SkillExcerpt(relative, headings, excerpt))
+                    excerpts.append(
+                        SkillExcerpt(
+                            relative,
+                            headings,
+                            excerpt,
+                            origin=origin,
+                            confidence_level=int(reference.get("confidence_level", 1)),
+                            provenance=str(reference.get("provenance", "documented_skill")),
+                        )
+                    )
                     trace.append(
                         {
                             "candidate": reference_id,
                             "decision": "selected",
                             "reason": ref_reason,
+                            "role": role,
+                            "origin": origin,
                         }
                     )
                 capsules.append(
@@ -380,6 +450,7 @@ class SkillAdapter:
                         ],
                         exclusions=[str(item) for item in skill.get("exclude", [])],
                         excerpts=excerpts,
+                        role=role,
                     )
                 )
                 trace.append(
@@ -387,6 +458,8 @@ class SkillAdapter:
                         "candidate": f"{stage}:{skill_id}",
                         "decision": "selected",
                         "reason": reason,
+                        "role": role,
+                        "origin": origin,
                     }
                 )
-        return SkillAdapterSelection(capsules, trace, str(self.source_root), True)
+        return SkillAdapterSelection(capsules, trace, str(self.source_root), source_available)

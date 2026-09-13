@@ -4,7 +4,7 @@ import sys
 import threading
 import time
 from datetime import datetime
-from typing import TextIO
+from typing import Any, TextIO
 
 
 class ProgressTask:
@@ -31,6 +31,14 @@ class ProgressTask:
         if self._thread is not None:
             self._thread.join(timeout=1)
         elapsed = time.monotonic() - self.started_at
+        self.reporter.record_event(
+            {
+                "label": self.label,
+                "status": status,
+                "detail": detail,
+                "elapsed_seconds": elapsed,
+            }
+        )
         suffix = f" · {detail}" if detail else ""
         self.reporter.emit(f"{self.label} · {status} ({elapsed:.1f}s){suffix}")
 
@@ -49,6 +57,19 @@ class ProgressReporter:
         self.stream = stream if stream is not None else sys.stderr
         self.heartbeat_interval = heartbeat_interval
         self._lock = threading.Lock()
+        self._events: list[dict[str, Any]] = []
+
+    def record_event(self, event: dict[str, Any]) -> None:
+        with self._lock:
+            self._events.append(dict(event))
+
+    def event_cursor(self) -> int:
+        with self._lock:
+            return len(self._events)
+
+    def events_since(self, cursor: int) -> list[dict[str, Any]]:
+        with self._lock:
+            return [dict(item) for item in self._events[cursor:]]
 
     def emit(self, message: str) -> None:
         if not self.enabled:

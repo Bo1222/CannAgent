@@ -33,19 +33,28 @@ context_request:
     soc: string
     runtime_cann: string
     knowledge_cann: string
+    environment_fingerprint: string | null
   source:
     paths: []
-    exact_api_symbols: []
+    source_symbols: []
     relevant_calls: []
   plan:
     active_item: object | null
+    planned_symbols: []
   failure:
     stage: string | null
     code: string | null
     subsystem: string | null
     concise_diagnostics: string
-    related_symbols: []
+    failure_symbols: []
     fingerprints: []
+  routing:
+    primary_skill: string
+    route_reason: string
+    secondary_skill: string | null
+    secondary_reason: string | null
+    debug_category: string
+    routing_confidence: direct | corroborated | fallback
 ```
 
 The implementation may initially infer family, shapes, and dtypes from text.
@@ -55,7 +64,7 @@ Unknown fields stay unknown; they must not be fabricated.
 
 ```yaml
 selected_context:
-  schema_version: 1
+  schema_version: 2
   audience: planner | generator
   stages: []
   authority_order:
@@ -72,6 +81,18 @@ selected_context:
     soc: string
     runtime_cann: string
     failure_stage: string | null
+    failure_symbols: []
+    source_symbols: []
+    planned_symbols: []
+    symbol_evidence:
+      - symbol: string
+        kinds: [failure | source | planned]
+        sources: [evaluation | candidate | active_plan]
+    primary_skill: string
+    route_reason: string
+    secondary_skill: string | null
+    secondary_reason: string | null
+    environment_fingerprint: object
   hard_constraints: []
   api_facts: []
   design_patterns: []
@@ -84,6 +105,21 @@ selected_context:
     used_chars: integer
     truncated_sections: []
   selection_trace: []
+  selection_metadata:
+    selected_skill_ids: []
+    selected_structured_ids: []
+    runtime_fact_ids: []
+    selected_items:
+      - id: string
+        source: structured | runtime | cannbot | adapter
+        evidence_symbol: string | null
+        symbol_types: [failure | source | planned | fallback]
+        confidence_level: 0 | 1 | 2 | 3
+        provenance: string | []
+    rendered_chars: integer
+    rendered_estimated_tokens: integer
+    rendered_sections: []
+    truncated_sections: []
 ```
 
 Each `skill_capsule` has this form:
@@ -102,6 +138,9 @@ skill_capsule:
     - source: relative/path
       headings: []
       text: string
+      origin: cannbot | adapter
+      confidence_level: 0 | 1 | 2 | 3
+      provenance: string
 ```
 
 ## 3. Stage projections
@@ -111,9 +150,10 @@ skill_capsule:
 | `operator_analysis` | reference semantics summary, case shapes/dtypes/attributes, SoC identity, supported architecture facts | one operator-family classifier | API dumps, debug playbooks, performance variants, full templates |
 | `kernel_design` | operator family, core/tile/tail strategy constraints, UB/buffer budget, dtype/alignment branches, project ABI | one family-specific tiling guide and exact API restrictions already implied by the design | unrelated families, runtime/plog guides, complete project scaffolds |
 | `code_generation` | active plan, exact current API facts, installed-header facts, project contracts, one compatible structural template excerpt | family-specific CopyIn/Compute/CopyOut or launch example | other target platforms, CMake/run/test scaffolds, broad performance corpus, unrelated APIs |
+| `host_integration_debug` | Host diagnostic, current pybind source, local positive/negative ABI facts, installed/probed tensor+stream declarations | one direct-invoke structural excerpt | kernel math, tiling changes, CUDA patterns, unverified exact Host signatures |
 | `compile_debug` | concise compiler diagnostics, failing source calls, exact header/API facts, ABI/source contracts | direct-invoke structural excerpt when launch/module layout is implicated | numerical precision guides, unrelated APIs/families, old full logs |
 | `runtime_debug` | error code/subsystem, failing case, launch/tiling facts, relevant runtime decision branch | one error-code or kernel-binary section | performance guides, full API catalog, precision material unless the runtime fault is cleared |
-| `precision_debug` | error symptoms/distribution, failing/passing dtype+shape cases, golden/output hints, dataflow and synchronization facts | one matching trap/instrumentation section and exact implicated APIs | environment/kernel-lookup guides, unrelated numerical traps, performance tuning |
+| `precision_debug` | explicit dtype/cast/accumulation/rounding/epsilon/tolerance evidence, failing/passing cases, dataflow facts | one matching trap/instrumentation section and exact implicated APIs | generic large mismatch, indexing/data-movement errors, environment and performance guidance |
 | `optimization` | correct baseline, per-case latency, operator family, architecture, current tiling/buffer design, one testable hypothesis | one family-specific and at most one common optimization | debug playbooks, unmeasured optimizations, other families, changes that relax correctness |
 
 ## 4. Audience projections
@@ -171,20 +211,28 @@ Rules are ordered and deterministic:
    `operator_analysis + kernel_design`.
 2. No current implementation and generator audience:
    `kernel_design + code_generation`.
-3. Source/static/API-validation/build failure:
-   `compile_debug` plus `code_generation` for the generator.
-4. Correctness-stage failure with runtime code, device exception, or
+3. Source/static/API-validation/build failure involving CUDA contamination,
+   NPU tensor checks, stream, Host wrapper/link/import evidence:
+   `host_integration_debug`; generator also receives `code_generation`.
+4. Other source/static/API-validation/build failure:
+   `compile_debug`; generator also receives `code_generation`.
+5. Correctness-stage failure with runtime code, device exception, or
    ACL/AICORE/MTE/RUNTIME subsystem:
    `runtime_debug`.
-5. Correctness-stage mismatch, NaN/Inf, zero/random output, or tolerance signal
-   without a runtime fault:
-   `precision_debug`.
-6. Valid correct baseline in optimization budget:
+6. Correctness failure after successful compile/load/execute defaults to
+   `kernel_design`. A broad numerical mismatch alone never selects precision.
+7. Select `precision_debug` as primary only for direct precision evidence such
+   as FP32 pass/FP16 fail, cast/accumulation dtype, rounding, epsilon,
+   overflow/underflow, or a tolerance-boundary failure. It may be one optional
+   secondary to `kernel_design` when the evidence supports both hypotheses.
+8. Valid correct baseline in optimization budget:
    `optimization`; generator also receives `code_generation` contracts but not
    the initial scaffold.
-7. Ambiguous correctness failure may select runtime and precision capsules, but
-   each gets half its normal excerpt budget and the planner must first classify
-   the failure.
+
+There is exactly one primary route. There is at most one secondary route, and
+it is empty unless current deterministic evidence states a second hypothesis.
+No LLM classifier, magnitude scorer, distribution classifier, or numeric
+confidence model participates in routing.
 
 ## 6. Budget and truncation policy
 
@@ -206,6 +254,10 @@ constraint, or code block.
 
 - Exact API identity is mandatory for API semantics. Similar names do not
   inherit each other's facts.
+- Symbol evidence is ordered `failure > source > planned`; all three sets are
+  retained, and an empty set never hard-filters the remaining useful cards.
+- Debug selection uses the union of failure, current-source, and relevant plan
+  symbols. A bounded fallback remains available when no exact card exists.
 - Operator-family routing precedes pattern/example routing.
 - CANNBot references are allowlisted in `skill_mapping.yaml`; links discovered
   inside an excerpt are not recursively loaded.
@@ -215,11 +267,32 @@ constraint, or code block.
 - All rejected skill mappings and excerpts should be traceable with a reason.
 - The same excerpt should not be repeated across planner and generator unless
   it is a hard constraint needed by both.
-- If the CANNBot repository is unavailable, the adapter degrades to existing
-  structured knowledge and records `source_unavailable`; it must not fail the
-  generation workflow.
+- If the CANNBot repository is unavailable, external references are rejected
+  with `source_unavailable`, while path-confined CannAgent capsules remain
+  available. Hybrid retains its selected structured facts; Skills-only must
+  not fall back to structured prompt knowledge.
 
-## 8. Prompt rendering contract
+## 8. Runtime knowledge provenance and invalidation
+
+Runtime facts use four explicit levels:
+
+| Level | Name | Meaning |
+|---:|---|---|
+| 3 | Verified | A minimal probe compiled with the current project toolchain and matching environment fingerprint. |
+| 2 | Installed | Parsed from current installed CANN/torch_npu public headers, without an independent matching probe. |
+| 1 | Documented | Official documentation, structured cards, or Skill references not proven against this exact installation. |
+| 0 | Inferred | Unverified inference or header absence without direct compiler corroboration. |
+
+The generator preference is `Verified > Installed > Documented >> Inferred`.
+Level 0 is not sufficient grounding for a critical Host ABI or a previously
+failing AscendC API. A verified fact is bound to CANN/toolkit root,
+PyTorch/torch_npu versions, Host C++ and CANN `bisheng` compiler identities,
+include roots, SoC, project build-contract hash, and probe-contract hash.
+Fingerprint mismatch invalidates Level 3 and
+forces re-probe or downgrade. Online/newest documentation never becomes Level
+3 without the local probe.
+
+## 9. Prompt rendering contract
 
 Render in this order:
 
@@ -253,7 +326,7 @@ Stages: ...
 The prompt builder must identify this as reference context, not as a workflow to
 execute. Existing mandatory rules and output JSON contracts remain unchanged.
 
-## 9. Audit artifacts
+## 10. Audit artifacts
 
 For each call, persist:
 
@@ -263,6 +336,14 @@ For each call, persist:
 - existing `knowledge_bundle.json` and `retrieval_trace.json`: underlying
   structured retrieval;
 - token usage already recorded in `calls.jsonl` and summary.
+
+`calls.jsonl.prompt_metadata.knowledge_selection` records selected and rejected
+IDs, symbol kinds, route reason, provenance/confidence, and exact rendered
+sizes. Each trajectory round records observation-only stages A–H and evaluator
+timings. `summary.json.stage_normalized_metrics` reports transition rates,
+censored tokens/time-to-first-stage, calls/tokens per call, prompt component
+sizes, and LLM/evaluator stage latency. An unreached milestone is `null`
+(`N/A/censored`), never zero.
 
 These artifacts make baseline/new token and relevance comparisons possible
 without inspecting provider traffic.

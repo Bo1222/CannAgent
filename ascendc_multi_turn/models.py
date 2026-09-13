@@ -123,6 +123,7 @@ class RunConfig:
     cannbot_skills_root: str = ""
     skill_mapping: str = ""
     knowledge_source: str = ""
+    knowledge_input_mode: str = "bounded"
     blanket_max_tokens_override_active: bool = field(default=False, init=False)
     deprecated_repair_options_active: bool = field(default=False, init=False)
 
@@ -168,6 +169,11 @@ class RunConfig:
             self.skill_adapter = self.knowledge_source in {"skills", "hybrid"}
         if self.knowledge_mode == "structured" and not self.knowledge_store:
             raise ValueError("knowledge_store is required in structured knowledge mode")
+        self.knowledge_input_mode = self.knowledge_input_mode.strip().lower().replace("-", "_")
+        if self.knowledge_input_mode not in {"bounded", "full_selected"}:
+            raise ValueError(
+                "knowledge_input_mode must be 'bounded' or 'full_selected'"
+            )
         prefix = "DEEPSEEK" if self.provider == "deepseek" else "OPENAI"
         if not self.model:
             self.model = get_env(
@@ -258,6 +264,10 @@ class RunConfig:
     @property
     def uses_structured_prompt(self) -> bool:
         return self.knowledge_source in {"structured", "hybrid"}
+
+    @property
+    def uses_full_selected_input(self) -> bool:
+        return self.knowledge_input_mode == "full_selected"
 
     @property
     def uses_skills(self) -> bool:

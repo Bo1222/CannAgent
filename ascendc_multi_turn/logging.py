@@ -13,6 +13,8 @@ class TrajectoryLogger:
         self.state_dir.mkdir(parents=True, exist_ok=True)
         self.log_path = state_dir / "trajectory.json"
         self.calls_path = state_dir / "calls.jsonl"
+        self.attempt_ledger_path = state_dir / "attempt_ledger.jsonl"
+        self.attempt_records_dir = state_dir / "attempts"
         self.attempts_path = state_dir / "orchestration_attempts.jsonl"
         self.invocations_path = state_dir / "invocations.jsonl"
         self.run_state_path = state_dir / "run_state.json"
@@ -64,6 +66,7 @@ class TrajectoryLogger:
         call_type: str = "generator",
         evaluation_round: int | None = None,
         retry: int = 0,
+        prompt_metadata: dict[str, Any] | None = None,
     ) -> None:
         # Raw model output is stored once in round_N/response.txt.  Keep this
         # append-only file compact so it can be aggregated across many ops.
@@ -78,6 +81,7 @@ class TrajectoryLogger:
                 for key, value in response.items()
                 if key not in {"content", "reasoning_content"}
             },
+            "prompt_metadata": prompt_metadata or {},
         }
         reasoning = response.get("reasoning_content")
         if isinstance(reasoning, str):
@@ -100,6 +104,7 @@ class TrajectoryLogger:
         retry: int,
         error: str,
         request_options: dict[str, Any],
+        prompt_metadata: dict[str, Any] | None = None,
     ) -> None:
         record = {
             "timestamp": self._timestamp(),
@@ -109,6 +114,7 @@ class TrajectoryLogger:
             "retry": retry,
             "error": error,
             "request_options": request_options,
+            "prompt_metadata": prompt_metadata or {},
         }
         with self.calls_path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(record, ensure_ascii=False) + "\n")
@@ -117,6 +123,37 @@ class TrajectoryLogger:
         record = {"timestamp": self._timestamp(), **record}
         with self.attempts_path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+    def save_attempt_record(self, record: Any) -> None:
+        payload = record.to_dict() if hasattr(record, "to_dict") else dict(record)
+        self.attempt_records_dir.mkdir(parents=True, exist_ok=True)
+        attempt_id = int(payload.get("attempt_id", 0))
+        record_path = self.attempt_records_dir / f"attempt_{attempt_id:04d}.json"
+        record_path.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+        summary = {
+            key: payload.get(key)
+            for key in (
+                "attempt_id",
+                "evaluation_round",
+                "base_attempt_id",
+                "phase",
+                "target_error_ids",
+                "cleared_error_ids",
+                "new_error_ids",
+                "reintroduced_error_ids",
+                "touched_files",
+                "selected_skill_ids",
+                "selected_fact_ids",
+                "route",
+                "outcome",
+                "frontier_before",
+                "frontier_after",
+            )
+        }
+        with self.attempt_ledger_path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(summary, ensure_ascii=False) + "\n")
 
     def save_invocation(self, config: dict[str, Any]) -> None:
         record = {"timestamp": self._timestamp(), "config": config}
@@ -293,3 +330,167 @@ class TrajectoryLogger:
                 if isinstance(reasoning, int):
                     bucket["reasoning_tokens"] = bucket.get("reasoning_tokens", 0) + reasoning
         return totals
+
+    def normalized_metrics(self) -> dict[str, Any]:
+        calls: list[dict[str, Any]] = []
+        if self.calls_path.is_file():
+            for line in self.calls_path.read_text(encoding="utf-8").splitlines():
+                try:
+                    record = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(record, dict):
+                    calls.append(record)
+        token_values = [
+            int(item.get("usage", {}).get("total_tokens", 0))
+            for item in calls
+            if isinstance(item.get("usage"), dict)
+        ]
+        latencies = [
+            float(item.get("latency_seconds", 0.0) or 0.0) for item in calls
+        ]
+        milestones: dict[str, Any] = {}
+        stage_names = (
+            "A_source_valid",
+            "B_compile",
+            "C_load",
+            "D_execute",
+            "E_correct",
+            "F_benchmark",
+            "G_optimization",
+            "H_optimized_correct",
+        )
+        rounds = [item for item in self.data.get("rounds", []) if isinstance(item, dict)]
+        for stage_name in stage_names:
+            reached = next(
+                (
+                    item for item in rounds
+                    if item.get("stage_observation", {}).get(stage_name, {}).get("status") == "pass"
+                ),
+                None,
+            )
+            if reached is None:
+                milestones[stage_name] = {
+                    "status": "censored",
+                    "evaluation_round": None,
+                    "tokens": None,
+                    "time_seconds": None,
+                }
+                continue
+            evaluation_round = int(reached.get("evaluation_round", 0))
+            call_indexes = [
+                index for index, call in enumerate(calls)
+                if int(call.get("evaluation_round") or 0) <= evaluation_round
+            ]
+            last_index = max(call_indexes, default=-1)
+            eligible_rounds = [
+                item for item in rounds
+                if int(item.get("evaluation_round", 0)) <= evaluation_round
+            ]
+            stage_seconds = sum(
+                float(event.get("elapsed_seconds", 0.0) or 0.0)
+                for item in eligible_rounds
+                for event in item.get("stage_timings", [])
+                if isinstance(event, dict)
+            )
+            milestones[stage_name] = {
+                "status": "reached",
+                "evaluation_round": evaluation_round,
+                "tokens": sum(token_values[: last_index + 1]),
+                "time_seconds": sum(latencies[: last_index + 1]) + stage_seconds,
+            }
+        component_totals: dict[str, dict[str, int]] = {}
+        for call in calls:
+            metadata = call.get("prompt_metadata", {})
+            if not isinstance(metadata, dict):
+                continue
+            for name in (
+                "prompt",
+                "knowledge_reference",
+                "source_code",
+                "compiler_evaluator_evidence",
+            ):
+                measurement = metadata.get(name, {})
+                if not isinstance(measurement, dict):
+                    continue
+                bucket = component_totals.setdefault(name, {"chars": 0, "estimated_tokens": 0})
+                for unit in ("chars", "estimated_tokens"):
+                    value = measurement.get(unit)
+                    if isinstance(value, int):
+                        bucket[unit] += value
+
+        stage_latency: dict[str, float] = {}
+        for item in rounds:
+            for event in item.get("stage_timings", []):
+                if not isinstance(event, dict):
+                    continue
+                label = str(event.get("label", "")).lower()
+                category = next(
+                    (
+                        name
+                        for marker, name in (
+                            ("source validation", "source_validation"),
+                            ("api constraint validation", "api_constraint_validation"),
+                            ("static validation", "static_validation"),
+                            ("ascendc build", "compile"),
+                            ("correctness", "npu_execution_and_correctness"),
+                            ("performance", "benchmark"),
+                        )
+                        if marker in label
+                    ),
+                    "other_evaluation",
+                )
+                stage_latency[category] = stage_latency.get(category, 0.0) + float(
+                    event.get("elapsed_seconds", 0.0) or 0.0
+                )
+
+        transition_pairs = (
+            ("A_source_valid", "B_compile", "source_valid_to_compile"),
+            ("B_compile", "C_load", "compile_to_load"),
+            ("C_load", "D_execute", "load_to_execute"),
+            ("D_execute", "E_correct", "execute_to_correct"),
+            ("E_correct", "F_benchmark", "correct_to_benchmark"),
+            ("G_optimization", "H_optimized_correct", "optimization_to_retained_correctness"),
+        )
+        transitions: dict[str, dict[str, Any]] = {}
+        for source, target, name in transition_pairs:
+            eligible = [
+                item for item in rounds
+                if item.get("stage_observation", {}).get(source, {}).get("status") == "pass"
+            ]
+            passed = sum(
+                item.get("stage_observation", {}).get(target, {}).get("status") == "pass"
+                for item in eligible
+            )
+            transitions[name] = {
+                "eligible": len(eligible),
+                "passed": passed,
+                "rate": passed / len(eligible) if eligible else None,
+            }
+
+        short_names = {
+            "source_valid": "A_source_valid",
+            "compile": "B_compile",
+            "load": "C_load",
+            "npu_execution": "D_execute",
+            "correct": "E_correct",
+            "benchmark": "F_benchmark",
+            "optimization": "G_optimization",
+            "optimized_correct": "H_optimized_correct",
+        }
+        return {
+            "llm_calls": len(calls),
+            "tokens_per_llm_call": (sum(token_values) / len(token_values)) if token_values else None,
+            "llm_latency_seconds": sum(latencies),
+            "evaluation_latency_seconds": sum(stage_latency.values()),
+            "evaluation_latency_by_stage_seconds": stage_latency,
+            "prompt_component_totals": component_totals,
+            "milestones": milestones,
+            "tokens_to_first": {
+                name: milestones[stage]["tokens"] for name, stage in short_names.items()
+            },
+            "latency_to_first_seconds": {
+                name: milestones[stage]["time_seconds"] for name, stage in short_names.items()
+            },
+            "transition_rates": transitions,
+        }

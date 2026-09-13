@@ -50,25 +50,26 @@ Skills / Hybrid
           Planner                       Generator
 ```
 
-Adapter 不是用 CANNBot 替代现有知识库，而是在现有 structured bundle 之上增加按 stage、audience 和失败证据选择的 CANNBot knowledge capsules。
+Hybrid 在现有 structured bundle 之上增加按 stage、audience 和失败证据选择的 capsules；Skills-only 则保留相同 selector、runtime facts 和本地适配 capsule，但给 prompt 的旧 structured `KnowledgeBundle` 明确为空，不发生 fallback。两者都不删除 Structured Knowledge A。
 
 ### 1.2 Workflow 状态到 stage 的路由
 
 Stage 由 `ContextSelector.derive_stages()` 根据 audience、workflow phase、当前是否已有实现以及上一轮真实评测结果确定。
 
-| 当前状态 | Baseline 知识阶段 | Adapter Planner stages | Adapter Generator stages |
+| 当前状态 | Structured baseline | Hybrid / Skills-only Planner stages | Hybrid / Skills-only Generator stages |
 |---|---|---|---|
 | 首次生成，没有当前实现 | 通用 `plan_generate` | `operator_analysis`, `kernel_design` | `kernel_design`, `code_generation` |
 | 已有实现，没有明确失败 | 通用 `plan_generate` | `kernel_design` | `kernel_design`, `code_generation` |
-| Bundle、源码、API、静态校验或编译失败 | 通用 diagnose bundle | `compile_debug` | `compile_debug`, `code_generation` |
+| CUDA contamination、NPU tensor/stream、Host binding 失败 | 通用 diagnose bundle | `host_integration_debug` | `host_integration_debug`, `code_generation` |
+| 其他 Bundle、源码、API、静态校验或编译失败 | 通用 diagnose bundle | `compile_debug` | `compile_debug`, `code_generation` |
 | Correctness 阶段出现 ACL、AICore、MTE、device exception 等运行时信号 | 通用 diagnose bundle | `runtime_debug` | `runtime_debug`, `code_generation` |
-| Correctness 阶段出现 mismatch、rtol/atol、NaN、Inf、全零等数值信号 | 通用 diagnose bundle | `precision_debug` | `precision_debug`, `code_generation` |
-| 同时存在 runtime 与 precision 信号 | 通用 diagnose bundle | `runtime_debug`, `precision_debug` | `runtime_debug`, `precision_debug`, `code_generation` |
+| 已 compile/load/execute，但出现一般 correctness mismatch | 通用 diagnose bundle | `kernel_design` | `kernel_design`, `code_generation` |
+| 已有 dtype/cast/accumulation/rounding/epsilon/tolerance 直接证据 | 通用 diagnose bundle | `precision_debug`，或 `kernel_design` + 一个 precision secondary | 同 Planner，并附加 `code_generation` |
 | 已获得正确 baseline，进入优化 | 通用 optimization knowledge | `optimization` | `optimization`, `code_generation` |
 
 编译类 stage 包括：`bundle_validation`、`ascendc_source_validation`、`api_constraint_validation`、`static_validation`、`ascendc_build`、`compile` 和 `response_format`。
 
-对没有 runtime 证据的 correctness 失败，Adapter 默认先将其视为数值 mismatch，路由到 `precision_debug`，直到评测证据证明属于运行时异常。
+每轮恰有一个 Primary Skill。一般 numerical mismatch 不能自动等同于精度故障：Permute 等 indexing/data-movement 算子的广泛误差默认属于 `kernel_design`。只有明确出现 FP32 pass/FP16 fail、cast/accumulation dtype、rounding、epsilon、overflow/underflow 或 tolerance-boundary 证据时，才使用 `precision_debug`；Secondary 每轮最多一个，没有确定证据时为空。路由完全基于已有 failure stage、日志、当前源码、算子身份和 correctness 结果，不调用 LLM 分类器，也不产生未经校准的数值 confidence。
 
 ### 1.3 Stage 到 CANNBot Skill 的映射
 
@@ -78,10 +79,12 @@ Stage 由 `ContextSelector.derive_stages()` 根据 audience、workflow phase、�
 | `kernel_design` | `ascendc-tiling-design` | stage 存在即触发，再按 operator family 选引用 | 多核切分、UB tiling、buffer 生命周期、tail、tiling fields 和分支覆盖 | 无关算子族、一次注入所有 tiling 方案、正确性前的性能调优 |
 | `kernel_design` | `ascendc-api-best-practices` | stage 存在即触发，引用再按 API/关键词过滤 | 与当前设计相关的 API、对齐、buffer、精度和 pipeline 约束 | 完整 API 目录、源码中未涉及的 API、平台不支持的高级 API |
 | `code_generation` | `ascendc-direct-invoke-template` | 所有 Generator 的代码生成 stage | CannAgent ABI 兼容的 wrapper、host、kernel、launch 和数据流结构 | CMake、复制命令、运行脚本、测试工程、完整模板目录、PyTorch fallback |
+| `code_generation` | `cannagent-host-abi`（本地 capsule） | 所有 Generator；只采用 project/header/probe 可追溯事实 | NPU tensor、stream、`*_do` wrapper、module/include contract 与 CUDA negative facts | 未经当前环境验证的精确 Host 调用、CUDA API、CANNBot scaffold |
+| `host_integration_debug` | `cannagent-host-abi`（Primary route） | Host binding、NPU tensor/stream 或 CUDA contamination 的确定性 evidence | 一个最小 Host ABI 修复及 positive/negative facts | Kernel 数学、tiling、无关 API cards |
 | `compile_debug` | `ascendc-api-best-practices` | 上一轮属于源码/API/编译失败 | 失败调用点对应的 signature、owner、overload、参数或约束修复依据 | 无关 API、整份 API 文档、精度和性能建议、与 installed headers 冲突的签名 |
 | `compile_debug` | `ascendc-direct-invoke-template` | 源码结构、launch ABI 或 build 失败 | 最小 wrapper/kernel/launch 结构修正 | 工程重写、示例模块命名、完整 add_custom 项目和工作流步骤 |
 | `runtime_debug` | `ascendc-runtime-debug` | runtime/correctness failure 且包含 ACL、AICore、MTE、错误码、tiling、kernel lookup 等信号 | 错误分类、排序后的检查项、下一诊断动作及确认信号 | 完整错误码目录、无环境信号时的环境排查、性能建议 |
-| `precision_debug` | `ascendc-precision-debug` | correctness failure 且包含 mismatch、容差、NaN、Inf、全零等信号 | 数值症状分类、可验证根因、最小 instrumentation/fix 和预期信号 | 无关精度陷阱、runtime 环境流程、性能优化、盲目修复序列 |
+| `precision_debug` | `ascendc-precision-debug` | correctness failure 且存在明确 dtype/cast/accumulation/rounding/epsilon/tolerance 证据 | 一项可验证的精度假设、最小 instrumentation/fix 和预期信号 | 仅凭大幅 mismatch 触发、index/data movement 错误、runtime/performance 流程 |
 | `optimization` | `ascendc-performance-best-practices` | 已存在正确 baseline | 一个有证据支持的优化假设、适用条件、最小改动和期望性能信号 | 无关算子族、没有证据的优化、放宽正确性、模板重写 |
 | `optimization` | `ascendc-tiling-design` | 已正确且证据涉及 tile、UB、core、tail、balance 或 occupancy | 有测量依据的 tiling 变化及更新后的 UB/core 公式 | 初始 tiling 教程、无关算子族、同时引入多个 tiling 策略 |
 
@@ -96,7 +99,7 @@ Skill 触发分为两层：
 
 Planner 面向方案决策，默认只需要任务事实、项目硬约束、少量设计模式和与 stage 匹配的 Skill capsules。非 debug Planner 不会接收完整 API facts。
 
-Generator 面向代码实现，会接收 API facts、API cards、installed public-header facts、更多设计模式以及 `code_generation` Skill。进入 debug stage 后，API facts 会优先按上一轮失败中提取的 `related_symbols` 缩小范围。
+Generator 面向代码实现，会接收 API facts、API cards、installed public-header facts、更多设计模式以及 `code_generation` Skill。进入 debug stage 后，API facts 按 `failure_symbols > source_symbols > planned_symbols` 排序。三类 evidence 分别来自当前 compiler/linker/runtime/correctness 失败、candidate source 和 active plan。某一集合为空不会把其余 API cards 清空；selector 仍保留小额 fallback，并在 metadata 中记录每项知识命中的 symbol 类型。
 
 默认字符预算为：
 
@@ -164,21 +167,21 @@ Reference 必须同时满足：
 
 通过检查后，Adapter 只抽取 mapping 指定的 Markdown heading。若没有指定 heading，则从文档开头按 Markdown block 读取。每个 reference 都有独立的 `max_chars`，抽取过程不会截断一个已选择 block 的中间内容。
 
-缺失、越界、不安全或没有匹配内容的 reference 会被拒绝，并把原因写入 selection trace。CANNBot root 不存在时 Adapter fail-open：返回空 capsules，不阻断原 CannAgent workflow。
+缺失、越界、不安全或没有匹配内容的 reference 会被拒绝，并把原因写入 selection trace。外部 CANNBot root 不存在时 Adapter fail-open：拒绝外部 references，但仍可选择 path-confined 的 CannAgent 本地 capsules。Hybrid 保留已路由的 Structured A；Skills-only 仍禁止 fallback 到 Structured A。
 
 ### 2.4 权威顺序
 
 合并上下文时使用以下顺序：
 
 1. 当前环境的 compiler、runtime 和 evaluator 证据；
-2. 当前安装的 CANN public headers；
-3. 版本匹配的 official structured facts；
-4. CannAgent project contracts 和固定 ABI；
-5. 选中的 CANNBot practices/templates；
-6. 已确认的本地经验；
-7. 通用 examples。
+2. 与当前 environment fingerprint 绑定并通过项目 toolchain probe 的 Level 3 Verified facts；
+3. 当前安装 CANN/torch_npu headers 中的 Level 2 Installed facts；
+4. 版本匹配的 official/Skill Level 1 Documented facts；
+5. Level 0 Inferred facts；不得将其作为关键 ABI/API 调用的唯一依据。
 
 CANNBot Skill 不能覆盖真实编译错误、installed header signature、CannAgent host ABI 或 evaluator 结果。
+
+Runtime fingerprint 包含 CANN/toolkit root、PyTorch/torch_npu 版本、Host C++ 与 CANN `bisheng` compiler、include roots、SoC、项目 build contract 和 probe contract hash。旧 probe 的 fingerprint 不匹配时不会继续标记为 Verified，而是回落到 Installed/Documented。网络搜索或最新版文档不能直接升级为 Level 3。
 
 ## 3. 对应代码逻辑
 
@@ -247,6 +250,11 @@ Runner._knowledge_context()
 | `skill_adapter.py` | mapping 加载、条件判断、安全 reference 读取、heading 抽取和 capsule 构造 |
 | `skill_mapping.yaml` | stage-to-skill、trigger、input、exclusion、reference 和预算配置 |
 | `prompts.py` | 按 authority、section quota 和总字符预算渲染最终上下文 |
+| `knowledge_probe.py` | 生成环境 fingerprint，执行受控最小 compile probe，并写入可审计 manifest |
+| `runtime_knowledge.py` | 从本机 installed headers 提取声明，按 matching probe 标记 Level 2/3 |
+| `source_validation.py` | comment/literal-aware、brace/scope-aware 的源码检查及 Host negative checks |
+| `diagnostics.py` | failure/source/planned symbol evidence 和 A-H 观察状态 |
+| `logging.py` | stage-normalized token/latency/transition 指标 |
 
 ### 3.4 审计产物
 
@@ -265,6 +273,9 @@ Runner._knowledge_context()
 | `planner_references.md` | 实际进入 Planner prompt 的渲染文本 |
 | `references.md` | 实际进入 Generator prompt 的渲染文本 |
 | `runtime_header_facts_*.json` | 从 installed headers 提取的事实和状态 |
+| `calls.jsonl` 的 `prompt_metadata` | selected IDs、symbol 来源、provenance/confidence、渲染字符/token 估计 |
+| `trajectory.json` 每轮 `stage_observation` | A source-valid 到 H optimized-correct 的 pass/fail/unknown/not-reached |
+| `summary.json.stage_normalized_metrics` | transition rates、censored milestones、prompt 分量和 evaluator stage 时延 |
 
 为兼容现有下游工具，Generator 仍会写通用的 `knowledge_bundle.json`、`retrieval_trace.json` 和 `selected_knowledge.json`。
 
@@ -293,11 +304,11 @@ RunConfig(
 - structured knowledge build 加载和路由（仅 `hybrid`；`skills` prompt 跳过）；
 - CANNBot reference 条件匹配；
 - 匹配到的 Markdown 文件读取和 heading 抽取；
-- installed-header facts 收集；
+- installed-header facts 收集，并只消费预先生成、fingerprint 匹配的 probe manifest；
 - context 合并和字符预算渲染；
 - 审计 JSON/Markdown 写入。
 
-这些操作全部在本机完成。Skill Adapter 本身不调用 LLM、不访问网络、不编译代码，也不运行 CANNBot 脚本。此前终端中持续数分钟的 `generator still running` 对应远程 Generator LLM 请求；已有 `calls.jsonl` 显示单次 Generator 请求可持续数百秒，并不是 Adapter 在解析 Skill。
+这些操作全部在本机完成。Skill Adapter 本身不调用 LLM、不访问网络，也不运行 CANNBot 脚本。Compile probes 是显式的准备/验证步骤，不在每轮生成路径中执行；运行时只读取 `CANNAGENT_PROBE_MANIFEST` 指向的结果。因此 probe 编译耗时不会叠加到每个算子生成 round。此前持续数分钟的 `generator still running` 对应远程 Generator LLM 请求，不是 Adapter 解析 Skill。
 
 当前没有针对 Adapter 各步骤的独立计时，因此不能在没有测量的情况下声称其开销只有固定的毫秒数。特别是 `hybrid` 的 structured knowledge 分 audience 路由、installed-header 扫描和审计文件写入也应在后续评测中单独计时；`skills` 模式可以用于隔离这部分 prompt-routing 开销。
 
@@ -431,9 +442,9 @@ ascendc-direct-invoke-template
 
 这使下一轮知识集中在 CannAgent ABI 和 direct kernel launch 结构，而不会同时注入 precision-debug 或 performance materials。该例说明的是路由行为；是否能实际解决错误仍必须以真实编译结果判断。
 
-## 6. 三组知识源测试 TODO、执行命令和指标
+## 6. 历史三组命令参考（不属于当前 B/D）
 
-本节命令仅作为后续执行清单。本次文档创建不执行这些命令。
+本节保留早期 Structured/Skills-only/Hybrid 命令形状用于审计，不是下一轮执行计划。当前消融只比较 B Hybrid 与 D Skills-only，并采用下方第 7 节的两阶段门槛。
 
 ### 6.1 实验约束
 
@@ -585,3 +596,42 @@ total Agent latency
 ```
 
 这样可以判断卡顿究竟来自本地 Adapter、远程 LLM、编译器还是 NPU evaluator，避免仅根据终端长时间没有新输出做错误归因。
+
+## 7. 当前 B/D 两阶段实验设计（本次实现不执行）
+
+### 7.1 Phase 1 screening
+
+仅运行 GELU、LayerNorm、Permute 各 `Hybrid × 1`、`Skills-only × 1`。两臂保持 commit、model/provider、temperature、round budgets、Planner/Generator、evaluator、device、CANN 和 case 完全一致；唯一差异是 `--knowledge-source hybrid|skills`。固定 `--generator-thinking disabled --generator-max-tokens 32768`。
+
+```bash
+stdbuf -oL -eL python -m ascendc_multi_turn \
+  --op-file <GELU-or-LayerNorm-or-Permute.py> \
+  --output-dir <paired-output>/<hybrid-or-skills> \
+  --provider deepseek --model deepseek-v4-flash --temperature 0.2 \
+  --max-bootstrap-rounds 5 --max-rounds 2 --timeout 600 \
+  --soc-version Ascend910B3 --device 0 --cann-version auto \
+  --knowledge-mode structured \
+  --knowledge-source <hybrid-or-skills> \
+  --cannbot-skills-root /mnt/workspace/cannbot-skills/ops \
+  --generator-thinking disabled --generator-max-tokens 32768 \
+  --planner-thinking disabled --planner-max-tokens 8192 \
+  > <paired-output>/<mode>.live.log 2>&1
+
+tail -n +1 -F <paired-output>/<mode>.live.log
+```
+
+若 Skills-only 在 correctness/frontier 上明显落后 Hybrid，Phase 1 后停止，Hybrid 保持默认；不会用额外单次重试替换失败样本。
+
+### 7.2 Conditional Phase 2 replacement confirmation
+
+只有 Skills-only 在 Phase 1 的 correctness 和 compile/load/execute frontier 达到或超过 Hybrid，才对进入替代决策的算子增加两个 matched-seed/order 的 paired repetitions，使每个候选 mode/operator 至少有 3 条 paired trajectories。若第一组追加 pair 已显示一致性退化，可以提前停止；不扩展算子集合，也不调整失败臂参数。
+
+### 7.3 指标和替代门槛
+
+报告必须分别列出 A source-valid、B compile、C load/binding、D NPU execute、E correctness、F benchmark、G optimization、H optimized correctness，以及相邻 transition rate。效率指标使用 LLM calls、tokens/call、tokens/time-to-first-stage、分段 LLM/validation/compile/NPU/benchmark latency 和 prompt 中 knowledge/source/evidence 的实际体积；未达到的阶段记为 `N/A/censored`，不能记 0。
+
+验收顺序固定为：correctness > compile/load/execute reachability > 多 case correctness robustness > iterations-to-first-correct > tokens-to-first-correct > time-to-first-correct > performance。只有双方达到同一目标阶段时才能比较该阶段效率；没有 correct candidate 的模式不能凭 total token 或 latency 更低宣称更有效。
+
+Skills-only replacement 的必要条件是 correctness 不低于 Hybrid，compile/load/execute 不显著退化，并且 Phase 2 重复结果支持稳定性。否则 Hybrid 保持默认，Skills-only 仅保留为实验开关。一次 paired run 不支持 replacement claim。
+
+如果 trajectory 显示正确知识已经进入最终 prompt，但 Generator 仍构造错误 API 或算法，只记录 `knowledge delivered correctly, generation/reasoning failure remains` 并停止扩大本轮范围；不改变 thinking、Planner 架构、state machine、Agent 数量、RAG 或 retry 上限。

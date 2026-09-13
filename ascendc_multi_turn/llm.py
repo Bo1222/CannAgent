@@ -10,6 +10,18 @@ from llm_config import get_env
 
 from .models import LLMCallConfig, LLMResponse
 
+SYSTEM_PROMPT_ID = "ascendc-json-engineer-v1"
+SYSTEM_PROMPT = (
+    "You are an expert AscendC kernel engineer. "
+    "Return exactly one valid JSON object matching the requested schema."
+)
+
+
+def system_prompt_for(_call_type: str) -> str:
+    """Single source of truth for the actual provider system message."""
+
+    return SYSTEM_PROMPT
+
 
 class LLMProvider(Protocol):
     def generate(self, prompt: str, *, call_config: LLMCallConfig | None = None) -> LLMResponse: ...
@@ -67,10 +79,7 @@ class OpenAICompatibleProvider:
             "messages": [
                 {
                     "role": "system",
-                    "content": (
-                        "You are an expert AscendC kernel engineer. "
-                        "Return exactly one valid JSON object matching the requested schema."
-                    ),
+                    "content": system_prompt_for(effective.call_type),
                 },
                 {"role": "user", "content": prompt},
             ],
@@ -169,7 +178,7 @@ class MockProvider:
                                 else "higher valid score"
                             ),
                         }
-                        for index in range(1, 2 if initial else 4)
+                        for index in range(1, 2)
                     ],
                 }
             )

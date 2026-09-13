@@ -16,9 +16,11 @@ from .router import (
 )
 from .schema import (
     ApiCard,
+    AttemptRecord,
     AtomicFact,
     CodeCandidate,
     ConfirmedExperience,
+    DiagnosticRecord,
     FailureCard,
     HeadingNode,
     IncidentRecord,
@@ -38,11 +40,13 @@ from .schema import (
 __all__ = [
     "ApiCallResolver",
     "ApiCard",
+    "AttemptRecord",
     "ApiConstraintIssue",
     "ApiConstraintValidator",
     "AtomicFact",
     "CodeCandidate",
     "ConfirmedExperience",
+    "DiagnosticRecord",
     "FactExtractor",
     "FactQuery",
     "FailureCard",

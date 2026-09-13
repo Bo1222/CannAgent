@@ -23,7 +23,7 @@ from ascendc_multi_turn.llm import MockProvider
 from ascendc_multi_turn.models import EvalResult, LLMResponse
 from ascendc_multi_turn.models import RunConfig as RepositoryRunConfig
 from ascendc_multi_turn.progress import ProgressReporter
-from ascendc_multi_turn.prompts import build_plan_prompt, build_prompt
+from ascendc_multi_turn.prompts import build_plan_prompt, build_prompt, parse_plan
 from ascendc_multi_turn.runner import MultiTurnRunner
 
 
@@ -302,6 +302,81 @@ class RepeatingBuildFailureEvaluator:
         )
 
 
+class CumulativeRepairProvider:
+    def __init__(self):
+        self.generator_prompts: list[str] = []
+
+    def generate(self, prompt: str, *, call_config=None) -> LLMResponse:
+        call_type = call_config.call_type if call_config else "generator"
+        if call_type == "knowledge_router":
+            content = json.dumps(
+                {
+                    "skill": "ascendc-translator",
+                    "topics": [],
+                    "doc_ids": [],
+                    "supplements": [],
+                    "reason": "test",
+                }
+            )
+        elif call_type in {"planner", "diagnose"}:
+            content = _plan_response(
+                initial="Return exactly one complete baseline item" in prompt
+            )
+        else:
+            self.generator_prompts.append(prompt)
+            marker = f"ROUND_{len(self.generator_prompts)}"
+            if len(self.generator_prompts) == 1:
+                content = json.dumps(
+                    {
+                        "analysis": marker,
+                        "files": [
+                            {"path": "model_new_ascendc.py", "content": "class ModelNew: pass\n"},
+                            {"path": "kernel/pybind11.cpp", "content": "PYBIND11_MODULE(_x, m) {}\n"},
+                            {"path": "kernel/retry.cpp", "content": f"// {marker}\n"},
+                        ],
+                        "delete": [],
+                    }
+                )
+            else:
+                content = json.dumps(
+                    {
+                        "analysis": marker,
+                        "files": [
+                            {"path": "kernel/retry.cpp", "content": f"// {marker}\n"}
+                        ],
+                        "delete": [],
+                    }
+                )
+        return LLMResponse(
+            content=content,
+            model="test-model",
+            usage={"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+            finish_reason="stop",
+        )
+
+
+class CumulativeRepairEvaluator:
+    ADD = "kernel/retry.cpp:20:3: error: no matching constructor for initialization of 'AddTiling'"
+    MULS = "kernel/retry.cpp:30:3: error: no matching function for call to 'Muls'"
+
+    def evaluate(self, task_dir: Path, round_dir: Path) -> EvalResult:
+        source = (task_dir / "kernel/retry.cpp").read_text(encoding="utf-8")
+        if "ROUND_3" in source:
+            return EvalResult(True, True, score=1.0)
+        diagnostics = [self.MULS] if "ROUND_2" in source else [self.ADD, self.MULS]
+        log = round_dir / "build.log"
+        log.write_text("\n".join(diagnostics), encoding="utf-8")
+        return EvalResult(
+            False,
+            False,
+            error="AscendC build failed",
+            failure_stage="ascendc_build",
+            failure_code="ascendc_build_failed",
+            error_excerpt="\n".join(diagnostics),
+            details_path=str(log),
+        )
+
+
 def _valid_bundle_response() -> str:
     return json.dumps(
         {
@@ -339,7 +414,7 @@ def _plan_response(*, initial: bool = False) -> str:
                         else "higher valid score"
                     ),
                 }
-                for index in range(1, 2 if initial else 4)
+                for index in range(1, 2)
             ],
         }
     )
@@ -373,6 +448,28 @@ class BundleTests(unittest.TestCase):
 
 
 class PromptTests(unittest.TestCase):
+    def test_plan_parser_recovers_explicit_embedded_expected_signal(self) -> None:
+        response = json.dumps(
+            {
+                "diagnosis": "ready",
+                "items": [
+                    {
+                        "id": "bootstrap-1",
+                        "kind": "correctness",
+                        "hypothesis": "direct kernel",
+                        "change": "1. Kernel\nImplement it.\n\n7. Expected signal\n- compile\n- correctness",
+                    }
+                ],
+            }
+        )
+
+        parsed = parse_plan(response, min_items=1, max_items=1)
+
+        self.assertEqual(parsed["items"][0]["change"], "1. Kernel\nImplement it.")
+        self.assertEqual(
+            parsed["items"][0]["expected_signal"], "- compile\n- correctness"
+        )
+
     def test_edit_and_plan_prompts_exclude_full_evaluation_logs(self) -> None:
         marker = "FULL_LOG_SHOULD_NOT_BE_IN_PROMPT"
         result = EvalResult(
@@ -406,6 +503,102 @@ class PromptTests(unittest.TestCase):
         self.assertNotIn(marker, plan_prompt)
         self.assertIn("concise failure", edit_prompt)
         self.assertIn("concise failure", plan_prompt)
+
+    def test_full_input_prompts_preserve_complete_evaluation_logs(self) -> None:
+        marker = "FULL_LOG_MUST_REACH_MODEL"
+        result = EvalResult(
+            False,
+            False,
+            compile_output=marker * 1000,
+            error="AscendC build failed",
+            failure_stage="ascendc_build",
+            failure_code="ascendc_build_failed",
+            error_excerpt="concise failure",
+        )
+        bundle = parse_file_bundle(_valid_bundle_response())
+
+        edit_prompt = build_prompt(
+            reference_code="class Model: pass",
+            cases_text="{}",
+            current=bundle,
+            previous_result=result,
+            round_num=2,
+            knowledge_context="facts",
+            full_input=True,
+        )
+        plan_prompt = build_plan_prompt(
+            reference_code="class Model: pass",
+            cases_text="{}",
+            current=bundle,
+            result=result,
+            mode="bootstrap",
+            history=[{"round": 1, "decision": "FAIL", "evaluation": result.to_dict()}],
+            full_input=True,
+        )
+
+        self.assertIn(marker * 1000, edit_prompt)
+        self.assertIn(marker * 1000, plan_prompt)
+
+    def test_compilation_contract_is_phase_gated_and_uses_compact_episode_state(self) -> None:
+        result = EvalResult(
+            False,
+            False,
+            error="AscendC build failed",
+            failure_stage="ascendc_build",
+            error_excerpt="kernel/add.cpp:9: error: no matching function for call to 'Muls'",
+        )
+        bundle = parse_file_bundle(_valid_bundle_response())
+        state = {
+            "accepted_attempt_id": 2,
+            "open_errors": [
+                {
+                    "error_id": "kernel_api_overload:Muls:test",
+                    "symbol": "Muls",
+                    "category": "kernel_api_overload",
+                    "normalized_message": "no matching function for Muls",
+                }
+            ],
+            "cleared_error_ids": ["cpp_type_construction:AddTiling:test"],
+            "failed_approaches_by_error": {
+                "kernel_api_overload:Muls:test": [
+                    {
+                        "approach_id": "runtime-if",
+                        "summary": "guarded Muls with if(sizeof(T))",
+                        "outcome": "NO_PROGRESS",
+                        "attempt_ids": [3, 4, 5],
+                        "occurrences": 3,
+                    }
+                ]
+            },
+        }
+        repair_prompt = build_prompt(
+            reference_code="class Model: pass",
+            cases_text="{}",
+            current=bundle,
+            previous_result=result,
+            round_num=2,
+            knowledge_context="stable facts",
+            repair_state=state,
+            compile_repair_active=True,
+        )
+        optimization_prompt = build_prompt(
+            reference_code="class Model: pass",
+            cases_text="{}",
+            current=bundle,
+            previous_result=EvalResult(True, True, score=1.0),
+            round_num=3,
+            knowledge_context="performance facts",
+            phase="OPTIMIZATION",
+            repair_state=state,
+            compile_repair_active=False,
+        )
+
+        self.assertIn("Compilation repair contract", repair_prompt)
+        self.assertIn("runtime `if` statement", repair_prompt)
+        self.assertIn("occurrences=3", repair_prompt)
+        self.assertIn("AddTiling", repair_prompt)
+        self.assertNotIn("Compilation repair contract", optimization_prompt)
+        self.assertNotIn("Current trajectory repair state", optimization_prompt)
 
 
 class EvaluatorTests(unittest.TestCase):
@@ -709,6 +902,50 @@ class RunnerTests(unittest.TestCase):
                 "CONFIRMED_EXPERIENCE",
             )
 
+    def test_compile_repairs_accumulate_vertically_from_partial_keep(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "model.py"
+            source.write_text("class Model: pass\n", encoding="utf-8")
+            output = root / "generated"
+            provider = CumulativeRepairProvider()
+            config = RunConfig(
+                str(source),
+                str(output),
+                max_rounds=1,
+                max_bootstrap_rounds=3,
+                max_total_rounds=3,
+                evaluator="mock",
+                mock=True,
+            )
+
+            summary = MultiTurnRunner(
+                config, provider, CumulativeRepairEvaluator()
+            ).run()
+
+            self.assertTrue(summary["success"])
+            trajectory = json.loads(
+                (output / ".llm_state/trajectory.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(
+                [item["decision"] for item in trajectory["rounds"]],
+                ["FAIL", "PARTIAL_KEEP", "BASELINE_KEEP"],
+            )
+            self.assertIn("ROUND_2", provider.generator_prompts[2])
+            self.assertIn("Compilation repair contract", provider.generator_prompts[1])
+            self.assertIn("AddTiling", provider.generator_prompts[2])
+            attempt = json.loads(
+                (output / ".llm_state/attempts/attempt_0002.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            self.assertEqual(attempt["outcome"], "PARTIAL_KEEP")
+            self.assertEqual(attempt["base_attempt_id"], 1)
+            self.assertTrue((output / ".llm_state/attempt_ledger.jsonl").is_file())
+            self.assertTrue(
+                (output / ".llm_state/round_02/system_prompt_generator.txt").is_file()
+            )
+
     def test_bootstrap_budget_exhaustion_is_blocked_and_resumable(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -906,7 +1143,7 @@ class RunnerTests(unittest.TestCase):
             self.assertEqual([item["round"] for item in trajectory["rounds"]], [1, 2, 3, 4])
             self.assertEqual(trajectory["rounds"][-1]["evaluation_round"], 3)
             self.assertTrue((output / ".llm_state" / "round_04" / "candidate.json").is_file())
-            self.assertEqual(provider.calls, 1)
+            self.assertEqual(provider.calls, 2)
             self.assertEqual(trajectory["status"], "completed")
 
     def test_truncated_generation_retries_once_in_same_round(self) -> None:

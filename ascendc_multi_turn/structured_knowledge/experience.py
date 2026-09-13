@@ -47,9 +47,21 @@ def build_incident(
     after: FileBundle,
     resolved_fact_ids: list[str],
     result: EvalResult,
+    base_attempt_id: int | None = None,
+    error_ids_before: list[str] | None = None,
+    error_ids_after: list[str] | None = None,
+    cleared_error_ids: list[str] | None = None,
 ) -> IncidentRecord:
     current_failure = result.structured_failure if result.error else None
-    disappeared = failure is not None and failure_signature(failure) != failure_signature(current_failure)
+    before_ids = sorted(set(error_ids_before or []))
+    after_ids = sorted(set(error_ids_after or []))
+    cleared_ids = sorted(set(cleared_error_ids or []))
+    disappeared = (
+        bool(before_ids) and not set(before_ids).intersection(after_ids)
+        if error_ids_before is not None
+        else failure is not None
+        and failure_signature(failure) != failure_signature(current_failure)
+    )
     digest = hashlib.sha256(
         json.dumps(
             {
@@ -71,6 +83,10 @@ def build_incident(
         resolved_fact_ids=sorted(set(resolved_fact_ids)),
         result=result.to_dict(),
         failure_disappeared=disappeared,
+        base_attempt_id=base_attempt_id,
+        error_ids_before=before_ids,
+        error_ids_after=after_ids,
+        cleared_error_ids=cleared_ids,
     )
 
 

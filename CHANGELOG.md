@@ -3,6 +3,329 @@
 All repository modifications must be recorded here. Dates use `YYYY-MM-DD`.
 Secrets must never be included.
 
+## 2026-09-13
+
+### 本轮计划：编译修复与分层轨迹记忆
+
+- 保持现有 Agent、Evaluator、B/D 知识源和 `generator_thinking=disabled` / `generator_max_tokens=32768` 不变，将真实 compiler diagnostic、同阶段部分修复和失败方法接入现有调用逻辑。
+- 将尝试历史分为三层：磁盘保存完整 Attempt；`repair_state.json` 保存 accepted base、open/cleared errors 和去重后的失败方法；Prompt 只投递当前 open error 相关的至多三个不同方法。
+- 严格区分 Stable Knowledge 与 Episodic Memory：Structured/runtime/Skill facts 继续作为稳定知识；单轮采用 `if(sizeof(T))` 等方法失败只属于当前 trajectory，不能写回 Skill、API fact 或 runtime fact。
+- 仅在 bootstrap compile-repair Generator 调用中加入模板实例化、compiler authority 和 error-regression contract；initial、runtime/correctness 和 optimization Generator 不重复携带该段编译 Prompt。
+- 保留 validated frontier 的原有含义，新增 repair workspace；同一 compile frontier 中确实清除旧错误且未引入历史已清除错误的候选以 `PARTIAL_KEEP` 累积，未改善或回归的候选才 rollback。
+- 后续 Planner 每次只产生一个基于当前 accepted implementation 的垂直步骤，不再预生成 3–5 个横向候选。
+
+### 编译修复与轨迹实现
+
+- 集中定义并落盘实际 system prompt；`calls.jsonl` 记录 system prompt ID、hash 和 artifact path，因此 system/user request 均可追溯。system prompt 内容保持“AscendC expert + JSON schema”，编译修复规则不被无差别放入所有调用。
+- 新增 compiler diagnostic normalization：从真实 compiler/evaluator output 生成逐条、忽略路径行号变化的 error ID，并记录 category、symbol、source file 和 evidence origin。该逻辑只在编译后比较结果，不参与 source validation 或源码 regex 拒绝。
+- 新增 `repair_state.py` 和 `.llm_state/attempt_ledger.jsonl` / `attempts/attempt_N.json` / `repair_state.json` artifacts；完整 diff、知识选择和结果保存在磁盘，Prompt projection 只包含当前 open/cleared errors 与相关去重方法。
+- Runner 现在区分 current accepted bundle、与其匹配的 base evaluation 和 latest rejected attempt；生成前保存 `round_N/base.json`，resume EVAL checkpoint 时不再把待评估 candidate 误当成它自己的 base。
+- 同一 compile stage 的 `{AddTiling, Muls} → {Muls}` 被识别为 `PARTIAL_KEEP`，下一轮从已修复 AddTiling 的 source 继续；已清除错误重新出现或退回 source validation 时识别为 regression 并恢复 accepted repair base。
+- Debug route 只使用直接 failure evidence。current source 中合法的 `c10_npu`、`aclrtStream` 或 `getCurrentNPUStream` 只用于 source-symbol retrieval，不再把 Muls 等 kernel compiler failure 污染成 `host_integration_debug`。
+- 从生成 Prompt 和 knowledge-state 更新中移除了旧的 failure-fingerprint episode 注入；稳定 failure guidance、Skill capsules 与 run-local failed approaches 使用独立数据路径和独立 Prompt 章节。
+- Compile-repair Prompt 增加 accepted base、open/cleared errors、普通运行时 `if` 无法隔离 C++ 模板实例化、不得虚构 overload/cast 等约束；optimization Prompt 明确不注入该 contract 或历史 compile attempts。
+- Planner/Diagnose 的非初始输出改为精确一个下一步 item；单一假设可以修改必要的多个文件，每轮评估后基于最新 accepted candidate 重新规划。
+
+### 本轮验证
+
+- 新增真实 Add compiler failure regression，确认 AddTiling/Muls error ID 不随源码行号变化，重复 `if(sizeof(T))` 方法在 Prompt 中聚合为一条并保留 occurrence/attempt IDs。
+- 新增 Runner integration trajectory，确认 `FAIL → PARTIAL_KEEP → BASELINE_KEEP` 三轮中 Round 3 的 Prompt 和代码基线来自 Round 2，attempt 2 的 `base_attempt_id=1`，并生成完整 attempt ledger 与 system-prompt artifact。
+- 新增路由回归，确认 current source 同时包含合法 NPU stream API 和 Muls 调用时，直接 Muls compiler diagnostic 仍选择 `api_compile_debug`；真实 CUDA contamination 仍选择 Host capsule。
+- 新增 phase-aware Prompt 回归，确认 compilation contract 和 Episodic summary 只出现在 compile repair，optimization 不包含这两部分。
+- 通过 `python -m unittest discover -s tests -p 'test_*.py'`：122 项。
+- 通过 `python -m unittest discover -s ascendc_multi_turn/structured_knowledge/tests -p 'test_*.py'`：25 项。
+- 通过修改模块的 Python compilation 检查和 `git diff --check`。本轮没有执行真实 Add、完整 B/D 或额外 NPU 实验。
+
+### Follow-up implementation
+
+- Added the experimental `knowledge_input_mode=full_selected` switch. It preserves stage/symbol routing while disabling Agent-side reference, section, runtime-declaration, structured-field, and total-character truncation; the default remains `bounded`.
+- Added full-input prompt observability with UTF-8 byte counts, prompt SHA-256, selected/rendered knowledge IDs, source-specific character counts, and an explicit `input_truncated` flag.
+- Added deterministic recovery when a Planner places an explicit numbered `Expected signal` section inside `change`, plus resume reuse of the already persisted response so recovery does not trigger another Planner sample.
+- Removed heuristic duplicate variable/constant detection from generated-source validation after a realistic file-scope function signature with a `const` parameter triggered catastrophic regex backtracking; duplicate C++ declarations are now left to the CANN compiler, while deterministic CUDA, Host ABI, include, queue-owner, and wrapper-contract checks remain.
+- Began the grounded Hybrid/Skills-only follow-up by replacing the generated-source duplicate-symbol heuristic with a comment/literal-aware scope walk and adding deterministic CUDA Host contamination checks.
+- Added regression coverage for distinct-kernel locals, namespace/record scopes, literal/comment false positives, and CUDA-only bindings.
+- Added provenance-preserving failure/source/planned symbol extraction and an observation-only A-H evaluation ledger with explicit unknown/not-reached states.
+- Added environment-fingerprinted runtime facts and auditable compile-probe primitives; installed header matches now remain Level 2 unless the exact fact has a matching successful probe artifact.
+- Extended the adapter schema compatibly with local, path-confined adaptation capsules, primary/secondary/support roles, symbol provenance, and fact confidence metadata.
+- Made debug routing deterministic: generic correctness failures now route to kernel design, runtime/Host failures use direct evidence, and precision is selected only for explicit hypotheses; API selection now prioritizes failure, source, then planned symbols without hard-empty filtering.
+- Added bounded CannAgent-local Host ABI and GELU/LayerNorm/Permute semantic capsules plus a provenance/probe manifest; exact environment-dependent API forms remain conditional on runtime facts.
+- Updated stage mapping with local Host/invariant support capsules and removed generic numerical-mismatch triggers from precision debugging.
+- Wired active-plan, current-source, and failure evidence independently into routing and made both knowledge modes consume the same environment-fingerprinted runtime fact source.
+- Made rendered prompts expose the deterministic route and capsule confidence/provenance, while recording section-level rendering, truncation, character, and token-estimate telemetry.
+- Added non-invasive progress timing events, per-call prompt metadata support, and censored stage-normalized token/time milestones without changing evaluator behavior.
+- Persisted prompt composition, per-evaluation A-H observations, stage timings, and tokens/time-to-first-stage metrics in the existing runner artifacts.
+- Added runtime grounding/probe tests and full failure-evidence-to-rendered-context regressions for ReduceSum overloads, CUDA Host contamination, and broad Permute correctness failures.
+- Attached the exact selected/rendered knowledge metadata to Planner and Generator call records and round trajectories, including retries, so delivery failures can be separated from generation failures.
+- Corrected installed-header candidate ranking so core torch_npu declarations and basic AscendC tensor definitions outrank third-party call sites or incidental advanced-API uses.
+- Added explicit environment-bound negative facts when both the installed public-header scan and the current compiler diagnostic reject a symbol; header absence alone remains non-authoritative Level 0.
+- Runtime fact rendering now retains a bounded set of distinct installed overload declarations instead of silently presenting only the first match.
+- Added reusable probe-manifest writing and an optional `CANNAGENT_PROBE_MANIFEST` path so fingerprint-bound grounding can be prepared once and shared by paired runs without adding per-generation adapter work.
+- Updated adapter regressions for the deliberate correctness-routing change and retained fail-open reporting when the external CANNBot source is unavailable.
+- Included full compiler and verification text in failure-symbol extraction, ordered exact structured matches by failure/source/planned evidence priority, and attached per-item evidence/provenance metadata to the selected context.
+- Narrowed Host routing so a generic linker symbol does not imply an ABI problem while locally observed NPU/CUDA tensor and stream identifiers remain deterministic Host triggers.
+- Corrected the probe-manifest regression fixture so its environment payload is asserted before temporary artifacts are released.
+- Expanded stage-normalized reporting with prompt-component totals, evaluator-stage latency, censored milestone aliases, and A→H transition rates; binding failures and optimized correctness regressions now have distinct observational states.
+- Revised the Skill Adapter stage table to match the implemented deterministic correctness/Host routing and failure/source/planned evidence priority.
+- Documented the four runtime-knowledge confidence levels, environment fingerprint invalidation, new observability artifacts, and the separation of explicit compile probes from online generation.
+- Added the current two-phase B/D screening and conditional replacement-confirmation gate without scheduling or executing new operator runs.
+- Updated the context schema to version 2 with deterministic route fields, three-source symbol evidence, Level 0–3 runtime provenance, per-item selection metadata, Host routing, and censored stage metrics.
+- Aligned the README and fallback wording with strict Skills-only isolation, new trajectory artifacts, and the conditional two-phase B/D protocol.
+- Added a standalone environment-bound Host tensor/stream syntax probe command that discovers headers without importing torch, emits its compiler command, and writes a reusable manifest.
+- Documented one-time Host probe preparation and shared manifest use for fair paired runs.
+- Added a thin `probe_knowledge` module entry point so the standalone probe runs without the package import-order warning.
+- Improved installed-header declaration ranking to ignore comment-only symbol hits and retain bounded count-based overloads needed by failed arithmetic calls.
+- Excluded comment matches before header excerpt selection and stopped declaration excerpts from absorbing a preceding unrelated `__aicore__` declaration.
+- Bounded installed inline-function excerpts at their closing brace instead of consuming the rest of a header while searching for a semicolon.
+- Added regressions proving compiler-output-only API symbols are failure evidence and that header absence becomes a negative fact only when the active compiler directly rejects the symbol.
+- Clarified that non-Host operator API probes are targets rather than already-required or completed verification artifacts.
+- Added a reusable environment-bound AscendC CMake probe for the installed Add/Mul/Muls/Cast/Sqrt/ReduceSum/Tanh/GlobalTensor contracts so successful results can enter the same manifest as Host facts.
+- Added a unit regression ensuring kernel API facts are emitted only after both configure and build report success.
+- Recorded the installed/probed required include alongside each runtime declaration, using `kernel_operator.h` for basic APIs and the exact relative header for advanced and torch_npu facts.
+
+### Follow-up validation
+
+- Ran one authorized Add/Hybrid/full-selected experiment with non-thinking generation, a 32768 output-token cap, and at most three candidate evaluations. All five LLM requests accepted their full prompts; the largest request used 38,922 prompt tokens, every call reported `finish_reason=stop`, and every context recorded `truncated_sections=[]`.
+- The three-round Add experiment was a focused input-capability test rather than a B/D comparison. `knowledge_input_mode=full_selected` preserved Hybrid stage/symbol routing but disabled Agent-side reference, per-section, runtime-declaration, structured-field, evaluation-evidence, and total-character truncation for the already selected knowledge. It did not inject the unselected knowledge corpus and could not remove the provider's hard context-window limit. The fixed controls were DeepSeek `deepseek-v4-flash`, temperature `0.2`, Planner thinking disabled with 8192 output tokens, Generator thinking disabled with 32768 output tokens, CANN 8.5.2, Ascend910B3, device 0, and the real local evaluator over the Add fixture's 50 cases.
+- The success gate for that experiment was an end-to-end source-valid, compile, load/binding, NPU-execution, and 50/50 correctness pass. Token and latency milestones that were never reached are treated as censored rather than zero. Its purpose was to determine whether earlier failures were caused by Agent-side input truncation; it was not intended to establish Hybrid/Skills-only replacement or performance superiority.
+- The Add experiment did not produce a correct candidate: round 1 stopped at source validation, while rounds 2 and 3 reached the real CANN build and failed compilation. The final error was unsupported `Muls<bfloat16_t>` even though the round-3 prompt contained the complete structured `Muls.T` dtype restriction and Level 3 runtime declaration. This is recorded as knowledge-delivered/generation-reasoning failure, not evidence of input truncation.
+- The same run exposed an independent source-validation false positive: round 1 contained an actual `kernel<<<...>>>` launch after control flow in the `*_do` wrapper, but the regex-bounded wrapper body ended early. It was recorded without extending or rerunning the experiment.
+- Across the five accepted calls, cumulative usage was 110,707 prompt tokens and 15,273 completion tokens. The first source-valid candidate appeared in evaluation round 2 after 83,147 cumulative tokens and 69.14 seconds; compile, load, NPU execution, correctness, and benchmark milestones remained censored. The result shows that the service accepted the selected full input in this Add trajectory, but removing Agent-side input budgets alone was insufficient to produce a correct operator in three candidate evaluations.
+
+#### Fresh Add full-selected ten-round capability run
+
+- Re-ran Add from a clean output directory under the current validator instead of resuming the earlier three-round trajectory. The run used real local compilation and NPU evaluation, Hybrid knowledge, `knowledge_input_mode=full_selected`, DeepSeek `deepseek-v4-flash`, temperature 0.2, Planner thinking disabled with 8192 output tokens, Generator thinking disabled with 32768 output tokens, CANN 8.5.2, and Ascend910B3. Bootstrap, optimization, and total candidate caps were all 10; the total cap, rather than a ten-item Planner response, bounded the experiment.
+- Execution remained evidence-driven. The initial Planner emitted exactly one complete implementation. Later repair/diagnosis plans contained five hypotheses, but only three consecutive failing items were consumed before the remaining items were discarded and a fresh DIAGNOSE/REPLAN was requested. A correct candidate would have been saved as the baseline, cleared the bootstrap plan, switched routing to optimization, and used the remaining total budget to optimize from the correct best frontier. No correct baseline was reached, so all ten evaluations remained bootstrap attempts and optimization was never entered.
+
+The following command was executed once from a clean directory. Standard output and error were appended to `outputs/nonthinking_add_full_selected_10round_20260913.run.log` and observed with `tail -n 30 -F` until exit.
+
+```bash
+export CANNAGENT_PROBE_MANIFEST=/mnt/workspace/CannAgent/outputs/nonthinking_capability_20260913/artifacts/probe_manifest.json
+
+python -m ascendc_multi_turn \
+  --op-file benchmarks/NPUKernelBench/level1/3_Add.py \
+  --output-dir outputs/nonthinking_add_full_selected_10round_20260913 \
+  --provider deepseek \
+  --model deepseek-v4-flash \
+  --base-url https://api.deepseek.com \
+  --temperature 0.2 \
+  --max-bootstrap-rounds 10 \
+  --max-rounds 10 \
+  --max-total-rounds 10 \
+  --timeout 600 \
+  --device 0 \
+  --soc-version Ascend910B3 \
+  --cann-version 8.5.2 \
+  --knowledge-mode structured \
+  --knowledge-source hybrid \
+  --knowledge-input-mode full-selected \
+  --skill-adapter \
+  --router-max-tokens 4096 \
+  --router-thinking disabled \
+  --generator-thinking disabled \
+  --generator-max-tokens 32768 \
+  --generator-reasoning-effort high \
+  --planner-thinking disabled \
+  --planner-max-tokens 8192 \
+  --planner-reasoning-effort low \
+  --repair-thinking enabled \
+  --repair-max-tokens 65536 \
+  --repair-reasoning-effort max \
+  --llm-transient-retries 3
+```
+
+Results by evaluation round:
+
+| Round | Plan source | Source/API/static | Compile result | Principal diagnostic |
+|---:|---|---|---|---|
+| 1 | Initial one-item plan | pass/pass/pass | fail | `AddTiling` GM-copy construction and `Muls` overload |
+| 2 | Planner v2 item 1 | pass/pass/pass | fail | `Muls` overload; the `AddTiling` field-read edit removed its constructor error |
+| 3 | Planner v2 item 2 | pass/pass/pass | fail | `AddTiling` GM-copy construction and `Muls` overload returned after rollback |
+| 4 | DIAGNOSE v3 item 1 | pass/pass/pass | fail | `Muls` overload |
+| 5 | DIAGNOSE v3 item 2 | pass/pass/pass | fail | `AddTiling` GM-copy construction and `Muls` overload |
+| 6 | DIAGNOSE v3 item 3 | pass/pass/pass | fail | `Muls` overload |
+| 7 | DIAGNOSE v4 item 1 | pass/pass/pass | fail | `AddTiling` GM-copy construction and `Muls` overload |
+| 8 | DIAGNOSE v4 item 2 | pass/pass/pass | fail | `Muls` overload |
+| 9 | DIAGNOSE v4 item 3 | pass/pass/pass | fail | `AddTiling` GM-copy construction and `Muls` overload |
+| 10 | DIAGNOSE v5 item 1 | pass/pass/pass | fail | `Muls<bfloat16_t>` static assertion; supported types are half/float/int16/int32 |
+
+- Final status was `blocked` at `max_total_rounds`: source validation 10/10, API-constraint validation 10/10, static validation 10/10, compile 0/10, load 0/10, NPU execution 0/10, correctness 0/10, baseline 0, and optimization 0. All stages after source-valid are therefore censored rather than zero-cost successes.
+- The run made 15 LLM calls: two Planner calls, three DIAGNOSE calls, and ten Generator calls. Every call used disabled thinking, reported `finish_reason=stop`, recorded `knowledge_input.mode=full_selected`, `input_truncated=false`, and `truncated_sections=[]`; selected and rendered Skill, structured-card, and runtime-fact ID counts matched on every call. There was no response-length or provider context-limit failure.
+- Actual token use was 1,053,495 prompt + 66,205 completion = 1,119,700 total. The largest input was the round-10 DIAGNOSE call at 153,693 prompt tokens; the largest Generator input was round 8 at 64,623 prompt tokens. Average use was 74,646.7 tokens per LLM call. The rendered prompts contained 3,203,726 characters in aggregate, including 1,587,346 knowledge-reference characters, 192,633 source-code characters, and 433,418 compiler/evaluator-evidence characters.
+- Measured LLM latency was 229.52 seconds and evaluation latency was 271.10 seconds, of which 266.21 seconds was compilation. Wall-clock runtime from the first log event to final summary was approximately 610 seconds. The first source-valid candidate arrived in round 1 after 55,371 tokens and 60.23 seconds; compile/load/execute/correct/benchmark/optimization milestones were all censored.
+- The selected knowledge was not missing the failing contract. Every Generator reference included `Muls.T` and a Level 3 runtime `Muls` fact; rounds 2-10 also rendered the explicit restriction that BF16 is unsupported. Round 10 nevertheless instantiated `AddContiguous<bfloat16_t>` and used an ordinary runtime `if (sizeof(T) == 4)` around `Muls<T>`. Because both template branches are compiled, this still instantiated the forbidden BF16 overload. This is direct evidence of generation/implementation reasoning failure after successful knowledge availability, retrieval, and delivery.
+- A separate workflow limitation prevented independent compile repairs from accumulating. The frontier manifest remained at round 1's `source` bundle. Round 2 removed the invalid `AddTiling` GM-copy but still failed at `Muls`, so the runner rolled back; round 3 then applied its different repair to the old source and reintroduced the tiling error. The alternating `AddTiling`/`Muls` diagnostics across later plans show the same pattern. Under the current frontier policy, one candidate had to repair every compile blocker at once in order to advance beyond the source frontier.
+- Debug routing also contributed noise: round 1 used `kernel_design`, but every compiler-repair Generator in rounds 2-10 selected `host_integration_debug` with `host_or_cuda_compile_evidence`, even though the active blockers were device-kernel `Muls` and tiling C++ construction. The correct API facts remained present, but the Primary Skill did not represent the dominant failure layer.
+- The requested vertical optimization behavior was not reached, not because the Agent executed ten preplanned alternatives, but because no candidate compiled and passed correctness. Planner cadence behaved as configured: one initial item, then replanning at rounds 4, 7, and 10 after each three-failure window. The experiment therefore shows that removing Agent-side input limits alone is insufficient to measure the model's end-to-end correct-kernel capability cleanly while failed-candidate rollback and compile-error routing remain confounders.
+- Artifacts are retained under `outputs/nonthinking_add_full_selected_10round_20260913/`; the raw tailed terminal record is `outputs/nonthinking_add_full_selected_10round_20260913.run.log`. No additional operator, B/D, or retry run was started.
+- Passed the environment-bound Host syntax probe and AscendC kernel API CMake probe on CANN 8.5.2 / Ascend910B3 with final fingerprint `06b8e945d4cd781bd1b4`.
+- Confirmed the shared manifest promotes 11 exact Host/kernel facts to Level 3: `is_npu`, `getCurrentNPUStream`, `aclrtStream`, `Add`, `Mul`, `Muls`, `Cast`, `Sqrt`, `ReduceSum`, `Tanh`, and `GlobalTensor`.
+- Extended environment identity with the CANN `bisheng` path/version and torch header roots, preventing Verified kernel/Host facts from surviving a relevant compiler or include-tree change.
+- Bound probe manifests to the probe implementation hash itself and removed duplicate Host include flags, so a changed probe contract also invalidates prior Level 3 results.
+- Cleaned new lint findings in evidence composition and runtime declaration ranking without changing routing behavior.
+- Applied import-only Ruff formatting to the newly changed probe, validation, and regression modules.
+- Decoupled runtime fact discovery/provenance from prompt rendering budget so later installed symbols are no longer misclassified as missing when the text quota is exhausted.
+- Final validation passed 108 fast/unit/integration regressions, including nine targeted source-validation cases; the repository-wide archived-source traversal was intentionally not repeated after its earlier no-output stall.
+- Added an explicit integration assertion that structured API cards are reordered by failure, current-source, then planned evidence rather than their storage order.
+- Python compilation, Ruff checks for every new/changed implementation and regression module, and `git diff --check` passed; no full Hybrid/Skills-only operator experiment was run.
+
+### Changes
+
+- Completed the controlled B/D knowledge-source ablation on the real local
+  Ascend910B3 environment for GELU, LayerNorm, and Permute. Mode B used
+  `knowledge_source=hybrid` (Structured Knowledge A + CANNBot Skill Knowledge
+  B); Mode D used `knowledge_source=skills` (CANNBot Skill Knowledge B only).
+- Used the same Agent implementation and evaluation workflow in every arm.
+  No runtime source, workflow, generator, evaluator, structured knowledge
+  build, or CANNBot Skill corpus was changed during the experiment.
+- Standardized every arm on DeepSeek `deepseek-v4-flash`, temperature `0.2`,
+  five bootstrap evaluations, two post-baseline optimization evaluations,
+  Planner thinking disabled with 8192 output tokens, and Generator thinking
+  disabled with 32768 output tokens. The evaluator was local rather than mock,
+  with device `0`, `Ascend910B3`, CANN auto-detection, and a 600-second stage
+  timeout.
+- Stored the six run directories, live terminal logs, and elapsed-time records
+  under `outputs/ablation_bd_final_20260912/`.
+
+### Commands
+
+The following command shape was executed once for each operator/mode pair. The
+operator paths were `benchmarks/NPUKernelBench/level1/1_GELU.py`,
+`benchmarks/NPUKernelBench/level1/10_LayerNorm.py`, and
+`benchmarks/NPUKernelBench/level1/12_Permute.py`; `MODE` was `hybrid` for B and
+`skills` for D, and every pair used a clean mode-specific output directory.
+
+```bash
+python -m ascendc_multi_turn \
+  --op-file OP_FILE \
+  --output-dir outputs/ablation_bd_final_20260912/OPERATOR/MODE \
+  --provider deepseek \
+  --model deepseek-v4-flash \
+  --base-url https://api.deepseek.com \
+  --temperature 0.2 \
+  --max-bootstrap-rounds 5 \
+  --max-rounds 2 \
+  --timeout 600 \
+  --soc-version Ascend910B3 \
+  --device 0 \
+  --cann-version auto \
+  --knowledge-mode structured \
+  --knowledge-source MODE \
+  --cannbot-skills-root /mnt/workspace/cannbot-skills/ops \
+  --generator-thinking disabled \
+  --generator-max-tokens 32768 \
+  --generator-reasoning-effort high \
+  --planner-thinking disabled \
+  --planner-max-tokens 8192 \
+  --planner-reasoning-effort low
+```
+
+Each command redirected stdout/stderr to its `logs/*.live.log` file and was
+observed through `tail -n +1 -F` until the Agent process exited. The arms ran
+sequentially so they did not contend for the NPU.
+
+### Results
+
+An operator counts as compiled/correct when at least one of its five candidates
+passes that gate. `First compile` is the first evaluated candidate reaching a
+successful build; `-` means the arm never reached it.
+
+| Operator | Mode | Compiled candidates | Correct candidates | First compile | Bootstrap / optimization | Tokens (prompt + completion) | E2E seconds |
+|---|---|---:|---:|---:|---:|---:|---:|
+| GELU | B Hybrid | 0/5 | 0/5 | - | 5 / 0 | 94,357 (69,113 + 25,244) | 100 |
+| GELU | D Skills-only | 0/5 | 0/5 | - | 5 / 0 | 114,186 (85,030 + 29,156) | 216 |
+| LayerNorm | B Hybrid | 0/5 | 0/5 | - | 5 / 0 | 133,123 (106,671 + 26,452) | 130 |
+| LayerNorm | D Skills-only | 0/5 | 0/5 | - | 5 / 0 | 162,541 (127,492 + 35,049) | 203 |
+| Permute | B Hybrid | 0/5 | 0/5 | - | 5 / 0 | 165,079 (144,663 + 20,416) | 273 |
+| Permute | D Skills-only | 3/5 | 0/5 | 2 | 5 / 0 | 169,397 (143,645 + 25,752) | 554 |
+
+Aggregate operator-level results:
+
+| Metric | B Hybrid | D Skills-only |
+|---|---:|---:|
+| Compile success rate | 0/3 (0%) | 1/3 (33.3%) |
+| Correctness rate | 0/3 (0%) | 0/3 (0%) |
+| Candidate compile rate | 0/15 (0%) | 3/15 (20.0%) |
+| Candidate correctness rate | 0/15 (0%) | 0/15 (0%) |
+| Candidate evaluations | 15 | 15 |
+| Optimization evaluations | 0 | 0 |
+| Prompt tokens | 320,447 | 356,167 |
+| Completion tokens | 72,112 | 89,957 |
+| Total tokens | 392,559 | 446,124 |
+| Summed end-to-end time | 503 s | 973 s |
+
+The average rendered knowledge-reference sizes below are characters, measured
+from the per-round `references.md` and `planner_references.md` artifacts.
+
+| Operator | Mode | Generator references | Planner references |
+|---|---|---:|---:|
+| GELU | B Hybrid | 9,635 | 6,154 |
+| GELU | D Skills-only | 7,855 | 4,227 |
+| LayerNorm | B Hybrid | 7,854 | 5,930 |
+| LayerNorm | D Skills-only | 6,924 | 4,273 |
+| Permute | B Hybrid | 7,764 | 5,595 |
+| Permute | D Skills-only | 6,830 | 3,451 |
+
+### Analysis
+
+- Skills-only improved evaluation depth in this limited sample, but did not
+  establish that Skills can replace structured knowledge. GELU Skills-only
+  reached real builds in four rounds while Hybrid remained at source
+  validation; LayerNorm Skills-only reached real builds in three rounds while
+  Hybrid reached one; Permute Skills-only compiled in rounds 2, 3, and 5 while
+  Hybrid compiled none. Nevertheless, neither mode produced one correct
+  operator, so the replacement hypothesis is not verified.
+- Permute Skills-only round 2 compiled but its binding rejected the NPU input
+  with `Input must be a CUDA tensor`. Round 3 compiled and executed all 149 NPU
+  cases, but failed with large numerical errors across later FP16/FP32 cases,
+  demonstrating an incorrect index/data-movement implementation. Round 5
+  compiled but again rejected the input in its binding. Hybrid's later Permute
+  candidates repeatedly used unavailable or incorrectly declared
+  `aclrtStream`/`aclrtGetCurrentStream` interfaces.
+- GELU's Skills-only build failures were dominated by invalid AscendC
+  arithmetic overloads such as `Muls`, `Add`, `Mul`, `Tanh`, and cast usage.
+  LayerNorm's build failures included unsupported `sqrtf`, `ReduceSum`, and
+  invalid `GlobalTensor::Get` usage. The selected practices/templates therefore
+  did not supply enough exact installed-version API and Host ABI detail for a
+  correct implementation.
+- Skills-only reduced the rendered knowledge-reference characters for every
+  tested operator, but used 53,565 more total tokens than Hybrid (+13.6%). The
+  token increase cannot be attributed to knowledge size alone: Skills-only
+  trajectories reached later build/correctness stages and accumulated larger
+  source, plan, and evaluator evidence. Its 470-second aggregate latency
+  increase is likewise confounded by additional real compilation and NPU
+  correctness work, so it is not an Adapter routing-overhead measurement.
+- No arm entered optimization because the workflow correctly requires a
+  compiled, correct, benchmarked baseline first. The requested two optimization
+  rounds were configured identically; they were not manually skipped.
+- This is one paired run for each of three operators, as requested to avoid
+  redundant mass testing. It is sufficient to expose failure transitions, but
+  not to establish statistical superiority for a nondeterministic LLM.
+
+### Validation
+
+- Compared each B/D `trajectory.json` configuration after excluding only
+  `knowledge_source` and the required mode-specific `output_dir`; no other
+  configuration differences were found.
+- Audited every Skills-only Planner and Generator knowledge bundle. Structured
+  `api_semantics`, `relevant_facts`, `examples`, `failure_cards`,
+  `project_contracts`, and `provenance` were empty; structured working document
+  IDs/supplements were empty and full/incremental structured route counts were
+  zero. All summaries recorded `structured_prompt_enabled=false` and
+  `skills_enabled=true`, so Mode D did not fall back to Knowledge A.
+- Audited all 48 LLM calls: every call ended with `finish_reason=stop`. All 30
+  Generator calls requested thinking disabled and 32768 maximum output tokens,
+  and none recorded reasoning content. The prior reasoning-only
+  `finish_reason=length` failure did not recur.
+- Confirmed all six trajectories used `evaluator=local` and `mock=false`.
+  Permute Skills-only produced successful real CANN builds and entered real NPU
+  correctness execution, proving the run was not a mock result.
+- Final conclusion: keep structured knowledge available behind the runtime
+  switch. Skills-only shows a promising compile-frontier improvement, but zero
+  correctness means there is currently no evidence to delete or replace
+  Structured Knowledge A. The next change should target exact Host ABI and
+  installed-CANN API constraints inside the selected Skill capsules, followed
+  by another controlled evaluation rather than removing either source.
+
 ## 2026-09-11
 
 ### Changes

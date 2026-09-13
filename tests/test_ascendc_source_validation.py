@@ -18,7 +18,7 @@ class AscendCSourceValidationTests(unittest.TestCase):
                 (kernel_dir / "pybind11.cpp").write_text(pybind, encoding="utf-8")
             return validate_source_tree(task_dir)
 
-    def test_rejects_duplicate_file_constants_and_tpipe_queue_methods(self) -> None:
+    def test_rejects_tpipe_queue_methods_without_duplicate_symbol_heuristics(self) -> None:
         issues = self._issues(
             """namespace Demo {
 constexpr float TANH_C1 = 1.0f;
@@ -33,7 +33,7 @@ class Kernel {
 
         self.assertEqual(
             {issue.code for issue in issues},
-            {"duplicate_file_symbol", "invalid_tpipe_owner"},
+            {"invalid_tpipe_owner"},
         )
 
     def test_allows_tque_methods_overloads_and_nested_locals(self) -> None:
@@ -52,6 +52,68 @@ class Kernel {
         )
 
         self.assertEqual(issues, [])
+
+    def test_allows_duplicate_names_for_the_compiler_to_diagnose(self) -> None:
+        issues = self._issues(
+            '''constexpr int SHARED_NAME = 1;
+constexpr int SHARED_NAME = 2;
+extern "C" __global__ __aicore__ void first(GM_ADDR x) {
+  const uint32_t blockIdx = 0;
+  const uint32_t offset = blockIdx;
+}
+extern "C" __global__ __aicore__ void second(GM_ADDR x) {
+  const uint32_t blockIdx = 1;
+  const uint32_t offset = blockIdx;
+}
+'''
+        )
+
+        self.assertEqual(issues, [])
+
+    def test_accepts_long_file_scope_function_with_const_parameters(self) -> None:
+        issues = self._issues(
+            """struct SortKernelTiling {};
+class TPipe {};
+void SortMultiCoreInit(
+    unsigned char *keys, unsigned char *values, unsigned char *sortedKeys,
+    unsigned char *sortedValues, unsigned char *workspace,
+    const SortKernelTiling *tiling, TPipe *tPipe)
+{
+}
+"""
+        )
+
+        self.assertEqual(issues, [])
+
+    def test_ignores_comments_strings_chars_and_raw_strings(self) -> None:
+        issues = self._issues(
+            r'''constexpr int REAL = 1;
+// constexpr int REAL = 2; getCurrentCUDAStream();
+const char *message = "is_cuda() at::cuda c10::cuda";
+const char marker = '}';
+const char *raw = R"tag(#include <ATen/cuda/CUDAContext.h>
+constexpr int REAL = 3;
+)tag";
+void Kernel() { const int REAL = 4; }
+'''
+        )
+
+        self.assertEqual(issues, [])
+
+    def test_rejects_confirmed_cuda_contamination(self) -> None:
+        issues = self._issues(
+            '''#include <ATen/cuda/CUDAContext.h>
+void bind(at::Tensor x) {
+  if (!x.is_cuda()) return;
+  auto stream = c10::cuda::getCurrentCUDAStream();
+}
+'''
+        )
+
+        codes = {issue.code for issue in issues}
+        self.assertTrue(
+            {"cuda_header", "cuda_tensor_check", "cuda_namespace", "cuda_stream_api"}.issubset(codes)
+        )
 
     def test_accepts_repository_host_wrapper_contract(self) -> None:
         issues = self._issues(

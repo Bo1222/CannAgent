@@ -149,6 +149,16 @@ class SkillAdapterTests(unittest.TestCase):
         self.assertFalse(skills.uses_structured_prompt)
         self.assertTrue(skills.uses_skills)
 
+        full_selected = RunConfig(
+            op_file="model.py",
+            output_dir="out",
+            mock=True,
+            knowledge_source="hybrid",
+            knowledge_input_mode="full-selected",
+        )
+        self.assertEqual(full_selected.knowledge_input_mode, "full_selected")
+        self.assertTrue(full_selected.uses_full_selected_input)
+
     def test_legacy_skill_flag_rejects_conflicting_source(self) -> None:
         with self.assertRaisesRegex(ValueError, "legacy alias"):
             RunConfig(
@@ -185,6 +195,43 @@ class SkillAdapterTests(unittest.TestCase):
             excerpt = selected.capsules[0].excerpts[0].text
             self.assertIn("keep this architecture fact", excerpt)
             self.assertNotIn("not selected", excerpt)
+            self.assertNotIn("omit this", excerpt)
+
+    def test_full_selected_keeps_complete_mapped_heading(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = _skill_root(Path(temporary))
+            marker = "full-selected-tail-marker"
+            guide = root / "arch/references/guide.md"
+            guide.write_text(
+                "## Selected\n" + ("complete knowledge line\n" * 80) + marker + "\n\n## Other\nomit this\n",
+                encoding="utf-8",
+            )
+            adapter = SkillAdapter(
+                mapping_path=_mapping(root),
+                source_root=root,
+                full_selected_input=True,
+            )
+            context = SkillAdapterContext(
+                audience="planner",
+                stages=["operator_analysis"],
+                operator="gelu",
+                operator_families=["elementwise"],
+                soc="test",
+                runtime_version="8.5.0",
+                knowledge_version="8.5.0",
+                failure_stage=None,
+                failure_code=None,
+                failure_evidence="",
+                failure_symbols=[],
+                has_correct_baseline=False,
+                evidence="gelu",
+            )
+
+            selected = adapter.select(context)
+            excerpt = selected.capsules[0].excerpts[0].text
+
+            self.assertGreater(len(excerpt), 500)
+            self.assertIn(marker, excerpt)
             self.assertNotIn("omit this", excerpt)
 
     def test_missing_source_fails_open(self) -> None:
@@ -269,7 +316,7 @@ class SkillAdapterTests(unittest.TestCase):
                 current_exists=True,
                 previous=mismatch,
             ),
-            ["precision_debug"],
+            ["kernel_design"],
         )
 
     def test_prompt_renderer_respects_budget_and_records_omissions(self) -> None:
@@ -294,6 +341,61 @@ class SkillAdapterTests(unittest.TestCase):
         self.assertLessEqual(len(rendered), 1200)
         self.assertTrue(selection.budget["truncated_sections"])
         self.assertNotIn("x" * 100, rendered)
+
+    def test_prompt_renderer_full_selected_ignores_all_render_budgets(self) -> None:
+        marker = "full-selected-skill-tail"
+        selection = SelectedStageContext(
+            schema_version=2,
+            audience="generator",
+            stages=["kernel_design", "code_generation"],
+            authority_order=["runtime", "skills"],
+            task_facts={"operator": "add"},
+            hard_constraints=[{"contract_id": "host", "constraint": "h" * 4000}],
+            api_facts=[{"fact_id": "runtime:Add", "value": "a" * 7000}],
+            design_patterns=["p" * 3000],
+            failure_guidance=[],
+            skill_capsules=[
+                {
+                    "skill_id": "ascendc-api-best-practices",
+                    "stage": "kernel_design",
+                    "purpose": "api",
+                    "trigger_reason": "selected",
+                    "expected_artifact": "code",
+                    "excerpts": [
+                        {
+                            "source": "references/api-arithmetic.md",
+                            "headings": ["API"],
+                            "text": "s" * 6000 + marker,
+                        }
+                    ],
+                }
+            ],
+            exclusions=[],
+            provenance=[],
+            runtime_facts="r" * 7000,
+            budget={
+                "input_mode": "full_selected",
+                "max_chars": None,
+                "used_chars": 0,
+                "truncated_sections": [],
+            },
+            selection_metadata={
+                "selected_skill_ids": ["ascendc-api-best-practices"],
+                "selected_structured_ids": ["runtime:Add"],
+                "runtime_fact_ids": ["runtime:Add"],
+            },
+        )
+
+        rendered = render_stage_context(selection)
+
+        self.assertGreater(len(rendered), 20000)
+        self.assertIn(marker, rendered)
+        self.assertEqual(selection.budget["truncated_sections"], [])
+        self.assertFalse(selection.selection_metadata["input_truncated"])
+        self.assertEqual(
+            selection.selection_metadata["rendered_skill_ids"],
+            selection.selection_metadata["selected_skill_ids"],
+        )
 
 
 class SkillAdapterRunnerTests(unittest.TestCase):

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
 from .diagnostics import compact_evaluation
@@ -33,8 +34,8 @@ RULES = """
 - Keep PYBIND11_MODULE's literal module name consistent with the module imported by model_new_ascendc.py.
 - Cover every dtype, shape and attribute represented by the supplied cases.
 - Prefer vectorized AscendC operations, aligned transfers and bounded UB usage.
-- Before returning, check for duplicate file-scope declarations, verify every API owner
-  (for example TQue rather than TPipe for EnQue), and check every local helper call's arity.
+- Before returning, verify every API owner (for example TQue rather than TPipe for EnQue)
+  and check every local helper call's arity.
 - Do not invent AscendC fields or overloads. When runtime header declarations are supplied,
   they override examples and fallback-version documentation.
 """.strip()
@@ -54,7 +55,8 @@ Return exactly one JSON object and no Markdown fence:
     }
   ]
 }
-Return 3 to 5 independent items. Do not return source files in this response.
+Return exactly one next item grounded in the current accepted implementation and evidence.
+Do not return source files in this response.
 """.strip()
 
 
@@ -77,18 +79,76 @@ Do not use or propose TileLang, another DSL, an intermediate implementation, or 
 """.strip()
 
 
+COMPILATION_REPAIR_CONTRACT = """
+- The current implementation is the accepted repair base. Apply repairs cumulatively to it.
+- Resolve the listed open compiler errors and preserve fixes represented by cleared error IDs.
+- Do not reintroduce a previously cleared diagnostic.
+- A normal runtime `if` statement does not prevent C++ template instantiation. Unsupported
+  API/dtype combinations must be isolated at compile time or placed in type-specific
+  implementations using syntax supported by the current toolchain.
+- Installed declarations and current compiler diagnostics are authoritative. Do not invent
+  overloads or hide type errors with unsupported casts.
+- In `analysis`, name the targeted error, the repair, and the cleared errors you preserved.
+""".strip()
+
+
+def render_repair_state(repair_state: dict[str, Any] | None) -> str:
+    """Render only the run-local state relevant to currently open errors."""
+
+    if not repair_state:
+        return "(no active trajectory repair state)"
+    lines = [
+        f"Accepted attempt: {repair_state.get('accepted_attempt_id') or 'none'}",
+        f"Latest rejected attempt: {repair_state.get('latest_rejected_attempt_id') or 'none'}",
+        "",
+        "Open errors:",
+    ]
+    open_errors = repair_state.get("open_errors", [])
+    if open_errors:
+        for item in open_errors:
+            lines.append(
+                "- "
+                + str(item.get("error_id", "unknown"))
+                + f"; symbol={item.get('symbol') or 'unknown'}; category={item.get('category') or 'unknown'}"
+                + f"; evidence={item.get('normalized_message') or item.get('excerpt') or ''}"
+            )
+    else:
+        lines.append("- none")
+    lines.extend(["", "Cleared errors that must not regress:"])
+    cleared = repair_state.get("cleared_error_ids", [])
+    lines.extend([f"- {item}" for item in cleared] or ["- none"])
+    lines.extend(["", "Previous failed approaches relevant to current open errors:"])
+    relevant = repair_state.get("failed_approaches_by_error", {})
+    if not relevant:
+        lines.append("- none")
+    for error_id, approaches in relevant.items():
+        lines.append(f"- {error_id}")
+        for approach in approaches:
+            attempts = ",".join(str(item) for item in approach.get("attempt_ids", []))
+            lines.append(
+                f"  - {approach.get('approach_id')}: {approach.get('summary', '')} "
+                f"(outcome={approach.get('outcome')}; occurrences={approach.get('occurrences', 1)}; "
+                f"attempts={attempts or 'unknown'})"
+            )
+    return "\n".join(lines)
+
+
 def render_stage_context(selection: Any) -> str:
     """Render a stage-selected context without slicing through atomic entries."""
 
     payload = selection.to_dict() if hasattr(selection, "to_dict") else dict(selection)
     audience = str(payload.get("audience", "generator"))
     budget = payload.setdefault("budget", {})
-    max_chars = int(budget.get("max_chars", 12000))
+    full_selected = budget.get("input_mode") == "full_selected"
+    max_chars = None if full_selected else int(budget.get("max_chars", 12000))
     truncated: list[str] = []
     chunks = [
         "# Selected AscendC reference context",
         f"Audience: {audience}",
         "Stages: " + ", ".join(payload.get("stages", [])),
+        "Primary skill: " + str(payload.get("task_facts", {}).get("primary_skill", "unknown")),
+        "Route reason: " + str(payload.get("task_facts", {}).get("route_reason", "unknown")),
+        "Secondary skill: " + str(payload.get("task_facts", {}).get("secondary_skill") or "none"),
         (
             "This is reference knowledge, not a workflow to execute. Resolve conflicts in this order: "
             + " > ".join(payload.get("authority_order", []))
@@ -113,6 +173,7 @@ def render_stage_context(selection: Any) -> str:
             "other": 2000,
         }
     )
+    rendered_sections: list[str] = []
 
     def append_section(title: str, entries: list[str], quota: int) -> None:
         if not entries:
@@ -124,12 +185,16 @@ def render_stage_context(selection: Any) -> str:
             item = entry.strip()
             addition = len(item) + 2
             projected_global = len("\n".join([*chunks, *section, item]))
-            if used + addition > quota or projected_global > max_chars:
+            if not full_selected and (
+                used + addition > quota
+                or (max_chars is not None and projected_global > max_chars)
+            ):
                 truncated.append(f"{title}[{index}]")
                 continue
             section.append(item)
             used += addition
             accepted += 1
+            rendered_sections.append(f"{title}[{index}]")
         if accepted:
             chunks.extend(section)
 
@@ -173,7 +238,7 @@ def render_stage_context(selection: Any) -> str:
         skill_entries.append(
             "\n".join(
                 [
-                    f"### {capsule.get('skill_id')} [{capsule.get('stage')}]",
+                    f"### {capsule.get('skill_id')} [{capsule.get('stage')}; role={capsule.get('role', 'support')}]",
                     f"Purpose: {capsule.get('purpose', '')}",
                     f"Triggered because: {capsule.get('trigger_reason', '')}",
                     f"Expected artifact: {capsule.get('expected_artifact', '')}",
@@ -184,6 +249,7 @@ def render_stage_context(selection: Any) -> str:
             headings = ", ".join(excerpt.get("headings", [])) or "bounded file excerpt"
             skill_entries.append(
                 f"#### {capsule.get('skill_id')} source: {excerpt.get('source')} ({headings})\n"
+                f"Origin: {excerpt.get('origin', 'cannbot')}; confidence=Level {excerpt.get('confidence_level', 1)}; provenance={excerpt.get('provenance', 'documented_skill')}\n"
                 + str(excerpt.get("text", ""))
             )
     append_section("Selected CANNBot skill capsules", skill_entries, quotas["skills"])
@@ -202,9 +268,33 @@ def render_stage_context(selection: Any) -> str:
     )
     text = "\n".join(chunks)
     budget["used_chars"] = len(text)
+    budget["estimated_tokens"] = (len(text) + 3) // 4
     budget["truncated_sections"] = truncated
+    metadata = payload.setdefault("selection_metadata", {})
+    metadata["rendered_sections"] = rendered_sections
+    metadata["truncated_sections"] = truncated
+    metadata["rendered_chars"] = len(text)
+    metadata["rendered_estimated_tokens"] = (len(text) + 3) // 4
+    metadata["input_mode"] = "full_selected" if full_selected else "bounded"
+    metadata["input_truncated"] = bool(truncated)
+    if full_selected:
+        metadata["rendered_skill_ids"] = [
+            str(item.get("skill_id"))
+            for item in payload.get("skill_capsules", [])
+            if item.get("skill_id")
+        ]
+        metadata["rendered_structured_ids"] = [
+            str(item.get("fact_id") or item.get("card_id"))
+            for item in payload.get("api_facts", [])
+            if item.get("fact_id") or item.get("card_id")
+        ]
+        metadata["rendered_runtime_fact_ids"] = list(
+            metadata.get("runtime_fact_ids", [])
+        )
     if hasattr(selection, "budget"):
         selection.budget = budget
+    if hasattr(selection, "selection_metadata"):
+        selection.selection_metadata = metadata
     return text
 
 
@@ -228,11 +318,18 @@ def build_prompt(
     phase: str = "BOOTSTRAP",
     plan_item: dict | None = None,
     failure_fingerprints: list[str] | None = None,
+    full_input: bool = False,
+    repair_state: dict[str, Any] | None = None,
+    compile_repair_active: bool = False,
 ) -> str:
     if previous_result is None:
         feedback = "No previous evaluation. Generate the initial implementation."
     else:
-        feedback = json.dumps(compact_evaluation(previous_result), ensure_ascii=False, indent=2)
+        feedback = json.dumps(
+            previous_result.to_dict() if full_input else compact_evaluation(previous_result),
+            ensure_ascii=False,
+            indent=2,
+        )
     action = (
         "Generate the initial AscendC implementation."
         if current is None or not current.files
@@ -243,6 +340,16 @@ def build_prompt(
         if plan_item
         else "(no active plan item; only valid for a historical EVAL checkpoint)"
     )
+    compilation_section = (
+        f"## Compilation repair contract\n{COMPILATION_REPAIR_CONTRACT}\n\n"
+        if compile_repair_active
+        else ""
+    )
+    repair_section = (
+        f"## Current trajectory repair state\n{render_repair_state(repair_state)}\n\n"
+        if compile_repair_active
+        else ""
+    )
     return f"""# AscendC {phase.lower()} edit attempt {round_num}
 
 {action}
@@ -250,7 +357,7 @@ def build_prompt(
 ## Mandatory rules
 {RULES}
 
-## Reference PyTorch model (read-only)
+{compilation_section}{repair_section}## Reference PyTorch model (read-only)
 ```python
 {reference_code}
 ```
@@ -273,8 +380,6 @@ def build_prompt(
 {plan_text}
 ```
 
-Previously observed normalized failure fingerprints: {json.dumps(failure_fingerprints or [])}
-
 ## Stage-selected AscendC references
 {knowledge_context}
 
@@ -294,28 +399,19 @@ def build_plan_prompt(
     diagnosis_required: bool = False,
     knowledge_context: str = "",
     initial: bool = False,
+    full_input: bool = False,
+    repair_state: dict[str, Any] | None = None,
 ) -> str:
     feedback = (
-        json.dumps(compact_evaluation(result), ensure_ascii=False, indent=2)
+        json.dumps(
+            result.to_dict() if full_input else compact_evaluation(result),
+            ensure_ascii=False,
+            indent=2,
+        )
         if result is not None
         else "No implementation has been evaluated yet."
     )
-    compact_history = []
-    for record in history[-8:]:
-        evaluation = record.get("evaluation", {}) if isinstance(record, dict) else {}
-        compact_history.append(
-            {
-                "attempt_id": record.get("attempt_id", record.get("round")),
-                "budget_phase": record.get("budget_phase"),
-                "decision": record.get("decision"),
-                "score": evaluation.get("score"),
-                "failure_stage": evaluation.get("failure_stage"),
-                "failure_code": evaluation.get("failure_code"),
-                "diagnostics": evaluation.get("error_excerpt", "")[:4000],
-                "failure_fingerprint": record.get("failure_fingerprint"),
-                "plan_item": record.get("plan_item"),
-            }
-        )
+    del history  # Full attempt history remains on disk; only repair_state is prompt-visible.
     if initial:
         purpose = (
             "Create one complete implementation blueprint directly in AscendC terms before any source is generated."
@@ -332,10 +428,16 @@ def build_plan_prompt(
             else "Create the next evidence-driven implementation plan."
         )
         execution_rules = (
-            "The plan will be executed one item per candidate evaluation. Do not propose multiple\n"
-            "edits inside one item and do not repeat a failed approach under a new name."
+            "Return one vertical next step for the current accepted implementation. The item may\n"
+            "touch multiple files when required by one primary hypothesis. Do not repeat a failed\n"
+            "approach under a new name."
         )
         output_contract = PLAN_OUTPUT_CONTRACT
+    repair_section = (
+        f"## Current trajectory repair state\n{render_repair_state(repair_state)}\n\n"
+        if repair_state and mode == "bootstrap" and not initial
+        else ""
+    )
     return f"""# AscendC {mode} planning
 
 {purpose}
@@ -369,12 +471,7 @@ nullptr, stream>>>. acl/acl_rt_launch.h and ACLRT_LAUNCH_KERNEL are unsupported.
 ## Stage-selected AscendC references
 {knowledge_context or "(no additional reference material selected)"}
 
-## Recent settled attempts
-```json
-{json.dumps(compact_history, ensure_ascii=False, indent=2)}
-```
-
-## Output contract
+{repair_section}## Output contract
 {output_contract}
 """
 
@@ -396,9 +493,27 @@ def parse_plan(text: str, *, min_items: int = 3, max_items: int = 5) -> dict:
         expected = str(min_items) if min_items == max_items else f"{min_items} to {max_items}"
         raise ValueError(f"planning response must contain {expected} items")
     normalized = []
-    required = ("id", "kind", "hypothesis", "change", "expected_signal")
+    required = ("id", "kind", "hypothesis", "change")
     for index, item in enumerate(payload["items"], 1):
         if not isinstance(item, dict) or any(not str(item.get(key, "")).strip() for key in required):
             raise ValueError(f"plan item {index} is incomplete")
-        normalized.append({key: str(item[key]).strip() for key in required})
+        expected_signal = str(item.get("expected_signal", "")).strip()
+        change = str(item["change"]).strip()
+        if not expected_signal:
+            embedded = re.search(
+                r"(?ims)^\s*\d+[.)]\s*expected signal\s*$\n(?P<value>.+)\Z",
+                change,
+            )
+            if embedded:
+                expected_signal = embedded.group("value").strip()
+                change = change[: embedded.start()].rstrip()
+        if not expected_signal:
+            raise ValueError(f"plan item {index} is incomplete")
+        normalized.append(
+            {
+                **{key: str(item[key]).strip() for key in required if key != "change"},
+                "change": change,
+                "expected_signal": expected_signal,
+            }
+        )
     return {"diagnosis": str(payload.get("diagnosis", "")).strip(), "items": normalized}

@@ -107,6 +107,12 @@ def parser() -> argparse.ArgumentParser:
         default="",
         help="prompt knowledge source; defaults to structured, while --skill-adapter remains a hybrid alias",
     )
+    result.add_argument(
+        "--knowledge-input-mode",
+        choices=("bounded", "full-selected"),
+        default="bounded",
+        help="render selected prompt knowledge with normal budgets or without Agent-side input truncation",
+    )
     result.add_argument("--knowledge-store", default=str(DEFAULT_KNOWLEDGE_STORE))
     result.add_argument("--knowledge-build-id", default=None)
     result.add_argument(
@@ -177,6 +183,7 @@ def main() -> int:
         knowledge_store=args.knowledge_store,
         knowledge_build_id=args.knowledge_build_id,
         knowledge_source=args.knowledge_source,
+        knowledge_input_mode=args.knowledge_input_mode,
         skill_adapter=args.skill_adapter,
         cannbot_skills_root=args.cannbot_skills_root,
         skill_mapping=args.skill_mapping,

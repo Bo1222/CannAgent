@@ -71,10 +71,30 @@ python -m ascendc_multi_turn \
 `CANNBOT_SKILLS_ROOT` 指定。映射默认使用
 `ascendc_multi_turn/skill_mapping.yaml`；`--skill-mapping` 仅用于受控实验。
 
+`--knowledge-input-mode full-selected` 是受控能力实验开关：保留上述路由结果，
+但完整渲染已选中的 Structured cards、Skill headings、runtime declarations 和失败证据，
+不应用 Agent 的 reference、section 或总字符预算。默认 `bounded` 不变。该开关不能取消
+模型服务自身的 context-window 上限；服务拒绝完整 prompt 时不会自动降级为裁剪输入。
+
 旧 `--skill-adapter` 保留为 `--knowledge-source hybrid` 的兼容别名。没有新参数
 时仍使用原 `structured` baseline。`skills` 只关闭旧 knowledge store 的 prompt
 注入，不删除知识库；为了保持三组验证标准一致，local evaluator 仍可使用同一
 structured build 执行 API constraint validation。`document` mode 不与 Skills 组合。
+
+关键 Host API 可在正式 paired run 前只验证一次，并通过环境变量供两臂共同读取：
+
+```bash
+python -m ascendc_multi_turn.probe_knowledge \
+  --runtime-version 8.5.2 \
+  --soc-version Ascend910B3 \
+  --output-dir /tmp/cannagent_knowledge_probes
+
+export CANNAGENT_PROBE_MANIFEST=/tmp/cannagent_knowledge_probes/manifest.json
+```
+
+probe manifest 与 CANN/toolkit、PyTorch/torch_npu、Host C++/CANN `bisheng` compiler、
+include roots、SoC、项目 build contract 和 probe contract 的 fingerprint 绑定。环境发生变化时旧结果不会继续作为 Level 3
+Verified；普通生成过程只读取 manifest，不会每轮重新编译 probe。
 
 ## 3. 多轮执行流程
 
@@ -263,14 +283,17 @@ outputs/1_GELU/
 ### `.llm_state/` 全局运行状态
 
 - `trajectory.json`：整个多轮实验的主记录，包含每轮 decision、评测结果、失败指纹、
-  StructuredFailure、计划项、候选路径、frontier 和知识版本。
+  StructuredFailure、计划项、候选路径、frontier、知识版本、A-H stage observation 和
+  evaluator stage timing。
 - `run_state.json`：可恢复检查点，记录当前 attempt、待执行 evaluation round 和
   `PLAN/EDIT/EVAL/DIAGNOSE` 等 pending phase。`--resume` 主要依据它继续。
 - `summary.json`：本次命令结束时打印到终端的最终摘要副本，包括是否成功、停止原因、
-  baseline/best round、token 用量和最后失败。
+  baseline/best round、token 用量、最后失败及 `stage_normalized_metrics`。未到达阶段的
+  tokens/time-to-first 值为 `null`（censored），不是 0。
 - `token_usage.json`：总 token 和 planner、generator、diagnose 等调用类型的分类统计。
-- `calls.jsonl`：每次 LLM 调用一行，记录模型、耗时、finish reason、token 和重试序号；
-  不重复保存完整模型正文。
+- `calls.jsonl`：每次 LLM 调用一行，记录模型、耗时、finish reason、token、重试序号和
+  prompt metadata；Adapter 模式还记录 selected/rejected knowledge ID、symbol evidence 类型、
+  provenance/confidence 及 knowledge/source/evaluator-evidence 的渲染体积。
 - `invocations.jsonl`：每次启动或 `--resume` 的配置快照，一次命令一行。
 - `orchestration_attempts.jsonl`：不计入候选评估预算的编排失败，例如 LLM 传输、格式或本地
   基础设施失败；没有这类失败时可能不存在。
@@ -343,20 +366,15 @@ outputs/1_GELU/
 - `knowledge_bundle_planner.json` / `knowledge_bundle_generator.json`：两次投影所基于的
   official knowledge 包；`skills` source 下为空并记录 source-policy trace；
 - `runtime_header_facts_planner.json` / `runtime_header_facts_generator.json`：
-  按需对当前精确符号查询的已安装 CANN 公共头文件事实。
+  按需对当前精确符号查询的已安装 CANN/torch_npu 公共头文件事实、Level 0–3 confidence
+  和 environment fingerprint。只有 fingerprint 匹配的 compile probe 才能标记 Level 3。
 
-## 7. Knowledge source 对照评测
+## 7. Hybrid / Skills-only 对照评测
 
-同一个 commit、模型、温度、CANN/SoC、设备、case 和轮数分别运行：
+当前 B/D 只比较 Hybrid 与 Skills-only。同一个 commit、模型、温度、CANN/SoC、设备、case
+和轮数分别运行；固定 Generator thinking disabled、32768 max tokens：
 
 ```bash
-# Structured baseline
-python -m ascendc_multi_turn \
-  --op-file <case.py> \
-  --output-dir <structured-output> \
-  --knowledge-source structured \
-  <共同参数>
-
 # Skills-only
 python -m ascendc_multi_turn \
   --op-file <case.py> \
@@ -372,10 +390,15 @@ python -m ascendc_multi_turn \
   <共同参数>
 ```
 
-从三组 `.llm_state/summary.json` 和 `calls.jsonl` 统计 compile success、
-correctness、首次成功迭代数、token 和总耗时；只对相互比较且都正确的算子比较
-`best_score` 及 `round_*/performance.json`。非确定模型建议每个算子至少重复三次。
-完整指标定义、控制变量和有效性规则见 `architecture.md` 的 Evaluation plan。
+Phase 1 对 GELU、LayerNorm、Permute 各做一次 pair，用于筛除 infrastructure failure 并定位
+新 bottleneck，不支持稳定替代结论。只有 Skills-only 的 correctness/frontier 达到或超过
+Hybrid，才进入 Phase 2：对进入决策的算子增加两个 paired repeats，使每个 mode/operator
+至少有 3 条 paired trajectories；若追加 pair 已明显退化则提前停止。
+
+优先比较 correctness，再比较 compile/load/execute reachability、多 case robustness、
+iterations/tokens/time-to-first-correct，最后才是正确候选的 performance。双方没有达到相同
+目标阶段时，不用 total token 或总时延宣称某模式更高效。详细路由与 replacement 门槛见
+`skills_adapter.md`。
 
 ## 8. 轨迹和排障文件
 

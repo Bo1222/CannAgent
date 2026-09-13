@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import hashlib
 import inspect
 import json
 import math
+import os
+import re
 import shutil
 from pathlib import Path
 from typing import Any
@@ -17,6 +20,7 @@ from .context_selector import ContextSelector
 from .diagnostics import (
     diagnostic_fingerprint,
     extract_api_symbols,
+    observe_evaluation_stages,
     parse_structured_failure,
     read_result_log,
 )
@@ -34,11 +38,12 @@ from .knowledge import (
     save_knowledge_state,
     selection_from_state,
 )
-from .llm import LLMProvider
+from .llm import SYSTEM_PROMPT_ID, LLMProvider, system_prompt_for
 from .logging import TrajectoryLogger
 from .models import EvalResult, FileBundle, LLMCallConfig, LLMResponse, RunConfig
 from .progress import ProgressReporter, token_detail
 from .prompts import build_plan_prompt, build_prompt, parse_plan, render_stage_context
+from .repair_state import RepairStateManager
 from .runtime_knowledge import collect_runtime_facts
 from .skill_adapter import SkillAdapter
 from .structured_knowledge import (
@@ -71,6 +76,11 @@ class MultiTurnRunner:
     """Evidence-driven AscendC bootstrap and optimization loop."""
 
     CONSECUTIVE_FAIL_THRESHOLD = 3
+    REPO_ROOT = Path(__file__).resolve().parent.parent
+
+    def _probe_manifest_path(self) -> Path:
+        configured = os.getenv("CANNAGENT_PROBE_MANIFEST", "").strip()
+        return Path(configured).expanduser().resolve() if configured else self.state_dir / "knowledge_probes/manifest.json"
 
     def __init__(
         self,
@@ -89,6 +99,7 @@ class MultiTurnRunner:
             SkillAdapter(
                 mapping_path=config.skill_mapping or None,
                 source_root=config.cannbot_skills_root or None,
+                full_selected_input=config.uses_full_selected_input,
             )
             if config.uses_skills
             else None
@@ -195,6 +206,66 @@ class MultiTurnRunner:
             else self.provider.generate(prompt)
         )
 
+    @staticmethod
+    def _prompt_metadata(prompt: str) -> dict[str, Any]:
+        import hashlib
+
+        def section(titles: tuple[str, ...], end_titles: tuple[str, ...]) -> str:
+            for title in titles:
+                start_match = re.search(
+                    rf"^## {re.escape(title)}\s*$\n", prompt, re.MULTILINE
+                )
+                if not start_match:
+                    continue
+                start = start_match.end()
+                ends = [
+                    match.start()
+                    for end_title in end_titles
+                    if (
+                        match := re.search(
+                            rf"^## {re.escape(end_title)}\s*$",
+                            prompt[start:],
+                            re.MULTILINE,
+                        )
+                    )
+                ]
+                end = start + min(ends) if ends else len(prompt)
+                return prompt[start:end]
+            return ""
+
+        knowledge = section(
+            ("Stage-selected AscendC references",),
+            ("Recent settled attempts", "Output contract"),
+        )
+        source = section(
+            ("Current implementation",),
+            ("Previous evaluation", "Latest evaluation evidence"),
+        )
+        evidence = section(
+            ("Previous evaluation", "Latest evaluation evidence"),
+            ("Active plan item", "Stage-selected AscendC references"),
+        )
+        repair_state = section(
+            ("Current trajectory repair state",),
+            ("Reference PyTorch model (read-only)", "Output contract"),
+        )
+
+        def measure(value: str) -> dict[str, int]:
+            return {
+                "chars": len(value),
+                "bytes": len(value.encode("utf-8")),
+                "estimated_tokens": (len(value) + 3) // 4,
+            }
+
+        return {
+            "prompt": measure(prompt),
+            "prompt_sha256": hashlib.sha256(prompt.encode("utf-8")).hexdigest(),
+            "knowledge_reference": measure(knowledge),
+            "source_code": measure(source),
+            "compiler_evaluator_evidence": measure(evidence),
+            "trajectory_repair_state": measure(repair_state),
+        }
+
     def _call_llm(
         self,
         *,
@@ -205,8 +276,64 @@ class MultiTurnRunner:
         attempt_id: int,
         evaluation_round: int,
         response_path: Path,
+        knowledge_selection: Any = None,
     ) -> LLMResponse:
         call_config = self.config.call_config(call_type)
+        prompt_metadata = self._prompt_metadata(prompt)
+        system_prompt = system_prompt_for(call_type)
+        system_path = response_path.parent / f"system_prompt_{call_type}.txt"
+        system_path.parent.mkdir(parents=True, exist_ok=True)
+        system_path.write_text(system_prompt, encoding="utf-8")
+        prompt_metadata.update(
+            {
+                "system_prompt_id": SYSTEM_PROMPT_ID,
+                "system_prompt_sha256": hashlib.sha256(
+                    system_prompt.encode("utf-8")
+                ).hexdigest(),
+                "system_prompt_path": str(system_path.relative_to(self.state_dir)),
+            }
+        )
+        if knowledge_selection is not None:
+            selection_payload = (
+                knowledge_selection.to_dict()
+                if hasattr(knowledge_selection, "to_dict")
+                else dict(knowledge_selection)
+            )
+            prompt_metadata["knowledge_selection"] = {
+                "task_facts": selection_payload.get("task_facts", {}),
+                "selection_metadata": selection_payload.get("selection_metadata", {}),
+                "selection_trace": selection_payload.get("selection_trace", []),
+            }
+            selection_metadata = selection_payload.get("selection_metadata", {})
+            skill_text = "\n".join(
+                str(excerpt.get("text", ""))
+                for capsule in selection_payload.get("skill_capsules", [])
+                for excerpt in capsule.get("excerpts", [])
+            )
+            structured_text = json.dumps(
+                {
+                    "hard_constraints": selection_payload.get("hard_constraints", []),
+                    "api_facts": selection_payload.get("api_facts", []),
+                    "design_patterns": selection_payload.get("design_patterns", []),
+                    "failure_guidance": selection_payload.get("failure_guidance", []),
+                    "provenance": selection_payload.get("provenance", []),
+                },
+                ensure_ascii=False,
+            )
+            prompt_metadata["knowledge_input"] = {
+                "mode": selection_payload.get("budget", {}).get("input_mode", "bounded"),
+                "input_truncated": bool(selection_metadata.get("input_truncated", False)),
+                "truncated_sections": list(selection_metadata.get("truncated_sections", [])),
+                "selected_skill_ids": list(selection_metadata.get("selected_skill_ids", [])),
+                "rendered_skill_ids": list(selection_metadata.get("rendered_skill_ids", [])),
+                "selected_structured_ids": list(selection_metadata.get("selected_structured_ids", [])),
+                "rendered_structured_ids": list(selection_metadata.get("rendered_structured_ids", [])),
+                "runtime_fact_ids": list(selection_metadata.get("runtime_fact_ids", [])),
+                "rendered_runtime_fact_ids": list(selection_metadata.get("rendered_runtime_fact_ids", [])),
+                "skill_chars": len(skill_text),
+                "structured_chars": len(structured_text),
+                "runtime_chars": len(str(selection_payload.get("runtime_facts", ""))),
+            }
         last_error = ""
         for retry in range(self.config.llm_transient_retries + 1):
             task = self.progress.start(label if retry == 0 else f"{label} retry {retry}")
@@ -222,6 +349,7 @@ class MultiTurnRunner:
                     retry=retry,
                     error=last_error,
                     request_options=call_config.__dict__,
+                    prompt_metadata=prompt_metadata,
                 )
                 if retry < self.config.llm_transient_retries:
                     continue
@@ -232,6 +360,7 @@ class MultiTurnRunner:
                 call_type=call_type,
                 evaluation_round=evaluation_round,
                 retry=retry,
+                prompt_metadata=prompt_metadata,
             )
             target = response_path if retry == 0 else response_path.with_name(
                 f"{response_path.stem}_retry_{retry:02d}{response_path.suffix}"
@@ -347,6 +476,9 @@ file delta and no Markdown. The response must fit within the output-token limit.
         frontier: dict[str, Any],
         incident_id: str,
         confirmed_experience_id: str | None,
+        stage_observation: dict[str, Any],
+        stage_timings: list[dict[str, Any]],
+        repair_attempt: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         return {
             "round": attempt_id,
@@ -373,11 +505,16 @@ file delta and no Markdown. The response must fit within the output-token limit.
             "frontier": frontier,
             "incident_id": incident_id,
             "confirmed_experience_id": confirmed_experience_id,
+            "stage_observation": stage_observation,
+            "stage_timings": stage_timings,
+            "repair_attempt": repair_attempt,
         }
 
     @staticmethod
     def _resolved_fact_ids(selection: Any) -> list[str]:
         facts = getattr(selection, "relevant_facts", [])
+        if not facts:
+            facts = getattr(selection, "api_facts", [])
         return sorted(
             {
                 str(fact["fact_id"])
@@ -535,6 +672,8 @@ file delta and no Markdown. The response must fit within the output-token limit.
         mode: str,
         diagnosis_required: bool,
         knowledge_context: str,
+        knowledge_selection: Any = None,
+        repair_state: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         version = int(logger.data.get("workflow", {}).get("plan_version", 0)) + 1
         initial = current is None and previous is None
@@ -550,23 +689,43 @@ file delta and no Markdown. The response must fit within the output-token limit.
             diagnosis_required=diagnosis_required,
             knowledge_context=knowledge_context,
             initial=initial,
+            full_input=self.config.uses_full_selected_input,
+            repair_state=(
+                repair_state if mode == "bootstrap" and not initial else None
+            ),
         )
         plan_dir.mkdir(parents=True, exist_ok=True)
         (plan_dir / "prompt.txt").write_text(prompt, encoding="utf-8")
-        response = self._call_llm(
-            prompt=prompt,
-            call_type=call_type,
-            label=f"{call_type.upper()} v{version}",
-            logger=logger,
-            attempt_id=attempt_id,
-            evaluation_round=evaluation_round,
-            response_path=plan_dir / "response.txt",
-        )
-        parsed = parse_plan(
-            response.content,
-            min_items=1 if initial else 3,
-            max_items=1 if initial else 5,
-        )
+        response_path = plan_dir / "response.txt"
+        parsed = None
+        if self.config.resume and response_path.is_file():
+            try:
+                parsed = parse_plan(
+                    response_path.read_text(encoding="utf-8"),
+                    min_items=1,
+                    max_items=1,
+                )
+                self.progress.emit(
+                    f"{call_type.upper()} v{version} · reused persisted response"
+                )
+            except (ValueError, json.JSONDecodeError):
+                parsed = None
+        if parsed is None:
+            response = self._call_llm(
+                prompt=prompt,
+                call_type=call_type,
+                label=f"{call_type.upper()} v{version}",
+                logger=logger,
+                attempt_id=attempt_id,
+                evaluation_round=evaluation_round,
+                response_path=response_path,
+                knowledge_selection=knowledge_selection,
+            )
+            parsed = parse_plan(
+                response.content,
+                min_items=1,
+                max_items=1,
+            )
         (plan_dir / "result.json").write_text(
             json.dumps(parsed, ensure_ascii=False, indent=2), encoding="utf-8"
         )
@@ -608,11 +767,10 @@ file delta and no Markdown. The response must fit within the output-token limit.
         audience: str = "generator",
         workflow_phase: str = "bootstrap",
     ) -> tuple[Any, str]:
-        evidence_parts = [reference, cases]
-        if current:
-            evidence_parts.extend(current.files.values())
-        if previous:
-            evidence_parts.append(read_result_log(previous))
+        source_evidence = "\n".join(current.files.values()) if current else ""
+        failure_evidence = read_result_log(previous) if previous else ""
+        planned_evidence = json.dumps(active_plan or {}, ensure_ascii=False)
+        evidence_parts = [reference, cases, source_evidence, failure_evidence, planned_evidence]
         evidence = "\n".join(evidence_parts)
         if self.config.knowledge_mode == "structured":
             stage_request = (
@@ -626,6 +784,8 @@ file delta and no Markdown. The response must fit within the output-token limit.
                     current_exists=bool(current and current.files),
                     previous=previous,
                     evidence=evidence,
+                    source_evidence=source_evidence,
+                    planned_evidence=planned_evidence,
                 )
                 if self.context_selector is not None
                 else None
@@ -683,40 +843,53 @@ file delta and no Markdown. The response must fit within the output-token limit.
                 json.dumps(payload["retrieval_trace"], ensure_ascii=False, indent=2),
                 encoding="utf-8",
             )
+            selected_result: Any = bundle
             if self.context_selector is not None and stage_request is not None:
-                runtime_text = ""
+                runtime_facts: Any = ""
                 if audience == "generator" or any(
                     stage.endswith("_debug") for stage in stage_request.stages
                 ):
-                    symbols = (
-                        stage_request.failure_symbols
-                        if any(
-                            stage.endswith("_debug") for stage in stage_request.stages
+                    symbols = list(
+                        dict.fromkeys(
+                            [
+                                *stage_request.failure_symbols,
+                                *stage_request.source_symbols,
+                                *stage_request.planned_symbols,
+                            ]
                         )
-                        and stage_request.failure_symbols
-                        else extract_api_symbols(evidence)
-                    )
+                    ) or extract_api_symbols(evidence)
                     runtime_facts = collect_runtime_facts(
                         symbols,
                         runtime_version=knowledge_version.runtime_version,
                         cache_path=round_dir
                         / f"runtime_header_facts_{audience}.json",
-                        max_chars=4000,
+                        max_chars=(
+                            None
+                            if self.config.uses_full_selected_input
+                            else 4000
+                        ),
+                        soc_version=self.config.soc_version,
+                        project_root=self.REPO_ROOT,
+                        probe_manifest=self._probe_manifest_path(),
+                        failure_evidence=failure_evidence,
                     )
-                    runtime_text = runtime_facts.text
                 selected_context, skill_selection = self.context_selector.select(
                     bundle=bundle,
                     request=stage_request,
-                    runtime_facts=runtime_text,
+                    runtime_facts=runtime_facts,
                 )
                 selected_context.task_facts["knowledge_source"] = (
                     self.config.knowledge_source
                 )
-                selected_context.budget["max_chars"] = min(
-                    int(selected_context.budget["max_chars"]),
-                    max_knowledge_chars,
-                )
+                if getattr(runtime_facts, "environment_fingerprint", None):
+                    selected_context.task_facts["environment_fingerprint"] = runtime_facts.environment_fingerprint
+                if not self.config.uses_full_selected_input:
+                    selected_context.budget["max_chars"] = min(
+                        int(selected_context.budget["max_chars"]),
+                        max_knowledge_chars,
+                    )
                 rendered = render_stage_context(selected_context)
+                selected_result = selected_context
                 context_payload = selected_context.to_dict()
                 (round_dir / f"{audience}_context.json").write_text(
                     json.dumps(context_payload, ensure_ascii=False, indent=2),
@@ -750,7 +923,7 @@ file delta and no Markdown. The response must fit within the output-token limit.
                 (round_dir / "selected_knowledge.json").write_text(
                     json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
                 )
-            return bundle, rendered
+            return selected_result, rendered
         candidates = candidate_doc_ids(
             evidence,
             version=knowledge_version,
@@ -829,6 +1002,10 @@ file delta and no Markdown. The response must fit within the output-token limit.
             symbols,
             runtime_version=knowledge_version.runtime_version,
             cache_path=round_dir / "runtime_header_facts.json",
+            soc_version=self.config.soc_version,
+            project_root=self.REPO_ROOT,
+            probe_manifest=self._probe_manifest_path(),
+            failure_evidence=failure_evidence,
         )
         selection.runtime_fact_symbols = facts.symbols
         selection.conflicts = facts.conflicts
@@ -886,14 +1063,18 @@ file delta and no Markdown. The response must fit within the output-token limit.
         attempt_id: int,
         max_api_docs: int,
         max_knowledge_chars: int,
+        repair_state_manager: RepairStateManager,
         prepared_knowledge: tuple[Any, str] | None = None,
     ) -> tuple[FileBundle, FileBundle | None, Any, LLMResponse, int, str]:
         round_dir = self.state_dir / f"round_{attempt_id:02d}"
         round_dir.mkdir(parents=True, exist_ok=True)
         candidate_path = f"round_{attempt_id:02d}/candidate.json"
         checkpoint = round_dir / "candidate.json"
+        base_checkpoint = round_dir / "base.json"
         base_bundle = FileBundle(files=dict(current.files)) if current else None
         if logger.pending_state().get("pending_phase") == "EVAL" and checkpoint.is_file():
+            if base_checkpoint.is_file():
+                base_bundle = self._read_bundle(base_checkpoint)
             candidate = self._read_bundle(checkpoint)
             restore_bundle(self.task_dir, candidate)
             if self.config.knowledge_mode == "structured":
@@ -923,6 +1104,8 @@ file delta and no Markdown. The response must fit within the output-token limit.
                 )
             response = LLMResponse(content="", model="checkpoint", usage={})
             return candidate, base_bundle, selection, response, 1, candidate_path
+
+        self._write_bundle(base_checkpoint, base_bundle or FileBundle(files={}))
 
         if prepared_knowledge is None:
             selection, knowledge_context = self._knowledge_context(
@@ -954,7 +1137,22 @@ file delta and no Markdown. The response must fit within the output-token limit.
             knowledge_context=knowledge_context,
             phase=budget_phase.upper(),
             plan_item=active_item,
-            failure_fingerprints=knowledge_state.failure_fingerprints,
+            full_input=self.config.uses_full_selected_input,
+            repair_state=repair_state_manager.prompt_summary(previous),
+            compile_repair_active=bool(
+                budget_phase == "bootstrap"
+                and current is not None
+                and current.files
+                and previous is not None
+                and previous.error
+                and (previous.failure_stage or "")
+                in {
+                    "ascendc_build",
+                    "compile",
+                    "api_constraint_validation",
+                    "static_validation",
+                }
+            ),
         )
         (round_dir / "prompt.txt").write_text(prompt, encoding="utf-8")
         response = self._call_llm(
@@ -965,6 +1163,7 @@ file delta and no Markdown. The response must fit within the output-token limit.
             attempt_id=attempt_id,
             evaluation_round=evaluation_round,
             response_path=round_dir / "response.txt",
+            knowledge_selection=selection,
         )
         generation_attempts = 1
         if response.finish_reason == "length":
@@ -979,6 +1178,7 @@ file delta and no Markdown. The response must fit within the output-token limit.
                 attempt_id=attempt_id,
                 evaluation_round=evaluation_round,
                 response_path=round_dir / "response_retry_01.txt",
+                knowledge_selection=selection,
             )
         try:
             delta = parse_file_bundle(response.content)
@@ -1034,6 +1234,7 @@ file delta and no Markdown. The response must fit within the output-token limit.
             "LLM configuration: "
             f"provider={self.config.provider}, requested_model={self.config.model}, "
             f"knowledge_source={self.config.knowledge_source}, "
+            f"knowledge_input_mode={self.config.knowledge_input_mode}, "
             f"bootstrap={self.config.max_bootstrap_rounds}, optimization={self.config.max_rounds}, "
             f"total={self.config.max_total_rounds or 'unlimited'}, "
             f"generator={self.config.generator_max_tokens}/{self.config.generator_thinking}/"
@@ -1047,6 +1248,7 @@ file delta and no Markdown. The response must fit within the output-token limit.
         reference, cases = self._inputs()
         current, best_bundle, previous, best_result, best_round = self._resume_state(logger)
         frontier_manager = FrontierManager(self.state_dir)
+        repair_state_manager = RepairStateManager(self.state_dir)
         if frontier_manager.highest_bundle() is None and best_bundle is not None and best_result is not None:
             frontier_manager.observe(best_bundle, best_result, int(best_round or 0))
         workflow = logger.data.setdefault("workflow", {})
@@ -1054,6 +1256,13 @@ file delta and no Markdown. The response must fit within the output-token limit.
         baseline_score = workflow.get("baseline_score")
         if baseline_round is None and self._is_valid_result(best_result):
             baseline_round, baseline_score = best_round, best_result.score
+        if baseline_round is None:
+            repair_bundle = repair_state_manager.accepted_bundle()
+            repair_evaluation = repair_state_manager.accepted_evaluation()
+            if repair_bundle is not None and repair_evaluation is not None:
+                current = repair_bundle
+                previous = repair_evaluation
+                restore_bundle(self.task_dir, repair_bundle)
         plan = self._load_plan()
 
         task = self.progress.start("Resolve CANN knowledge")
@@ -1197,7 +1406,7 @@ file delta and no Markdown. The response must fit within the output-token limit.
                     active_item = self._active_plan_item(plan)
                 else:
                     assert prepared_knowledge is not None
-                    _, planning_knowledge = prepared_knowledge
+                    planning_selection, planning_knowledge = prepared_knowledge
                     try:
                         plan = self._create_plan(
                             logger=logger,
@@ -1210,6 +1419,8 @@ file delta and no Markdown. The response must fit within the output-token limit.
                             mode=budget_phase,
                             diagnosis_required=diagnose_required,
                             knowledge_context=planning_knowledge,
+                            knowledge_selection=planning_selection,
+                            repair_state=repair_state_manager.prompt_summary(previous),
                         )
                     except (LLMCallFailure, ValueError, json.JSONDecodeError) as error:
                         path = self.state_dir / f"planning_error_{attempt_id:02d}.log"
@@ -1239,6 +1450,8 @@ file delta and no Markdown. The response must fit within the output-token limit.
 
             round_dir = self.state_dir / f"round_{attempt_id:02d}"
             round_dir.mkdir(parents=True, exist_ok=True)
+            base_result = previous
+            bootstrap_attempt = baseline_round is None
             generator_knowledge = (
                 None if self.context_selector is not None else prepared_knowledge
             )
@@ -1260,6 +1473,7 @@ file delta and no Markdown. The response must fit within the output-token limit.
                     attempt_id=attempt_id,
                     max_api_docs=max_api_docs,
                     max_knowledge_chars=max_knowledge_chars,
+                    repair_state_manager=repair_state_manager,
                     prepared_knowledge=generator_knowledge,
                     )
                 )
@@ -1292,6 +1506,7 @@ file delta and no Markdown. The response must fit within the output-token limit.
                 final_status = "paused"
                 break
 
+            progress_cursor = self.progress.event_cursor()
             try:
                 result = self._normalize_evaluation(
                     self.evaluator.evaluate(self.task_dir, round_dir), round_dir
@@ -1306,6 +1521,10 @@ file delta and no Markdown. The response must fit within the output-token limit.
                     details_path=path,
                     failure_kind="infrastructure",
                 )
+            stage_timings = self.progress.events_since(progress_cursor)
+            stage_observation = observe_evaluation_stages(
+                result, workflow_phase=budget_phase
+            )
             if result.failure_kind in {"infrastructure", "orchestration"}:
                 if base_bundle is not None:
                     restore_bundle(self.task_dir, base_bundle)
@@ -1319,37 +1538,81 @@ file delta and no Markdown. The response must fit within the output-token limit.
                 final_status = "paused"
                 break
 
+            frontier_before = frontier_manager.manifest.get("highest")
+            repair_decision = repair_state_manager.decide(base_result, result)
             frontier = frontier_manager.observe(candidate, result, attempt_id)
             valid = self._is_valid_result(result)
-            if baseline_round is None:
+            if bootstrap_attempt:
                 if valid:
                     decision = "BASELINE_KEEP"
                     baseline_round, baseline_score = attempt_id, result.score
                     best_bundle, best_result, best_round = candidate, result, attempt_id
                     current = candidate
+                    previous = result
                     self._write_bundle(self.state_dir / "baseline.json", candidate)
                     self._write_bundle(self.state_dir / "best.json", candidate)
+                elif repair_decision.accept_candidate:
+                    decision = (
+                        "PARTIAL_KEEP"
+                        if repair_decision.outcome != "INITIAL_KEEP"
+                        else "FAIL"
+                    )
+                    current = candidate
+                    previous = result
+                    restore_bundle(self.task_dir, candidate)
                 else:
                     decision = "FAIL"
-                    current = frontier.rollback
+                    current = base_bundle
+                    previous = base_result
                     restore_bundle(self.task_dir, current or FileBundle(files={}))
             elif valid and self._is_better(result, best_result):
                 decision = "KEEP"
                 best_bundle, best_result, best_round = candidate, result, attempt_id
                 current = candidate
+                previous = result
                 self._write_bundle(self.state_dir / "best.json", candidate)
             elif valid:
                 decision = "DISCARD"
                 if best_bundle:
                     restore_bundle(self.task_dir, best_bundle)
                     current = best_bundle
+                    previous = best_result
             else:
                 decision = "FAIL"
                 if best_bundle:
                     restore_bundle(self.task_dir, best_bundle)
                     current = best_bundle
+                    previous = best_result
 
-            addressed_failure = previous.structured_failure if previous and previous.error else None
+            attempt_record = repair_state_manager.build_attempt(
+                attempt_id=attempt_id,
+                evaluation_round=evaluation_round,
+                phase=budget_phase,
+                base_bundle=base_bundle,
+                candidate=candidate,
+                result=result,
+                active_item=active_item,
+                selection=selection,
+                decision=repair_decision,
+                frontier_before=frontier_before,
+                frontier_after=frontier.highest,
+                outcome_override=(
+                    None if bootstrap_attempt else decision
+                ),
+            )
+            logger.save_attempt_record(attempt_record)
+            if bootstrap_attempt:
+                repair_state_manager.observe(
+                    attempt=attempt_record,
+                    candidate_path=candidate_path,
+                    decision=repair_decision,
+                )
+
+            addressed_failure = (
+                base_result.structured_failure
+                if base_result and base_result.error
+                else None
+            )
             incident = build_incident(
                 attempt_id=attempt_id,
                 failure=addressed_failure or result.structured_failure,
@@ -1358,17 +1621,16 @@ file delta and no Markdown. The response must fit within the output-token limit.
                 after=candidate,
                 resolved_fact_ids=self._resolved_fact_ids(selection),
                 result=result,
+                base_attempt_id=attempt_record.base_attempt_id,
+                error_ids_before=attempt_record.error_ids_before,
+                error_ids_after=attempt_record.error_ids_after,
+                cleared_error_ids=attempt_record.cleared_error_ids,
             )
             confirmed_experience = persist_incident(self.state_dir, incident)
 
             fingerprint = None
             if result.error:
                 fingerprint = diagnostic_fingerprint(read_result_log(result))
-                knowledge_state.failure_fingerprints = [
-                    *knowledge_state.failure_fingerprints,
-                    fingerprint,
-                ][-16:]
-                save_knowledge_state(knowledge_state_path, knowledge_state)
             if active_item is not None:
                 active_item["status"] = "SETTLED"
                 active_item["decision"] = decision
@@ -1398,11 +1660,20 @@ file delta and no Markdown. The response must fit within the output-token limit.
                     confirmed_experience_id=(
                         confirmed_experience.experience_id if confirmed_experience else None
                     ),
+                    stage_observation=stage_observation,
+                    stage_timings=stage_timings,
+                    repair_attempt={
+                        "base_attempt_id": attempt_record.base_attempt_id,
+                        "outcome": attempt_record.outcome,
+                        "target_error_ids": attempt_record.target_error_ids,
+                        "cleared_error_ids": attempt_record.cleared_error_ids,
+                        "new_error_ids": attempt_record.new_error_ids,
+                        "reintroduced_error_ids": attempt_record.reintroduced_error_ids,
+                    },
                 ),
                 best_round=best_round,
             )
             logger.complete_pending()
-            previous = result
             workflow = logger.data.setdefault("workflow", {})
             consecutive = int(workflow.get("consecutive_failures", 0)) + 1 if decision == "FAIL" else 0
             bootstrap_count, optimization_count = self._budget_counts(logger)
@@ -1508,6 +1779,7 @@ file delta and no Markdown. The response must fit within the output-token limit.
         )
         totals = logger.token_totals()
         totals_by_type = logger.token_totals_by_call_type()
+        normalized_metrics = logger.normalized_metrics()
         summary = {
             "success": success,
             "status": final_status,
@@ -1537,8 +1809,10 @@ file delta and no Markdown. The response must fit within the output-token limit.
             "failure": orchestration_failure or last_evaluation_failure,
             "token_usage": totals,
             "token_usage_by_call_type": totals_by_type,
+            "stage_normalized_metrics": normalized_metrics,
             "knowledge_source": {
                 "mode": self.config.knowledge_source,
+                "input_mode": self.config.knowledge_input_mode,
                 "structured_prompt_enabled": self.config.uses_structured_prompt,
                 "skills_enabled": self.config.uses_skills,
             },
