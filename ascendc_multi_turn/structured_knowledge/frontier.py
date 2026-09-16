@@ -20,6 +20,9 @@ class FrontierDecision:
 
 
 def reached_frontier(result: EvalResult) -> str | None:
+    # Delayed import avoids the structured_knowledge package initializer cycle.
+    from ..diagnostics import evaluation_gates
+
     stage = result.failure_stage or ""
     if stage in {
         "response_format",
@@ -27,11 +30,15 @@ def reached_frontier(result: EvalResult) -> str | None:
         "ascendc_source_validation",
         "api_constraint_validation",
         "bundle_validation",
+        "interface_contract_validation",
     }:
         return None
     if not result.compiled:
         return "source"
-    if not result.correctness:
+    gates = evaluation_gates(result)
+    if gates["loaded"] != "pass" or gates["kernel_started"] != "pass":
+        return "compile"
+    if gates["comparison_completed"] != "pass":
         return "runtime"
     if (
         isinstance(result.score, (int, float))

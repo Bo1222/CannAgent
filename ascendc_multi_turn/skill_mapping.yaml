@@ -1,12 +1,7 @@
 {
-  "schema_version": 2,
-  "format_note": "JSON-compatible YAML keeps the runtime dependency-free.",
-  "source_root_env": "CANNBOT_SKILLS_ROOT",
-  "default_source_root": "../../cannbot-skills/ops",
-  "audience_budgets": {
-    "planner": 12000,
-    "generator": 20000
-  },
+  "schema_version": 3,
+  "format_note": "JSON-compatible YAML; every reference resolves through an embedded manifest knowledge_module_id.",
+  "audience_budgets": {"planner": 12000, "generator": 20000},
   "operator_families": {
     "elementwise": ["elementwise", "elewise", "gelu", "relu", "sigmoid", "tanh", "exp", "sin", "cos", "abs"],
     "reduction": ["reduction", "reduce", "softmax", "layernorm", "layer_norm", "rmsnorm", "argmax", "argmin", "mean", "sum"],
@@ -17,266 +12,227 @@
     "flashattention": ["flashattention", "flash_attention", "attention", "gqa", "mha", "mla"],
     "simt": ["simt", "thread", "warp", "discrete", "scatter", "gather"]
   },
-  "stages": {
-    "operator_analysis": {
-      "skills": [
-        {
-          "id": "npu-arch",
-          "source": "npu-arch",
-          "purpose": "Normalize the target architecture and expose only capabilities that constrain kernel design.",
-          "expected_artifact": "Architecture identity, runtime-query requirements, feature constraints, and conditional branches.",
-          "knowledge_type": ["hardware_fact", "compatibility_rule"],
-          "when": {"always": true},
-          "provide": ["configured SoC", "runtime and knowledge CANN versions", "operator families"],
-          "exclude": ["Triton architecture guide", "unrelated SKU tables", "hard-coded core counts or UB sizes", "full architecture whitepaper"],
-          "references": [
-            {
-              "path": "references/npu-hardware-params.md",
-              "headings": ["0. 产品映射表"],
-              "max_chars": 2200
-            },
-            {
-              "path": "references/npu-arch-guide.md",
-              "headings": ["典型硬件参数与获取方式", "架构兼容性检查清单"],
-              "max_chars": 2200
-            }
-          ]
-        }
-      ]
-    },
-    "kernel_design": {
-      "skills": [
-        {
-          "id": "ascendc-tiling-design",
-          "source": "ascendc-tiling-design",
-          "purpose": "Design family-specific multi-core partitioning, UB tiling, buffer lifetimes, tails, and branch coverage.",
-          "expected_artifact": "Block strategy, tile/tail formulas, UB budget, buffer reuse plan, tiling fields, and branch matrix.",
-          "knowledge_type": ["design_rule", "algorithm", "formula", "test_pattern"],
-          "when": {"always": true},
-          "provide": ["operator semantics and family", "all case shapes and dtypes", "axes and layout", "target architecture", "alignment constraints"],
-          "exclude": ["unrelated operator families", "all tiling variants at once", "unsupported planned categories", "performance-only tuning before correctness"],
-          "references": [
-            {"path": "references/elewise/patterns.md", "operator_families": ["elementwise"], "max_chars": 3200},
-            {"path": "references/elewise/tiling.md", "operator_families": ["elementwise"], "max_chars": 3200},
-            {"path": "references/reduction/patterns.md", "operator_families": ["reduction"], "max_chars": 3400},
-            {"path": "references/reduction/tiling-fields.md", "operator_families": ["reduction"], "max_chars": 2600},
-            {"path": "references/broadcast/patterns.md", "operator_families": ["broadcast"], "max_chars": 3400},
-            {"path": "references/conversion/patterns.md", "operator_families": ["conversion"], "max_chars": 3200},
-            {"path": "references/matmul/patterns.md", "operator_families": ["matmul"], "max_chars": 3600},
-            {"path": "references/sort/patterns.md", "operator_families": ["sort"], "max_chars": 3200},
-            {"path": "references/flashattention/patterns.md", "operator_families": ["flashattention"], "max_chars": 3600}
-          ]
-        },
-        {
-          "id": "ascendc-api-best-practices",
-          "source": "ascendc-api-best-practices",
-          "purpose": "Constrain planned AscendC APIs to verified usage, alignment, buffer, precision, and pipeline patterns.",
-          "expected_artifact": "A short API checklist tied to APIs implied by the design.",
-          "knowledge_type": ["api_constraint", "best_practice", "anti_pattern"],
-          "when": {"always": true},
-          "provide": ["exact or planned API names", "dtype", "alignment", "data-movement direction", "target architecture"],
-          "exclude": ["complete API catalog", "APIs absent from the plan/source", "advanced matmul or communication APIs on unsupported platforms"],
-          "references": [
-            {"path": "references/api-datacopy.md", "when_any": ["datacopy", "datacopypad", "copyin", "copyout", "alignment", "tail"], "headings": ["选择规则", "32 字节对齐要求"], "max_chars": 2800},
-            {"path": "references/api-buffer.md", "when_any": ["tque", "tbuf", "tpipe", "buffer", "double buffer", "ub"], "headings": ["TBuf vs TQue 选择", "TQue 正确用法"], "max_chars": 2600},
-            {"path": "references/api-pipeline.md", "when_any": ["enque", "deque", "setflag", "waitflag", "pipeline", "sync"], "headings": ["解决方案", "EnQue/DeQue 的双重作用"], "max_chars": 2600},
-            {"path": "references/api-arithmetic.md", "operator_families": ["elementwise", "broadcast"], "headings": ["适用 API", "常见错误"], "max_chars": 2400},
-            {"path": "references/api-reduce-pattern.md", "operator_families": ["reduction"], "max_chars": 2800},
-            {"path": "references/api-matmul.md", "operator_families": ["matmul"], "max_chars": 3000}
-          ]
-        },
-        {
-          "id": "cannagent-operator-invariants",
-          "origin": "adapter",
-          "source": ".",
-          "role": "support",
-          "purpose": "Constrain generated algorithms with task semantics before selecting API spellings.",
-          "expected_artifact": "An implementation whose indexing, reduction, dtype, broadcasting, and tail behavior matches the reference contract.",
-          "knowledge_type": ["semantic_invariant", "algorithm", "formula"],
-          "when": {"always": true},
-          "provide": ["operator identity", "reference semantics", "cases", "current failure"],
-          "exclude": ["complete copyable implementation", "unverified API signatures", "unrelated operators"],
-          "references": [
-            {"path": "verified_operator_patterns.md", "operators": ["gelu"], "headings": ["GELU semantic invariants"], "confidence_level": 1, "provenance": "task_and_project_contract", "max_chars": 3200},
-            {"path": "verified_operator_patterns.md", "operators": ["layernorm", "layer_norm"], "headings": ["LayerNorm semantic invariants"], "confidence_level": 1, "provenance": "task_and_project_contract", "max_chars": 3600},
-            {"path": "verified_operator_patterns.md", "operators": ["permute"], "headings": ["Permute semantic invariants"], "confidence_level": 1, "provenance": "task_and_project_contract", "max_chars": 4200}
-          ]
-        }
-      ]
-    },
-    "code_generation": {
-      "skills": [
-        {
-          "id": "ascendc-direct-invoke-template",
-          "source": "ascendc-direct-invoke-template",
-          "purpose": "Supply a small, compatible direct-invoke structural pattern without importing the CANNBot workflow or scaffold.",
-          "expected_artifact": "CannAgent-compatible wrapper/host/kernel structure and launch/dataflow skeleton.",
-          "knowledge_type": ["engineering_template", "code_pattern"],
-          "when": {"always": true},
-          "provide": ["operator family", "target platform", "I/O signature", "CannAgent host ABI and editable file contract"],
-          "exclude": ["copy commands", "CMake files", "run scripts", "test scaffolds", "full template directories", "registry invocation", "Kirin template unless the configured target is Kirin", "PyTorch fallback computation"],
-          "references": [
-            {
-              "path": "references/kernel_launch_details.md",
-              "headings": ["内存层次与数据流", "同步机制", "如何处理不对齐的数据？"],
-              "max_chars": 3600
-            }
-          ]
-        },
-        {
-          "id": "cannagent-host-abi",
-          "origin": "adapter",
-          "source": ".",
-          "role": "support",
-          "purpose": "Adapt direct invocation to the CannAgent torch_npu build and wrapper contract.",
-          "expected_artifact": "A locally grounded NPU pybind, stream, wrapper, and kernel-launch integration.",
-          "knowledge_type": ["project_contract", "host_abi", "negative_fact"],
-          "when": {"always": true},
-          "provide": ["installed Host facts", "current wrapper", "module name"],
-          "exclude": ["CUDA APIs", "unverified stream signatures", "CANNBot project scaffold"],
-          "references": [
-            {"path": "cannagent_host_abi.md", "headings": ["Positive Host ABI facts", "Negative Host ABI facts"], "confidence_level": 1, "provenance": "project_contract", "max_chars": 3800}
-          ]
-        }
-      ]
-    },
-    "host_integration_debug": {
-      "skills": [
-        {
-          "id": "cannagent-host-abi",
-          "origin": "adapter",
-          "source": ".",
-          "role": "support",
-          "purpose": "Repair only the failing CannAgent NPU Host integration layer.",
-          "expected_artifact": "One minimal tensor-check, stream, wrapper, link, or import correction.",
-          "knowledge_type": ["host_abi", "integration_debug", "negative_fact"],
-          "when": {"failure_stages": ["bundle_validation", "ascendc_source_validation", "api_constraint_validation", "static_validation", "ascendc_build", "compile"]},
-          "provide": ["Host diagnostic", "current pybind source", "installed/probed Host facts"],
-          "exclude": ["kernel math changes", "tiling changes", "CUDA APIs", "unverified signatures"],
-          "references": [
-            {"path": "cannagent_host_abi.md", "headings": ["Positive Host ABI facts", "Negative Host ABI facts", "Host repair checklist"], "confidence_level": 1, "provenance": "project_and_runtime_contract", "max_chars": 5200}
-          ]
-        }
-      ]
-    },
-    "compile_debug": {
-      "skills": [
-        {
-          "id": "ascendc-api-best-practices",
-          "source": "ascendc-api-best-practices",
-          "purpose": "Resolve compiler/API-constraint failures against the exact implicated APIs and installed-header authority.",
-          "expected_artifact": "One corrected signature, owner, overload, argument, or constraint hypothesis for the failing call site.",
-          "knowledge_type": ["api_constraint", "compile_fix_pattern"],
-          "when": {"failure_stages": ["bundle_validation", "ascendc_source_validation", "api_constraint_validation", "static_validation", "ascendc_build", "compile"]},
-          "provide": ["concise compiler diagnostic", "failing source call", "related exact symbols", "installed public-header excerpt"],
-          "exclude": ["unrelated APIs", "whole API documents", "precision workflow", "performance advice", "fallback signatures that conflict with installed headers"],
-          "references": [
-            {"path": "references/api-datacopy.md", "when_any": ["datacopy", "datacopypad", "datacopyext", "blocklen", "padding"], "headings": ["选择规则", "DataCopyPad 参数选择：统一使用 Ext 版本", "常见错误与调试"], "max_chars": 3200},
-            {"path": "references/api-buffer.md", "when_any": ["tque", "tbuf", "tpipe", "alloctensor", "freetensor", "initbuffer"], "headings": ["TQue 正确用法", "TBuf 详解"], "max_chars": 2800},
-            {"path": "references/api-pipeline.md", "when_any": ["enque", "deque", "setflag", "waitflag", "pipebarrier"], "headings": ["解决方案", "常见误区"], "max_chars": 2800},
-            {"path": "references/api-arithmetic.md", "when_any": ["add", "adds", "mul", "muls", "sub", "div", "erf", "tanh"], "headings": ["API 接口", "适用 API", "常见错误"], "max_chars": 3000},
-            {"path": "references/api-restrictions.md", "when_any": ["unsupported", "not supported", "restriction", "repeat", "mask", "no matching function"], "max_chars": 2800}
-          ]
-        },
-        {
-          "id": "ascendc-direct-invoke-template",
-          "source": "ascendc-direct-invoke-template",
-          "purpose": "Check CannAgent-compatible direct launch and dataflow structure when source layout or launch ABI fails.",
-          "expected_artifact": "A minimal structural correction, not a project rewrite.",
-          "knowledge_type": ["engineering_template", "integration_pattern"],
-          "when": {"failure_stages": ["bundle_validation", "ascendc_source_validation", "static_validation", "ascendc_build"]},
-          "provide": ["fixed CannAgent ABI", "source validation diagnostic", "current wrapper/host/kernel structure"],
-          "exclude": ["CMake/run/test scaffold", "module naming from examples", "entire add_custom project", "workflow steps"],
-          "references": [
-            {"path": "references/kernel_launch_details.md", "when_any": ["launch", "wrapper", "kernel", "stream", "pybind", "module", "blockdim"], "headings": ["内存层次与数据流", "常见问题"], "max_chars": 2800}
-          ]
-        }
-      ]
-    },
-    "runtime_debug": {
-      "skills": [
-        {
-          "id": "ascendc-runtime-debug",
-          "source": "ascendc-runtime-debug",
-          "purpose": "Classify and isolate runtime, ACL, AICore/MTE, tiling, kernel lookup, or binary failures.",
-          "expected_artifact": "Ranked checks, one next diagnostic action, and its confirming signal.",
-          "knowledge_type": ["error_taxonomy", "diagnostic_playbook", "tool_guidance"],
-          "when": {"failure_stages": ["correctness", "runtime", "acl_runtime"], "any_terms": ["acl_error", "aicore", "mte", "507035", "161", "361", "561", "tiling", "kernel not found", "exception", "plog"]},
-          "provide": ["runtime code and subsystem", "concise error/plog lines", "failing case", "launch and tiling values", "SoC/CANN"],
-          "exclude": ["complete error-code catalog", "environment workflow without an environment signal", "precision tuning before the runtime fault is cleared", "performance guidance"],
-          "references": [
-            {"path": "references/debug_workflow.md", "headings": ["快速决策树", "507035 向量核异常", "未知错误码处理（兜底方案）"], "max_chars": 4200},
-            {"path": "references/kernel_binary_debug.md", "when_any": ["kernel not found", "binary", "sel", "opparasize", "cache"], "max_chars": 3000},
-            {"path": "references/error_codes.md", "when_any": ["507035", "161", "361", "561", "acl_error"], "max_chars": 2200}
-          ]
-        }
-      ]
-    },
-    "precision_debug": {
-      "skills": [
-        {
-          "id": "ascendc-precision-debug",
-          "source": "ascendc-precision-debug",
-          "purpose": "Classify numerical symptoms and select one bounded experiment or fix for a correctness mismatch.",
-          "expected_artifact": "Symptom class, testable root cause, minimal instrumentation/fix, and expected comparison signal.",
-          "knowledge_type": ["numerical_rule", "diagnostic_playbook", "instrumentation_pattern"],
-          "when": {"failure_stages": ["correctness"], "any_terms": ["fp32 pass", "float32 pass", "fp16 fail", "float16 fail", "cast precision", "accumulation dtype", "accumulator precision", "epsilon", "roundmode", "round mode", "rounding", "overflow", "underflow", "tolerance boundary"]},
-          "provide": ["failing and passing dtype/shape cases", "tolerances", "error/output summary", "current kernel dataflow and buffers"],
-          "exclude": ["all precision traps", "runtime environment checks", "performance optimization", "blind fix sequences", "debug summary bureaucracy"],
-          "references": [
-            {"path": "references/common-traps.md", "when_any": ["fp16", "bf16", "cast", "precision"], "headings": ["陷阱1：FP16 精度不足", "陷阱7：类型转换精度损失", "陷阱8：Cast API RoundMode 使用错误"], "max_chars": 3000},
-            {"path": "references/common-traps.md", "when_any": ["nan", "inf", "exp", "log"], "headings": ["陷阱2：exp/log 溢出"], "max_chars": 2600},
-            {"path": "references/common-traps.md", "when_any": ["zero", "random", "uninitialized", "enque", "deque", "datacopy"], "headings": ["陷阱9：输出全为 0"], "max_chars": 3000},
-            {"path": "references/common-traps.md", "when_any": ["reduce", "sum", "accumulator"], "headings": ["陷阱4：Reduce 操作精度损失"], "max_chars": 2400},
-            {"path": "references/data-comparison.md", "when_any": ["mismatch", "max error", "rtol", "atol", "incorrect"], "max_chars": 2600},
-            {"path": "references/ascendc-dumptensor.md", "when_any": ["dump", "uninitialized", "random", "zero", "copyin", "copyout"], "headings": ["7-Step Debugging Workflow"], "max_chars": 2600},
-            {"path": "references/binary-search-debug.md", "when_any": ["repeated", "same failure", "binary search"], "max_chars": 2400}
-          ]
-        }
-      ]
-    },
-    "optimization": {
-      "skills": [
-        {
-          "id": "ascendc-performance-best-practices",
-          "source": "ascendc-performance-best-practices",
-          "purpose": "Select one evidence-backed family-specific or common optimization after correctness is established.",
-          "expected_artifact": "One optimization hypothesis, applicability constraints, minimal delta, and expected latency/profiler signal.",
-          "knowledge_type": ["performance_pattern", "selection_tree", "optimization_template"],
-          "when": {"requires_correct_baseline": true},
-          "provide": ["operator family", "correct baseline", "per-case latency", "target architecture", "current tiling/buffer plan", "profiler evidence when available"],
-          "exclude": ["all optimization variants", "unrelated families", "optimizations without evidence", "changes that relax correctness", "template rewrites"],
-          "references": [
-            {"path": "references/elementwise/double_buffer_design.md", "operator_families": ["elementwise"], "when_any": ["pipeline", "serial", "double buffer", "mte"], "max_chars": 3200},
-            {"path": "references/elementwise/vector_efficiency_design.md", "operator_families": ["elementwise"], "max_chars": 3200},
-            {"path": "references/reduce/guide.md", "operator_families": ["reduction"], "max_chars": 3600},
-            {"path": "references/broadcast/broadcast_design.md", "operator_families": ["broadcast"], "max_chars": 3600},
-            {"path": "references/conversion/guide.md", "operator_families": ["conversion"], "max_chars": 3600},
-            {"path": "references/matmul/guide.md", "operator_families": ["matmul"], "max_chars": 3800},
-            {"path": "references/sort/radix_sort.md", "operator_families": ["sort"], "max_chars": 3400},
-            {"path": "references/simt/optimization-guide.md", "operator_families": ["simt"], "max_chars": 3400},
-            {"path": "references/common/tail_block_design.md", "when_any": ["tail", "unaligned", "remainder"], "max_chars": 2400},
-            {"path": "references/common/core_shrink_design.md", "when_any": ["small shape", "launch overhead", "core shrink"], "max_chars": 2400},
-            {"path": "references/common/datacopy_optimization_design.md", "when_any": ["datacopy", "mte", "bandwidth", "copy"], "max_chars": 2400}
-          ]
-        },
-        {
-          "id": "ascendc-tiling-design",
-          "source": "ascendc-tiling-design",
-          "purpose": "Revisit tiling only when the performance hypothesis implicates balance, UB use, tails, or tile size.",
-          "expected_artifact": "A measured tiling change with updated UB/core formulas.",
-          "knowledge_type": ["design_rule", "formula"],
-          "when": {"requires_correct_baseline": true, "any_terms": ["tiling", "tile", "ub", "core", "tail", "imbalance", "occupancy"]},
-          "provide": ["current tiling", "latency/profiler evidence", "shape distribution", "architecture"],
-          "exclude": ["initial design tutorial", "unrelated families", "multiple simultaneous tiling strategies"],
-          "references": [
-            {"path": "references/elewise/tiling.md", "operator_families": ["elementwise"], "max_chars": 2600},
-            {"path": "references/reduction/patterns.md", "operator_families": ["reduction"], "max_chars": 2800},
-            {"path": "references/broadcast/patterns.md", "operator_families": ["broadcast"], "max_chars": 2800},
-            {"path": "references/matmul/patterns.md", "operator_families": ["matmul"], "max_chars": 3000}
-          ]
-        }
+  "standing_contracts": {"skills": [
+    {
+      "id": "standing_operator_semantics",
+      "role": "foundation",
+      "purpose": "Keep the operator indexing contract visible while the active debug route changes.",
+      "expected_artifact": "A repair that preserves the proven operator semantics.",
+      "when": {"always": true},
+      "provide": ["operator semantic invariants"],
+      "exclude": ["unrelated operator families"],
+      "references": [
+        {"knowledge_module_id": "cannagent.operator-invariants", "section_id": "gelu", "operators": ["gelu"], "headings": ["GELU semantic invariants"]},
+        {"knowledge_module_id": "cannagent.operator-invariants", "section_id": "layernorm", "operators": ["layernorm", "layer_norm"], "headings": ["LayerNorm semantic invariants"]},
+        {"knowledge_module_id": "cannagent.operator-invariants", "section_id": "permute", "operators": ["permute"], "headings": ["Permute semantic invariants"]},
+        {"knowledge_module_id": "cannagent.broadcast-semantics", "section_id": "standing-broadcast", "operator_families": ["broadcast"]}
       ]
     }
+  ]},
+  "stages": {
+    "operator_analysis": {"skills": [
+      {
+        "id": "architecture_context",
+        "purpose": "Constrain design to the configured NPU architecture without hard-coded capacities.",
+        "expected_artifact": "Architecture identity and runtime-query constraints.",
+        "when": {"always": true},
+        "provide": ["configured SoC", "runtime and knowledge versions"],
+        "exclude": ["Triton guide", "unrelated SKU tables", "hard-coded core or UB capacities"],
+        "references": [
+          {"knowledge_module_id": "cannbot.npu-arch.references.npu-hardware-params", "section_id": "product-map", "headings": ["0. 产品映射表"]},
+          {"knowledge_module_id": "cannbot.npu-arch.references.npu-arch-guide", "section_id": "runtime-capabilities", "headings": ["典型硬件参数与获取方式", "架构兼容性检查清单"]}
+        ]
+      }
+    ]},
+    "kernel_design": {"skills": [
+      {
+        "id": "operator_semantics",
+        "purpose": "Apply exact operator indexing, dtype, broadcast, reduction, and tail semantics before API spelling.",
+        "expected_artifact": "A data movement and indexing plan proven against active cases.",
+        "when": {"always": true},
+        "provide": ["operator", "active profile", "case features", "correctness evidence"],
+        "exclude": ["unverified API signatures", "unrelated operator families"],
+        "references": [
+          {"knowledge_module_id": "cannagent.operator-invariants", "section_id": "gelu", "operators": ["gelu"], "headings": ["GELU semantic invariants"]},
+          {"knowledge_module_id": "cannagent.operator-invariants", "section_id": "layernorm", "operators": ["layernorm", "layer_norm"], "headings": ["LayerNorm semantic invariants"]},
+          {"knowledge_module_id": "cannagent.operator-invariants", "section_id": "permute", "operators": ["permute"], "headings": ["Permute semantic invariants"]},
+          {"knowledge_module_id": "cannagent.broadcast-semantics", "section_id": "all", "operator_families": ["broadcast"]}
+        ]
+      },
+      {
+        "id": "tiling_design",
+        "purpose": "Choose only the family-specific tiling and data movement branch required by the active profile.",
+        "expected_artifact": "Block/tile/tail formulas and legal source spans.",
+        "when": {"always": true},
+        "provide": ["operator family", "active shape and dtype profile", "alignment and tail features"],
+        "exclude": ["all tiling variants at once", "performance-only tuning before correctness"],
+        "references": [
+          {"knowledge_module_id": "cannbot.ascendc-tiling-design.references.elewise.patterns", "section_id": "patterns", "operator_families": ["elementwise"]},
+          {"knowledge_module_id": "cannbot.ascendc-tiling-design.references.elewise.tiling", "section_id": "tiling", "operator_families": ["elementwise"]},
+          {"knowledge_module_id": "cannbot.ascendc-tiling-design.references.reduction.patterns", "section_id": "patterns", "operator_families": ["reduction"]},
+          {"knowledge_module_id": "cannbot.ascendc-tiling-design.references.reduction.tiling-fields", "section_id": "fields", "operator_families": ["reduction"]},
+          {"knowledge_module_id": "cannbot.ascendc-tiling-design.references.broadcast.patterns", "section_id": "routing", "operator_families": ["broadcast"], "headings": ["合轴（DimensionCollapse）", "场景判定流程", "通用规则"]},
+          {"knowledge_module_id": "cannbot.ascendc-tiling-design.references.broadcast.onedim", "section_id": "invariants", "operator_families": ["broadcast"], "when_any": ["broadcast", "stride", "[128,128]", "shape profile"], "headings": ["一、分支特征", "四、Kernel 实现要点", "五、常见问题"]},
+          {"knowledge_module_id": "cannbot.ascendc-tiling-design.references.broadcast.ub-broadcast", "section_id": "offsets", "operator_families": ["broadcast"], "when_any": ["ub broadcast", "gm offset", "axis=-1", "axis=-2"], "headings": ["二、广播方式决策", "六、Kernel 实现要点", "八、常见问题"]},
+          {"knowledge_module_id": "cannbot.ascendc-tiling-design.references.broadcast.dynamic-ub-broadcast", "section_id": "constraints", "operator_families": ["broadcast"], "when_any": ["dynamic ub", "dynamic broadcast"], "headings": ["二、API", "三、约束", "四、数据流"]},
+          {"knowledge_module_id": "cannbot.ascendc-tiling-design.references.broadcast.nddma-broadcast", "section_id": "stride-zero", "operator_families": ["broadcast"], "when_any": ["nddma", "multicopy", "stride=0"], "headings": ["二、核心 API：DataCopy + MultiCopyParams", "六、与 UB Broadcast 的对比", "七、约束"]},
+          {"knowledge_module_id": "cannbot.ascendc-tiling-design.references.conversion.patterns", "section_id": "patterns", "operator_families": ["conversion"]},
+          {"knowledge_module_id": "cannbot.ascendc-tiling-design.references.matmul.patterns", "section_id": "patterns", "operator_families": ["matmul"]},
+          {"knowledge_module_id": "cannbot.ascendc-tiling-design.references.sort.patterns", "section_id": "patterns", "operator_families": ["sort"]},
+          {"knowledge_module_id": "cannbot.ascendc-tiling-design.references.flashattention.patterns", "section_id": "patterns", "operator_families": ["flashattention"]}
+        ]
+      },
+      {
+        "id": "kernel_api_basics",
+        "purpose": "Supply only basic API constraints implicated by the design.",
+        "expected_artifact": "Legal buffer, transfer, pipeline, and arithmetic choices.",
+        "when": {"always": true},
+        "provide": ["planned API symbols", "dtype", "alignment"],
+        "exclude": ["complete API catalog", "unselected advanced APIs"],
+        "references": [
+          {"knowledge_module_id": "cannbot.ascendc-api-best-practices.references.api-datacopy", "section_id": "selection", "when_any": ["datacopy", "datacopypad", "copyin", "copyout", "alignment", "tail"], "headings": ["选择规则", "32 字节对齐要求", "常见错误与调试"]},
+          {"knowledge_module_id": "cannbot.ascendc-api-best-practices.references.api-buffer", "section_id": "queues", "when_any": ["tque", "tbuf", "tpipe", "buffer", "ub"], "headings": ["TBuf vs TQue 选择", "TQue 详解"]},
+          {"knowledge_module_id": "cannbot.ascendc-api-best-practices.references.api-pipeline", "section_id": "standard-flow", "when_any": ["enque", "deque", "pipeline", "sync"], "headings": ["解决方案", "EnQue/DeQue 的双重作用"]},
+          {"knowledge_module_id": "cannbot.ascendc-api-best-practices.references.api-arithmetic", "section_id": "applicability", "operator_families": ["elementwise", "broadcast"], "headings": ["适用 API", "常见错误"]},
+          {"knowledge_module_id": "cannbot.ascendc-api-best-practices.references.api-reduce-pattern", "section_id": "overloads", "operator_families": ["reduction"], "headings": ["两种重载形式", "参数说明", "临时空间预留"]},
+          {"knowledge_module_id": "cannbot.ascendc-api-best-practices.references.api-transpose", "section_id": "constraints", "operator_families": ["conversion"], "headings": ["2. API 级硬约束", "3. 反例与反模式"]},
+          {"knowledge_module_id": "cannbot.ascendc-api-best-practices.references.api-matmul", "section_id": "matmul-basics", "operator_families": ["matmul"]}
+        ]
+      },
+      {
+        "id": "synchronization_contract",
+        "purpose": "Preserve deterministic standard TQue dataflow and explicit cross-pipeline dependencies.",
+        "expected_artifact": "Matched producer/consumer ownership without stale or missing synchronization.",
+        "when": {"any_terms": ["enque", "deque", "sync", "pipeline", "random", "stale"]},
+        "provide": ["current dataflow"],
+        "exclude": ["audit scripts", "workflow commands"],
+        "references": [
+          {"knowledge_module_id": "cannbot.ascendc-sync-audit.references.sync-mechanisms", "section_id": "standard-vector-flow", "headings": ["4.1 标准 Vector 三段流水（EnQue/DeQue 即可）"]},
+          {"knowledge_module_id": "cannbot.ascendc-sync-audit.references.fix-patterns", "section_id": "standard-queue-fix", "headings": ["模式 A：标准三段流水 → 改用 EnQue/DeQue"]},
+          {"knowledge_module_id": "cannbot.ascendc-sync-audit.references.sync-checklist", "section_id": "redundancy", "headings": ["SYNC-11: 同步冗余/混用"]}
+        ]
+      }
+    ]},
+    "code_generation": {"skills": [
+      {
+        "id": "initial_direct_launch",
+        "purpose": "Ground the initial CannAgent pybind/wrapper/kernel launch structure.",
+        "expected_artifact": "A consistent NPU pybind, *_do wrapper, kernel entry, descriptor, and stream boundary.",
+        "when": {"always": true},
+        "provide": ["project Host ABI", "module name", "I/O signature"],
+        "exclude": ["registry launch", "CMake/run/test scaffold", "stream(true)", "stream(false)", "unverified includes"],
+        "references": [
+          {"knowledge_module_id": "cannagent.host-abi", "section_id": "all"},
+          {"knowledge_module_id": "cannagent.direct-launch-abi", "section_id": "all"},
+          {"knowledge_module_id": "cannbot.ascendc-direct-invoke-template.references.kernel_launch_details", "section_id": "dataflow", "headings": ["内存层次与数据流", "同步机制", "如何处理不对齐的数据？"]},
+          {"knowledge_module_id": "cannbot.ascendc-registry-invoke-to-direct-invoke.references.custom-op-to-kernel-launch-checklist", "section_id": "launch-abi", "headings": ["14. Host launch ABI 一致性"]},
+          {"knowledge_module_id": "cannbot.torch-ascendc-op-extension.routes.direct-invoke", "section_id": "architecture", "headings": ["架构原理"]}
+        ]
+      }
+    ]},
+    "host_integration_debug": {"skills": [
+      {
+        "id": "host_integration_debug",
+        "purpose": "Repair only Host C++, pybind, include, NPU tensor, stream, wrapper, or launch-boundary failures.",
+        "expected_artifact": "One minimal Host/boundary correction preserving kernel math.",
+        "when": {"always": true},
+        "provide": ["diagnostic source file", "symbol domains", "wrapper/kernel arguments"],
+        "exclude": ["kernel math changes", "unrelated API tutorials", "unverified stream forms"],
+        "references": [
+          {"knowledge_module_id": "cannagent.host-abi", "section_id": "all"},
+          {"knowledge_module_id": "cannagent.host-cpp-contract", "section_id": "all", "when_domains": ["host_abi"]},
+          {"knowledge_module_id": "cannagent.compiler-constraints", "section_id": "ownership", "headings": ["Compile ownership constraints"]},
+          {"knowledge_module_id": "cannagent.direct-launch-abi", "section_id": "all", "when_domains": ["launch_abi"]},
+          {"knowledge_module_id": "cannbot.ascendc-registry-invoke-to-direct-invoke.references.custom-op-to-kernel-launch-checklist", "section_id": "entry-signature", "when_domains": ["launch_abi"], "headings": ["9. 入口文件检查", "14. Host launch ABI 一致性"]},
+          {"knowledge_module_id": "cannbot.ascendc-registry-invoke-to-direct-invoke.SKILL", "section_id": "entry-and-dual-pass", "when_domains": ["launch_abi"], "headings": ["Step 5: 入口改造（原则 3 第 1 项）", "Step 8: `-xasc` host/device 双 pass 编译兼容（有条件触发）", "常见坑"]},
+          {"knowledge_module_id": "cannbot.ascendc-registry-invoke-to-direct-invoke.references.host-driver-template", "section_id": "gm-notes", "when_domains": ["launch_abi"], "headings": ["注意事项"]},
+          {"knowledge_module_id": "cannbot.torch-ascendc-op-extension.references.direct-invoke.troubleshooting", "section_id": "host-troubleshooting", "when_domains": ["host_abi"], "headings": ["编译期", "链接期", "运行期"]}
+        ]
+      }
+    ]},
+    "compile_debug": {"skills": [
+      {
+        "id": "api_compile_debug",
+        "purpose": "Repair the exact AscendC overload, template, owner, dtype, repeat, or address-space failure.",
+        "expected_artifact": "One installed-header-grounded call-site correction.",
+        "when": {"always": true},
+        "provide": ["compiler diagnostic", "diagnostic source", "exact symbols", "installed declarations"],
+        "exclude": ["performance", "precision tutorial", "Host scaffold", "unrelated APIs"],
+        "references": [
+          {"knowledge_module_id": "cannagent.compiler-constraints", "section_id": "all"},
+          {"knowledge_module_id": "cannagent.direct-launch-abi", "section_id": "gm-boundary", "when_domains": ["launch_abi"], "headings": ["Host, GM, and descriptor boundary"]},
+          {"knowledge_module_id": "cannbot.ascendc-api-best-practices.references.api-datacopy", "section_id": "compile", "when_any": ["datacopy", "datacopypad", "blocklen", "padding"], "headings": ["选择规则", "DataCopyPad 参数选择：统一使用 Ext 版本", "常见错误与调试"]},
+          {"knowledge_module_id": "cannbot.ascendc-api-best-practices.references.api-buffer", "section_id": "compile", "when_any": ["tque", "tbuf", "tpipe", "alloctensor", "freetensor", "initbuffer"], "headings": ["TQue 详解", "TBuf 详解"]},
+          {"knowledge_module_id": "cannbot.ascendc-api-best-practices.references.api-pipeline", "section_id": "compile", "when_any": ["enque", "deque", "setflag", "waitflag", "pipebarrier"], "headings": ["解决方案", "常见误区"]},
+          {"knowledge_module_id": "cannbot.ascendc-api-best-practices.references.api-arithmetic", "section_id": "compile", "when_any": ["add", "adds", "mul", "muls", "sub", "div", "erf", "tanh"], "headings": ["API 接口", "适用 API", "常见错误"]},
+          {"knowledge_module_id": "cannbot.ascendc-api-best-practices.references.api-reduce", "section_id": "compile", "when_any": ["reduce", "reducesum", "reducemax", "tmpbuffer"], "headings": ["接口选择", "常见错误"]},
+          {"knowledge_module_id": "cannbot.ascendc-api-best-practices.references.api-repeat-limits", "section_id": "limits", "when_any": ["repeat", "repeattime", "mask"], "headings": ["核心约束", "问题场景与解决方案"]},
+          {"knowledge_module_id": "cannbot.ascendc-api-best-practices.references.api-restrictions", "section_id": "restrictions", "when_any": ["unsupported", "not supported", "restriction", "no matching function", "address space"], "headings": ["1. 编译期限制", "3. 类型与常量规范", "4. 快速诊断清单"]},
+          {"knowledge_module_id": "cannbot.ascendc-api-best-practices.references.api-quickref", "section_id": "quickref", "when_any": ["unknown api", "owner", "overload"], "headings": ["核心原则速查"]}
+        ]
+      }
+    ]},
+    "runtime_debug": {"skills": [
+      {
+        "id": "runtime_debug",
+        "purpose": "Prove launch addresses, descriptor lifetime, GM/UB ranges, and DataCopy spans for device failures.",
+        "expected_artifact": "A ranked address/range hypothesis tied to the exact failing case.",
+        "when": {"always": true},
+        "provide": ["runtime code", "failing case", "launch arguments", "copy spans"],
+        "exclude": ["performance advice", "blind casts", "workflow commands"],
+        "references": [
+          {"knowledge_module_id": "cannagent.kernel-memory-contract", "section_id": "all"},
+          {"knowledge_module_id": "cannagent.direct-launch-abi", "section_id": "descriptor-boundary", "headings": ["Host, GM, and descriptor boundary"]},
+          {"knowledge_module_id": "cannbot.ascendc-runtime-debug.references.debug_workflow", "section_id": "507035", "headings": ["快速决策树", "507035 向量核异常"]},
+          {"knowledge_module_id": "cannbot.ascendc-runtime-debug.references.error_codes", "section_id": "runtime-codes", "headings": ["NPU 运行时错误码（5xxxxx）", "错误码分类速查"]},
+          {"knowledge_module_id": "cannbot.ascendc-runtime-debug.references.kernel_binary_debug", "section_id": "binary", "when_any": ["kernel not found", "binary", "opparasize", "cache"]},
+          {"knowledge_module_id": "cannbot.ascendc-crash-debug.references.crash_workflow", "section_id": "buffer", "headings": ["Buffer 相关卡死/崩溃"]}
+        ]
+      }
+    ]},
+    "precision_debug": {"skills": [
+      {
+        "id": "precision_debug",
+        "purpose": "Apply precision knowledge only when dtype, cast, accumulation, tolerance, overflow, or rounding evidence is explicit.",
+        "expected_artifact": "One bounded numerical hypothesis and comparison signal.",
+        "when": {"always": true},
+        "provide": ["passing and failing dtype cases", "tolerances", "cast/dataflow"],
+        "exclude": ["runtime environment", "performance", "generic mismatch inference"],
+        "references": [
+          {"knowledge_module_id": "cannbot.ascendc-api-best-practices.references.api-precision", "section_id": "cast", "headings": ["Cast RoundMode 选择", "混合精度计算模式（FP16 输入）"]},
+          {"knowledge_module_id": "cannbot.ascendc-precision-debug.references.common-traps", "section_id": "dtype-traps", "headings": ["陷阱1：FP16 精度不足", "陷阱7：类型转换精度损失", "陷阱8：Cast API RoundMode 使用错误"]},
+          {"knowledge_module_id": "cannbot.ascendc-precision-debug.references.data-comparison", "section_id": "comparison"},
+          {"knowledge_module_id": "cannbot.ascendc-precision-debug.references.ascendc-dumptensor", "section_id": "instrumentation", "when_any": ["dump", "uninitialized", "random", "zero"]},
+          {"knowledge_module_id": "cannbot.ascendc-precision-debug.references.binary-search-debug", "section_id": "binary-search", "when_any": ["repeated", "binary search"]}
+        ]
+      }
+    ]},
+    "optimization": {"skills": [
+      {
+        "id": "optimization",
+        "purpose": "Select one family-specific optimization only after full correctness.",
+        "expected_artifact": "One measured optimization hypothesis preserving correctness.",
+        "when": {"requires_correct_baseline": true},
+        "provide": ["full-correct baseline", "latency", "current tiling", "target"],
+        "exclude": ["unrelated families", "unmeasured rewrites", "correctness relaxation"],
+        "references": [
+          {"knowledge_module_id": "cannbot.ascendc-performance-best-practices.references.elementwise.double_buffer_design", "section_id": "double-buffer", "operator_families": ["elementwise"]},
+          {"knowledge_module_id": "cannbot.ascendc-performance-best-practices.references.elementwise.vector_efficiency_design", "section_id": "vector-efficiency", "operator_families": ["elementwise"]},
+          {"knowledge_module_id": "cannbot.ascendc-performance-best-practices.references.reduce.guide", "section_id": "reduce", "operator_families": ["reduction"]},
+          {"knowledge_module_id": "cannbot.ascendc-performance-best-practices.references.broadcast.broadcast_design", "section_id": "broadcast", "operator_families": ["broadcast"]},
+          {"knowledge_module_id": "cannbot.ascendc-performance-best-practices.references.broadcast.onedim_design", "section_id": "onedim", "operator_families": ["broadcast"], "when_any": ["onedim", "one dim", "stride=0"]},
+          {"knowledge_module_id": "cannbot.ascendc-performance-best-practices.references.broadcast.nddma_design", "section_id": "nddma", "operator_families": ["broadcast"], "when_any": ["nddma", "multicopy"]},
+          {"knowledge_module_id": "cannbot.ascendc-performance-best-practices.references.broadcast.datacopypad_design", "section_id": "datacopypad", "operator_families": ["broadcast"], "when_any": ["datacopypad", "unaligned", "tail"]},
+          {"knowledge_module_id": "cannbot.ascendc-performance-best-practices.references.broadcast.ub_broadcast_design", "section_id": "ub", "operator_families": ["broadcast"], "when_any": ["ub broadcast", "axis"]},
+          {"knowledge_module_id": "cannbot.ascendc-performance-best-practices.references.conversion.guide", "section_id": "conversion", "operator_families": ["conversion"]},
+          {"knowledge_module_id": "cannbot.ascendc-performance-best-practices.references.matmul.guide", "section_id": "matmul", "operator_families": ["matmul"]},
+          {"knowledge_module_id": "cannbot.ascendc-performance-best-practices.references.sort.radix_sort", "section_id": "sort", "operator_families": ["sort"]},
+          {"knowledge_module_id": "cannbot.ascendc-performance-best-practices.references.simt.optimization-guide", "section_id": "simt", "operator_families": ["simt"]},
+          {"knowledge_module_id": "cannbot.ascendc-performance-best-practices.references.common.tail_block_design", "section_id": "tail", "when_any": ["tail", "unaligned", "remainder"]},
+          {"knowledge_module_id": "cannbot.ascendc-performance-best-practices.references.common.core_shrink_design", "section_id": "core-shrink", "when_any": ["small shape", "launch overhead", "core shrink"]},
+          {"knowledge_module_id": "cannbot.ascendc-performance-best-practices.references.common.datacopy_optimization_design", "section_id": "datacopy", "when_any": ["datacopy", "mte", "bandwidth", "copy"]}
+        ]
+      }
+    ]}
   }
 }

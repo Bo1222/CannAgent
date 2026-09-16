@@ -1,6 +1,8 @@
+import argparse
 import copy
 import importlib.util
 import inspect
+import json
 import os
 import sys
 import traceback
@@ -8,7 +10,6 @@ from pathlib import Path
 
 import torch
 import torch.nn as nn
-
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 WORKDIR = SCRIPT_DIR.parent
@@ -468,7 +469,23 @@ def _get_input_groups(module):
     raise AttributeError(f"Neither get_input_groups() nor get_inputs() found in {module.__file__}")
 
 
-def _run_verification(op: str):
+def _persist_report(report, report_path):
+    if report_path is None:
+        return
+    path = Path(report_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    temporary.replace(path)
+
+
+def _run_verification(
+    op: str,
+    *,
+    case_indices=None,
+    active_profile: str = "full",
+    report_path=None,
+):
     report = {
         "op": op,
         "ok": False,
@@ -479,6 +496,10 @@ def _run_verification(op: str):
         "kernel_build_dir": "",
         "inputs": [],
         "comparisons": [],
+        "case_results": [],
+        "passed_case_indices": [],
+        "failed_case_index": None,
+        "active_profile": active_profile,
         "comparison": "",
         "error": "",
     }
@@ -494,9 +515,11 @@ def _run_verification(op: str):
 
     if not ref_path.is_file():
         report["error"] = f"missing reference model: {ref_path}"
+        _persist_report(report, report_path)
         return report
     if not cand_path.is_file():
         report["error"] = f"missing candidate model: {cand_path}"
+        _persist_report(report, report_path)
         return report
     # kernel/build is optional: model_new_ascendc.py may manage its own sys.path.
     inserted_paths = []
@@ -515,6 +538,7 @@ def _run_verification(op: str):
             sys.path.insert(0, p)
             inserted_paths.append(p)
 
+    active_case = None
     try:
         ref_module = _load_module(ref_path, f"{op}_ref_model")
         cand_module = _load_module(cand_path, f"{op}_ascendc_model")
@@ -537,14 +561,43 @@ def _run_verification(op: str):
         all_ok = True
         comparisons = []
         input_summaries = []
-        for index, inputs in enumerate(input_groups):
+        selected_indices = (
+            list(range(len(input_groups)))
+            if case_indices is None
+            else [int(index) for index in case_indices]
+        )
+        invalid = [index for index in selected_indices if index < 0 or index >= len(input_groups)]
+        if invalid:
+            raise IndexError(f"case indices out of range: {invalid}; total={len(input_groups)}")
+        for index in selected_indices:
+            inputs = input_groups[index]
+            active_case = {
+                "index": index,
+                "profile": active_profile,
+                "status": "started",
+                "inputs": [],
+                "comparison": "",
+            }
+            report["case_results"].append(active_case)
+            report["failed_case_index"] = index
+            _persist_report(report, report_path)
             ref_inputs = _move_to_device(_clone_value(inputs), device)
             cand_inputs = _move_to_device(_clone_value(inputs), device)
-            input_summaries.extend(_summarize_value(ref_inputs, f"inputs[{index}]"))
+            summaries = _summarize_value(ref_inputs, f"inputs[{index}]")
+            active_case["inputs"] = summaries
+            input_summaries.extend(summaries)
+            report["inputs"] = input_summaries
+            _persist_report(report, report_path)
 
             with torch.no_grad():
                 ref_out = ref_model(*ref_inputs)
+                active_case["status"] = "reference_passed"
+                _persist_report(report, report_path)
+                active_case["status"] = "candidate_started"
+                _persist_report(report, report_path)
                 cand_out = cand_model(*cand_inputs)
+                active_case["status"] = "candidate_returned"
+                _persist_report(report, report_path)
 
             if hasattr(ref_model, "postprocess_output"):
                 ref_out = ref_model.postprocess_output(ref_out, inputs)
@@ -559,15 +612,32 @@ def _run_verification(op: str):
                 path=f"output[{index}]",
             )
             comparisons.append(f"case[{index}]: {comparison}")
+            active_case["status"] = "passed" if ok else "failed"
+            active_case["comparison"] = comparison
+            if ok:
+                report["passed_case_indices"].append(index)
+            else:
+                report["failed_case_index"] = index
             all_ok = all_ok and ok
+            report["comparisons"] = comparisons
+            report["comparison"] = "\n".join(comparisons)
+            _persist_report(report, report_path)
 
         report["inputs"] = input_summaries
         report["comparisons"] = comparisons
         report["comparison"] = "\n".join(comparisons)
         report["ok"] = all_ok
+        if all_ok:
+            report["failed_case_index"] = None
+        _persist_report(report, report_path)
         return report
     except Exception as exc:
         report["error"] = f"{type(exc).__name__}: {exc}"
+        if active_case is not None and active_case.get("status") == "started":
+            active_case["status"] = "error"
+            active_case["error"] = report["error"]
+            report["failed_case_index"] = active_case["index"]
+        _persist_report(report, report_path)
         if os.environ.get("VERIFICATION_ASCENDC_DEBUG") == "1":
             raise
         report["traceback"] = traceback.format_exc()
@@ -623,12 +693,23 @@ def _print_report(report):
 
 
 def main():
-    if len(sys.argv) != 2:
-        print("Usage: python utils/verification_ascendc.py <op>")
-        print("Result: fail")
-        raise SystemExit(1)
-
-    report = _run_verification(sys.argv[1])
+    parser = argparse.ArgumentParser()
+    parser.add_argument("op")
+    parser.add_argument("--case-indices", default="")
+    parser.add_argument("--profile", default="full")
+    parser.add_argument("--report-json", default="")
+    args = parser.parse_args()
+    indices = (
+        [int(item) for item in args.case_indices.split(",") if item.strip()]
+        if args.case_indices
+        else None
+    )
+    report = _run_verification(
+        args.op,
+        case_indices=indices,
+        active_profile=args.profile,
+        report_path=args.report_json or None,
+    )
     _print_report(report)
     raise SystemExit(0 if report["ok"] else 1)
 

@@ -1,9 +1,14 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
+from pathlib import Path
 from typing import Any
 
-from .diagnostics import extract_symbol_evidence
+from .diagnostics import (
+    classify_symbol_domain,
+    diagnostics_for_result,
+    extract_symbol_evidence,
+)
 from .models import EvalResult
 from .skill_adapter import SkillAdapter, SkillAdapterContext, SkillAdapterSelection
 from .structured_knowledge.schema import KnowledgeBundle
@@ -22,12 +27,15 @@ _RUNTIME_MARKERS = (
     "aicore exception",
     "mte",
     "507035",
+    "507001",
     "161",
     "361",
     "561",
     "kernel not found",
     "plog",
     "device exception",
+    "sigsegv",
+    "terminated by signal",
 )
 _HOST_MARKERS = (
     "is_cuda",
@@ -39,6 +47,28 @@ _HOST_MARKERS = (
     "getcurrentcudastream",
     "getcurrentnpustream",
     "aclrtgetcurrentstream",
+    "pybind11_module",
+    ".vec()",
+    "no member named 'vec'",
+    "std::vector",
+    "aten/",
+    "torch_npu",
+    "file not found",
+    "no such file or directory",
+)
+_LAUNCH_ABI_MARKERS = (
+    "gm_addr",
+    "__gm__",
+    "address space",
+    "const void",
+    "descriptor",
+    "reinterpret_cast",
+    "const_cast",
+    "wrapper mismatch",
+    "conflicting types for",
+    "_do",
+    "host wrapper",
+    "device pointer",
 )
 _PRECISION_PRIMARY_MARKERS = (
     "fp32 pass",
@@ -71,6 +101,7 @@ class RoutingDecision:
     routing_confidence: str
     route_evidence_origin: str = "workflow"
     matched_route_trigger: str | None = None
+    failure_ownership: str = "Kernel"
 
 
 @dataclass
@@ -84,7 +115,7 @@ class SelectedStageContext:
     api_facts: list[dict[str, Any]]
     design_patterns: list[str]
     failure_guidance: list[dict[str, Any]]
-    skill_capsules: list[dict[str, Any]]
+    skill_knowledge_modules: list[dict[str, Any]]
     exclusions: list[str]
     provenance: list[dict[str, Any]]
     runtime_facts: str = ""
@@ -97,7 +128,7 @@ class SelectedStageContext:
 
 
 class ContextSelector:
-    """Project structured knowledge and CANNBot capsules for one LLM audience."""
+    """Project structured knowledge and CANNBot knowledge modules for one LLM audience."""
 
     def __init__(self, adapter: SkillAdapter):
         self.adapter = adapter
@@ -112,8 +143,8 @@ class ContextSelector:
     ) -> RoutingDecision:
         if previous is None or not previous.error:
             if workflow_phase == "optimization":
-                return RoutingDecision("optimization", "correct_baseline_available", None, None, "performance", "direct")
-            return RoutingDecision("kernel_design", "initial_or_unresolved_kernel_design", None, None, "kernel_design", "fallback")
+                return RoutingDecision("optimization", "correct_baseline_available", None, None, "performance", "direct", failure_ownership="Kernel")
+            return RoutingDecision("kernel_design", "initial_or_unresolved_kernel_design", None, None, "kernel_design", "fallback", failure_ownership="Kernel")
         failure_stage = previous.failure_stage or ""
         structured = previous.structured_failure or {}
         failure_text = " ".join(
@@ -128,19 +159,45 @@ class ContextSelector:
             ]
         ).lower()
         if failure_stage in _COMPILE_STAGES:
+            records = diagnostics_for_result(previous)
+            launch_marker = next(
+                (marker for marker in _LAUNCH_ABI_MARKERS if marker in failure_text), None
+            )
+            if launch_marker or any(item.category == "launch_abi" for item in records):
+                return RoutingDecision(
+                    "host_integration_debug",
+                    "host_kernel_launch_abi_evidence",
+                    None,
+                    None,
+                    "launch_abi",
+                    "direct",
+                    "failure_evidence",
+                    launch_marker or "launch_abi_diagnostic",
+                    "Host/Kernel boundary",
+                )
             host_marker = next(
                 (marker for marker in _HOST_MARKERS if marker in failure_text), None
             )
-            if host_marker:
+            host_record = next(
+                (
+                    item
+                    for item in records
+                    if item.category in {"host_abi", "host_cpp"}
+                    or (item.source_file and Path(item.source_file).name == "pybind11.cpp")
+                ),
+                None,
+            )
+            if host_marker or host_record:
                 return RoutingDecision(
                     "host_integration_debug",
-                    "host_or_cuda_compile_evidence",
+                    "host_cpp_or_binding_compile_evidence",
                     None,
                     None,
-                    "host_abi",
+                    "host_cpp" if host_record and host_record.category == "host_cpp" else "host_abi",
                     "direct",
                     "failure_evidence",
-                    host_marker,
+                    host_marker or (host_record.category if host_record else None),
+                    "Host",
                 )
             return RoutingDecision(
                 "api_compile_debug",
@@ -151,6 +208,7 @@ class ContextSelector:
                 "direct",
                 "failure_evidence",
                 failure_stage,
+                "Kernel",
             )
         if failure_stage in {"correctness", "runtime", "acl_runtime"}:
             runtime = bool(
@@ -159,9 +217,18 @@ class ContextSelector:
                 or any(marker in failure_text for marker in _RUNTIME_MARKERS)
             )
             if runtime:
-                return RoutingDecision("runtime_debug", "runtime_or_device_exception_evidence", None, None, "runtime", "direct")
+                boundary = next(
+                    (marker for marker in _LAUNCH_ABI_MARKERS if marker in failure_text),
+                    None,
+                )
+                return RoutingDecision(
+                    "runtime_debug", "runtime_or_device_exception_evidence", None,
+                    None, "runtime_memory", "direct", "failure_evidence",
+                    boundary or str(structured.get("runtime_code") or "device_exception"),
+                    "Host/Kernel boundary" if boundary else "Kernel",
+                )
             if any(marker in failure_text for marker in _PRECISION_PRIMARY_MARKERS):
-                return RoutingDecision("precision_debug", "explicit_precision_failure_evidence", None, None, "precision", "direct")
+                return RoutingDecision("precision_debug", "explicit_precision_failure_evidence", None, None, "precision", "direct", failure_ownership="Kernel")
             secondary = next((marker for marker in _PRECISION_SECONDARY_MARKERS if marker in failure_text), None)
             return RoutingDecision(
                 "kernel_design",
@@ -170,10 +237,11 @@ class ContextSelector:
                 f"explicit_precision_hint={secondary}" if secondary else None,
                 "algorithmic_correctness",
                 "corroborated" if secondary else "direct",
+                failure_ownership="Kernel",
             )
         if failure_stage == "performance":
-            return RoutingDecision("optimization", "performance_failure_with_correct_baseline", None, None, "performance", "direct")
-        return RoutingDecision("kernel_design", f"unmapped_failure_stage={failure_stage or 'unknown'}", None, None, "kernel_design", "fallback")
+            return RoutingDecision("optimization", "performance_failure_with_correct_baseline", None, None, "performance", "direct", failure_ownership="Kernel")
+        return RoutingDecision("kernel_design", f"unmapped_failure_stage={failure_stage or 'unknown'}", None, None, "kernel_design", "fallback", failure_ownership="Kernel")
 
     @staticmethod
     def derive_stages(
@@ -200,13 +268,9 @@ class ContextSelector:
                 stages = [route.primary_skill]
             if route.secondary_skill:
                 stages.append(route.secondary_skill)
-            if generator:
-                stages.append("code_generation")
             return list(dict.fromkeys(stages))
         if workflow_phase == "optimization":
             stages = ["optimization"]
-            if generator:
-                stages.append("code_generation")
             return stages
         if not current_exists:
             return (
@@ -217,7 +281,7 @@ class ContextSelector:
                     "kernel_design",
                 ]
             )
-        return ["kernel_design", "code_generation"] if generator else ["kernel_design"]
+        return ["kernel_design"]
 
     def request(
         self,
@@ -233,6 +297,9 @@ class ContextSelector:
         evidence: str,
         source_evidence: str = "",
         planned_evidence: str = "",
+        active_profile: str | None = None,
+        profile_case_indices: list[int] | None = None,
+        profile_features: list[str] | None = None,
         environment_fingerprint: str | None = None,
     ) -> SkillAdapterContext:
         structured_failure = previous.structured_failure if previous else None
@@ -240,6 +307,8 @@ class ContextSelector:
             [
                 str(item)
                 for item in (structured_failure or {}).get("related_symbols", [])
+                if classify_symbol_domain(str(item))
+                in {"ascendc_api", "host_abi", "launch_abi"}
             ]
             if isinstance(structured_failure, dict)
             else []
@@ -280,11 +349,43 @@ class ContextSelector:
             source=source_evidence,
             planned=planned_evidence,
         )
+        lookup_domains = {"ascendc_api", "host_abi", "launch_abi"}
         by_kind = {
-            kind: [item.symbol for item in symbols if kind in item.kinds]
+            kind: [
+                item.symbol
+                for item in symbols
+                if kind in item.kinds and lookup_domains.intersection(item.domains)
+            ]
             for kind in ("failure", "source", "planned")
         }
-        failure_symbols = list(dict.fromkeys([*failure_symbols, *by_kind["failure"]]))
+        symbol_domains = list(
+            dict.fromkeys(domain for item in symbols for domain in item.domains)
+        )
+        routed_domain = {
+            "host_cpp": "host_abi",
+            "host_abi": "host_abi",
+            "launch_abi": "launch_abi",
+        }.get(route.debug_category)
+        if routed_domain and routed_domain not in symbol_domains:
+            symbol_domains.append(routed_domain)
+        records = diagnostics_for_result(previous)
+        diagnostic_api_symbols = [
+            item.symbol
+            for item in records
+            if item.symbol and item.category.startswith("kernel_api")
+        ]
+        failure_symbols = list(
+            dict.fromkeys([*diagnostic_api_symbols, *failure_symbols, *by_kind["failure"]])
+        )
+        inferred_features = list(profile_features or [])
+        combined = f"{failure_evidence} {evidence}".lower()
+        for feature, markers in {
+            "broadcast": ("broadcast", "stride=0", "[128,128]", "[128, 128]"),
+            "tail": ("tail", "unaligned", "remainder"),
+            "dtype": ("float16", "bfloat16", "fp16", "bf16"),
+        }.items():
+            if any(marker in combined for marker in markers) and feature not in inferred_features:
+                inferred_features.append(feature)
         return SkillAdapterContext(
             audience=audience,
             stages=stages,
@@ -302,6 +403,7 @@ class ContextSelector:
             source_symbols=by_kind["source"],
             planned_symbols=by_kind["planned"],
             symbol_evidence=[item.to_dict() for item in symbols],
+            symbol_domains=symbol_domains,
             primary_skill=route.primary_skill,
             route_reason=route.route_reason,
             secondary_skill=route.secondary_skill,
@@ -310,6 +412,13 @@ class ContextSelector:
             routing_confidence=route.routing_confidence,
             route_evidence_origin=route.route_evidence_origin,
             matched_route_trigger=route.matched_route_trigger,
+            diagnostic_source_files=list(
+                dict.fromkeys(item.source_file for item in records if item.source_file)
+            ),
+            failure_ownership=route.failure_ownership,
+            active_profile=active_profile,
+            profile_case_indices=list(profile_case_indices or []),
+            profile_features=inferred_features,
             environment_fingerprint=environment_fingerprint,
         )
 
@@ -455,10 +564,38 @@ class ContextSelector:
         exclusions = list(
             dict.fromkeys(
                 exclusion
-                for capsule in skills.capsules
-                for exclusion in capsule.exclusions
+                for knowledge_module in skills.knowledge_modules
+                for exclusion in knowledge_module.exclusions
             )
         )
+        runtime_symbol_ids = {
+            str(item.get("symbol", "")).lower()
+            for item in getattr(runtime_facts, "facts", [])
+            if item.get("symbol")
+        }
+        structured_symbols = {
+            str(
+                item.get("api")
+                or item.get("applicability", {}).get("api")
+                or item.get("subject")
+                or ""
+            ).lower()
+            for item in api_facts
+        }
+        for symbol in request.failure_symbols:
+            if symbol.lower() not in runtime_symbol_ids | structured_symbols:
+                warning = (
+                    f"UNVERIFIED_API: {symbol} — do not use in plan.change or source "
+                    "until an installed declaration or compile probe verifies it"
+                )
+                exclusions.append(warning)
+                selection_trace.append(
+                    {
+                        "candidate": f"runtime-missing:{symbol}",
+                        "decision": "rejected",
+                        "reason": "no installed declaration or selected structured API fact",
+                    }
+                )
         selected = SelectedStageContext(
             schema_version=2,
             audience=request.audience,
@@ -484,6 +621,7 @@ class ContextSelector:
                 "source_symbols": request.source_symbols,
                 "planned_symbols": request.planned_symbols,
                 "symbol_evidence": request.symbol_evidence,
+                "symbol_domains": request.symbol_domains,
                 "primary_skill": request.primary_skill,
                 "route_reason": request.route_reason,
                 "secondary_skill": request.secondary_skill,
@@ -492,6 +630,17 @@ class ContextSelector:
                 "routing_confidence": request.routing_confidence,
                 "route_evidence_origin": request.route_evidence_origin,
                 "matched_route_trigger": request.matched_route_trigger,
+                "failure_ownership": request.failure_ownership,
+                "diagnostic_source_files": request.diagnostic_source_files,
+                "active_profile": request.active_profile,
+                "profile_case_indices": request.profile_case_indices,
+                "profile_features": request.profile_features,
+                "input_route": {
+                    "primary": request.primary_skill,
+                    "reason": request.route_reason,
+                    "ownership": request.failure_ownership,
+                    "debug_category": request.debug_category,
+                },
                 "environment_fingerprint": request.environment_fingerprint,
             },
             hard_constraints=[
@@ -501,7 +650,7 @@ class ContextSelector:
             api_facts=api_facts,
             design_patterns=patterns,
             failure_guidance=failure_guidance,
-            skill_capsules=[item.to_dict() for item in skills.capsules],
+            skill_knowledge_modules=[item.to_dict() for item in skills.knowledge_modules],
             exclusions=exclusions,
             provenance=[
                 dict(item) if full_selected else self._compact_provenance(item)
@@ -515,16 +664,14 @@ class ContextSelector:
             budget={
                 "input_mode": "full_selected" if full_selected else "bounded",
                 "max_chars": (
-                    None
-                    if full_selected
-                    else self.adapter.audience_budgets.get(request.audience, 12000)
+                    self.adapter.audience_budgets.get(request.audience, 12000)
                 ),
                 "used_chars": 0,
                 "truncated_sections": [],
             },
             selection_trace=selection_trace,
             selection_metadata={
-                "selected_skill_ids": [item.skill_id for item in skills.capsules],
+                "selected_skill_ids": [item.skill_id for item in skills.knowledge_modules],
                 "selected_structured_ids": [
                     str(item.get("fact_id") or item.get("card_id")) for item in api_facts
                     if item.get("fact_id") or item.get("card_id")
@@ -567,23 +714,27 @@ class ContextSelector:
                     "provenance": "structured_knowledge",
                 }
             )
-        for capsule in skills.capsules:
+        for knowledge_module in skills.knowledge_modules:
             selected_items.append(
                 {
-                    "id": capsule.skill_id,
+                    "id": knowledge_module.skill_id,
                     "source": next(
-                        (excerpt.origin for excerpt in capsule.excerpts), "skill_mapping"
+                        (excerpt.origin for excerpt in knowledge_module.excerpts),
+                        "skill_mapping",
                     ),
                     "evidence_symbol": None,
                     "symbol_types": [],
                     "confidence_level": max(
-                        (excerpt.confidence_level for excerpt in capsule.excerpts),
+                        (
+                            excerpt.confidence_level
+                            for excerpt in knowledge_module.excerpts
+                        ),
                         default=1,
                     ),
                     "provenance": sorted(
-                        {excerpt.provenance for excerpt in capsule.excerpts}
+                        {excerpt.provenance for excerpt in knowledge_module.excerpts}
                     ) or ["skill_mapping"],
-                    "role": capsule.role,
+                    "role": knowledge_module.role,
                 }
             )
         for item in getattr(runtime_facts, "facts", []):

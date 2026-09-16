@@ -66,15 +66,27 @@ python -m ascendc_multi_turn \
   --soc-version Ascend910B3
 ```
 
-默认从工作区同级的 `cannbot-skills/ops` 读取白名单引用。也可通过
-`--cannbot-skills-root /path/to/cannbot-skills/ops` 或
-`CANNBOT_SKILLS_ROOT` 指定。映射默认使用
-`ascendc_multi_turn/skill_mapping.yaml`；`--skill-mapping` 仅用于受控实验。
+Skills 知识来自包内
+`ascendc_multi_turn/knowledge_modules/cannbot_a08c4970_knowledge_base` 内置知识库。Runner 创建时一次性
+校验 knowledge base/local manifest、逐文件 SHA256、stage allowlist 和 schema v3 mapping，随后每轮
+只做内存选择。运行不需要、也不会读取 sibling `cannbot-skills` 仓库。
 
-`--knowledge-input-mode full-selected` 是受控能力实验开关：保留上述路由结果，
-但完整渲染已选中的 Structured cards、Skill headings、runtime declarations 和失败证据，
-不应用 Agent 的 reference、section 或总字符预算。默认 `bounded` 不变。该开关不能取消
+`--cannbot-skills-root`、`--skill-mapping` 和 `CANNBOT_SKILLS_ROOT` 已停止支持；一旦使用会
+立即返回迁移错误。更新精选知识时应显式维护包内 knowledge base、manifest 和 mapping，而不是在
+生产运行中替换来源。
+
+Embedded Skill section 一旦被路由选中，在 `bounded` 和 `full-selected` 两种模式都会完整
+投递；prompt 宽度由 stage、failure ownership、operator family、active profile 和 symbol
+evidence 控制，不从 section 中间截断。`--knowledge-input-mode full-selected` 保留被选中
+Structured 条目的完整字段，但不再取消 per-audience 总预算、runtime declaration 上限或
+重复评测日志压缩。默认 `bounded` 使用紧凑字段投影。两种模式都不能取消
 模型服务自身的 context-window 上限；服务拒绝完整 prompt 时不会自动降级为裁剪输入。
+
+Debug route 区分 Host、Host/Kernel boundary 和 Kernel：pybind/include/container/stream 属于
+Host；GM_ADDR、`__gm__`、descriptor transport、wrapper signature/cast 属于 boundary；精确
+AscendC overload/template 属于 Kernel API；507001/507035/MTE 属于 runtime memory；广泛且
+shape-dependent 的数值错误回到 kernel design。只有明确 dtype/cast/tolerance 证据才进入
+precision debug。每轮 artifact 同时记录 `input_route` 和 `result_failure_route`。
 
 旧 `--skill-adapter` 保留为 `--knowledge-source hybrid` 的兼容别名。没有新参数
 时仍使用原 `structured` baseline。`skills` 只关闭旧 knowledge store 的 prompt
@@ -101,7 +113,8 @@ Verified；普通生成过程只读取 manifest，不会每轮重新编译 probe
 ```text
 BOOTSTRAP → PLAN → GENERATE → SOURCE VALIDATION
           → API CONSTRAINT VALIDATION → COMPILE
-          → CORRECTNESS → PERFORMANCE → SETTLE
+          → SMOKE → SHAPE → DTYPE → FULL CORRECTNESS
+          → PERFORMANCE → SETTLE
           → DIAGNOSE → OPTIMIZATION
 ```
 
@@ -110,7 +123,8 @@ BOOTSTRAP → PLAN → GENERATE → SOURCE VALIDATION
 - `GENERATE`：直接生成 AscendC Kernel、Host 绑定和 Python 调用代码。
 - `SOURCE VALIDATION`：检查文件布局、Kernel launch、扩展导入和 forward 调用等结构问题。
 - `API CONSTRAINT VALIDATION`：依据适用版本和调用上下文检查 API 参数约束。
-- `COMPILE/CORRECTNESS/PERFORMANCE`：在真实工具链和 NPU 上编译、校验正确性和测量性能。
+- `COMPILE/CORRECTNESS/PERFORMANCE`：在真实工具链和 NPU 上编译，按固定 profile 逐级校验，
+  仅在完整用例通过后测量性能；smoke、shape 或 dtype 通过都不能建立正确基线。
 - `SETTLE`：更新 source、compile、runtime、correctness 和 performance frontier。
 - `DIAGNOSE/OPTIMIZATION`：把失败转换为结构化证据，提出局部修复并重新评估。
 
@@ -248,6 +262,8 @@ outputs/1_GELU/
     ├── environment_preflight.log
     ├── plan.json
     ├── plan.md
+    ├── interface_contract.json
+    ├── repair_state.json
     ├── baseline.json
     ├── best.json
     ├── DONE
@@ -288,17 +304,21 @@ outputs/1_GELU/
 - `run_state.json`：可恢复检查点，记录当前 attempt、待执行 evaluation round 和
   `PLAN/EDIT/EVAL/DIAGNOSE` 等 pending phase。`--resume` 主要依据它继续。
 - `summary.json`：本次命令结束时打印到终端的最终摘要副本，包括是否成功、停止原因、
-  baseline/best round、token 用量、最后失败及 `stage_normalized_metrics`。未到达阶段的
+  baseline/best round、accepted/latest attempt 身份与候选路径、被拒尝试、token 用量、最后失败及
+  `stage_normalized_metrics`。未到达阶段的
   tokens/time-to-first 值为 `null`（censored），不是 0。
 - `token_usage.json`：总 token 和 planner、generator、diagnose 等调用类型的分类统计。
 - `calls.jsonl`：每次 LLM 调用一行，记录模型、耗时、finish reason、token、重试序号和
   prompt metadata；Adapter 模式还记录 selected/rejected knowledge ID、symbol evidence 类型、
   provenance/confidence 及 knowledge/source/evaluator-evidence 的渲染体积。
-- `invocations.jsonl`：每次启动或 `--resume` 的配置快照，一次命令一行。
+- `invocations.jsonl`：每次启动或 `--resume` 的配置记录，一次命令一行。
 - `orchestration_attempts.jsonl`：不计入候选评估预算的编排失败，例如 LLM 传输、格式或本地
   基础设施失败；没有这类失败时可能不存在。
 - `environment_preflight.log`：CANN、设备和运行环境预检查日志。
 - `plan.json`：当前可执行计划及每个 item 的状态、决策、hypothesis 和 expected signal。
+- `repair_state.json`：当前原子接受基线、开放/已清除错误、失败方案族和门/profile/case 进展。
+- `interface_contract.json`：首个被接受的已编译候选导出的 pybind 模块、`*_do` 声明与定义、
+  Kernel entry 契约；计划未显式允许接口变化时，候选必须保持一致。
 - `plan.md`：`plan.json` 的人类可读版本。
 - `baseline.json`：第一个通过编译、正确性和性能评测的完整源码 bundle；建立基线前不存在。
 - `best.json`：当前性能最佳正确候选的完整源码 bundle。
@@ -348,6 +368,10 @@ outputs/1_GELU/
 - `static_validation.log`：检查扩展导入、`forward()` Kernel 调用等项目静态契约。
 - `build.log`：AscendC 编译命令的完整输出。
 - `correctness.log`：NPU 正确性测试输出和设备错误信息。
+- `correctness_<profile>.log`、`correctness_<profile>.json`：smoke、shape、dtype、full 各级的
+  独立日志和逐 case 状态；首个失败级别之后不再继续执行。
+- `interface_contract_validation.log`：候选未经计划授权修改已冻结接口时生成。
+- `no_op_edit.log`：非 mock 运行中候选只改变注释/空白或完全没有源码变化时生成；该尝试不进入 evaluator。
 - `performance.log`：性能脚本执行日志。
 - `performance.json`：逐 case 性能与 speedup 的机器可读结果。
 - `evaluation_incomplete.log`：Evaluator 返回信息不完整时的规范化错误。

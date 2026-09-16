@@ -1,14 +1,13 @@
 from __future__ import annotations
 
 import json
-import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
 from ascendc_multi_turn.context_selector import ContextSelector
 from ascendc_multi_turn.models import EvalResult
-from ascendc_multi_turn.prompts import render_stage_context
+from ascendc_multi_turn.prompts import build_prompt, render_stage_context
 from ascendc_multi_turn.skill_adapter import SkillAdapter
 from ascendc_multi_turn.structured_knowledge.schema import (
     KnowledgeBundle,
@@ -40,50 +39,7 @@ def _bundle(api: str = "") -> KnowledgeBundle:
 
 class KnowledgeRoutingTrajectoryTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.temporary = tempfile.TemporaryDirectory()
-        self.root = Path(self.temporary.name)
-        capsules = self.root / "knowledge_capsules"
-        capsules.mkdir()
-        (capsules / "facts.md").write_text(
-            "# API\nReduceSum needs the installed workspace overload.\n\n"
-            "# Host\nUse NPU tensor and stream facts. Never use CUDA.\n\n"
-            "# Permute\nUse output-to-input coordinates and contiguous strides.\n",
-            encoding="utf-8",
-        )
-        mapping = {
-            "schema_version": 2,
-            "default_source_root": str(self.root / "missing-cannbot"),
-            "audience_budgets": {"planner": 6000, "generator": 8000},
-            "operator_families": {"reduction": ["layernorm"], "conversion": ["permute"], "elementwise": ["gelu"]},
-            "stages": {
-                "compile_debug": {"skills": [self._skill("api_compile_debug", "API")]},
-                "host_integration_debug": {"skills": [self._skill("host_integration_debug", "Host")]},
-                "kernel_design": {"skills": [self._skill("kernel_design", "Permute")]},
-                "precision_debug": {"skills": [self._skill("precision_debug", "API")]},
-                "code_generation": {"skills": []},
-            },
-        }
-        mapping_path = self.root / "mapping.yaml"
-        mapping_path.write_text(json.dumps(mapping), encoding="utf-8")
-        self.selector = ContextSelector(SkillAdapter(mapping_path=mapping_path))
-
-    def tearDown(self) -> None:
-        self.temporary.cleanup()
-
-    @staticmethod
-    def _skill(skill_id: str, heading: str) -> dict:
-        return {
-            "id": skill_id,
-            "origin": "adapter",
-            "source": ".",
-            "purpose": skill_id,
-            "expected_artifact": "one grounded repair",
-            "knowledge_type": ["regression"],
-            "when": {"always": True},
-            "provide": [],
-            "exclude": [],
-            "references": [{"path": "facts.md", "headings": [heading], "max_chars": 1200}],
-        }
+        self.selector = ContextSelector(SkillAdapter())
 
     @staticmethod
     def _runtime(symbol: str, text: str) -> SimpleNamespace:
@@ -162,7 +118,7 @@ class KnowledgeRoutingTrajectoryTests(unittest.TestCase):
             ["fact:ReduceSum", "fact:Tanh", "fact:Cast"],
         )
 
-    def test_cuda_binding_contamination_selects_host_capsule(self) -> None:
+    def test_cuda_binding_contamination_selects_host_knowledge_module(self) -> None:
         previous = EvalResult(
             False, False, error="Input must be a CUDA tensor",
             failure_stage="ascendc_build",
@@ -182,7 +138,7 @@ class KnowledgeRoutingTrajectoryTests(unittest.TestCase):
 
         self.assertEqual(request.primary_skill, "host_integration_debug")
         self.assertIn("host_integration_debug", selected.selection_metadata["selected_skill_ids"])
-        self.assertIn("Never use CUDA", rendered)
+        self.assertIn("Do not include CUDA", rendered)
         self.assertNotIn("card:Unrelated", selected.selection_metadata["selected_structured_ids"])
 
     def test_unrelated_undefined_symbol_is_not_assumed_to_be_host_abi(self) -> None:
@@ -249,7 +205,101 @@ class KnowledgeRoutingTrajectoryTests(unittest.TestCase):
         self.assertEqual(request.primary_skill, "kernel_design")
         self.assertIsNone(request.secondary_skill)
         self.assertNotIn("precision_debug", request.stages)
-        self.assertIn("output-to-input coordinates", rendered)
+        self.assertIn("Convert output linear index", rendered)
+
+    def test_latest_add_failures_replay_through_route_knowledge_module_and_prompt(self) -> None:
+        fixture = json.loads(
+            (Path(__file__).parent / "fixtures/add_10_round_route_replay.json").read_text()
+        )
+        for case in fixture:
+            with self.subTest(case=case["id"]):
+                previous = None
+                if case.get("failure") is not None or case.get("error"):
+                    previous = EvalResult(
+                        compiled=case.get("failure_stage") == "correctness",
+                        correctness=False,
+                        error=case.get("error", ""),
+                        failure_stage=case.get("failure_stage"),
+                        failure_code=case.get("failure_code"),
+                        compile_output=(
+                            case.get("error", "")
+                            if case.get("failure_stage") == "ascendc_build"
+                            else ""
+                        ),
+                        verify_output=case.get("verify_output", case.get("error", "")),
+                        structured_failure={
+                            "case_info": {
+                                "profile": case.get("active_profile"),
+                                "features": case.get("profile_features", []),
+                            }
+                        },
+                    )
+                request = self.selector.request(
+                    audience="generator",
+                    workflow_phase="bootstrap",
+                    operator=case.get("operator", "add"),
+                    soc="Ascend910B3",
+                    runtime_version="8.5.2",
+                    knowledge_version="8.5.2",
+                    current_exists=previous is not None,
+                    previous=previous,
+                    evidence=case.get("error", "") + " DataCopy TQue",
+                    source_evidence="extern \"C\" void add_do(); GlobalTensor<float> y; DataCopy(dst, src, count);",
+                    active_profile=case.get("active_profile"),
+                    profile_features=case.get("profile_features", []),
+                )
+                selected, _ = self.selector.select(bundle=_bundle(), request=request)
+                knowledge_module_ids = {
+                    excerpt["knowledge_module_id"]
+                    for knowledge_module in selected.skill_knowledge_modules
+                    for excerpt in knowledge_module["excerpts"]
+                }
+                rendered = render_stage_context(selected)
+
+                self.assertEqual(request.primary_skill, case["expected_route"])
+                if case.get("expected_category"):
+                    self.assertEqual(request.debug_category, case["expected_category"])
+                self.assertIn(case["expected_knowledge_module"], knowledge_module_ids)
+                if case.get("rejected_knowledge_module"):
+                    self.assertNotIn(case["rejected_knowledge_module"], knowledge_module_ids)
+                if case.get("prompt_excludes_stage"):
+                    self.assertNotIn(case["prompt_excludes_stage"], request.stages)
+                if case.get("prompt_contains"):
+                    prompt = build_prompt(
+                        reference_code="def forward(x, y): return x + y",
+                        cases_text='{"inputs": [{"shape": [128,128]}, {"shape": [128,1]}]}',
+                        current=None,
+                        previous_result=previous,
+                        round_num=10,
+                        knowledge_context=rendered,
+                        knowledge_selection=selected,
+                    )
+                    self.assertIn(case["prompt_contains"], prompt)
+                    self.assertIn("[128,128] + [128,1]", prompt)
+
+    def test_noise_symbols_never_become_runtime_api_queries(self) -> None:
+        previous = EvalResult(
+            False,
+            False,
+            error="COMPILER TraceBack PYBIND11_MODULE Tensor CustomKernelHelper",
+            failure_stage="ascendc_build",
+            compile_output="error: COMPILER TraceBack PYBIND11_MODULE Tensor CustomKernelHelper",
+        )
+        request = self.selector.request(
+            audience="generator", workflow_phase="bootstrap", operator="add",
+            soc="test", runtime_version="8.5.2", knowledge_version="8.5.2",
+            current_exists=True, previous=previous, evidence=previous.compile_output,
+            source_evidence="PYBIND11_MODULE(ext, m) { CustomKernelHelper(); Tensor x; }",
+        )
+        self.assertEqual(request.failure_symbols, [])
+        self.assertNotIn("CustomKernelHelper", request.source_symbols)
+        domains = {
+            domain
+            for item in request.symbol_evidence
+            for domain in item.get("domains", [])
+        }
+        self.assertIn("compiler_noise", domains)
+        self.assertIn("project_local", domains)
 
 
 if __name__ == "__main__":

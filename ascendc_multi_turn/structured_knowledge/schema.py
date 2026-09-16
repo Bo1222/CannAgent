@@ -150,6 +150,13 @@ class StructuredFailure:
     sub_error_type: str | None
     case_info: dict[str, Any]
     related_symbols: list[str]
+    attribution_status: str = "unknown"
+    faulting_cores: list[int] = field(default_factory=list)
+    faulting_blocks: list[int] = field(default_factory=list)
+    pc_start: list[str] = field(default_factory=list)
+    pc_current: list[str] = field(default_factory=list)
+    serial: list[str] = field(default_factory=list)
+    extend_error_str: list[str] = field(default_factory=list)
     schema_version: int = SCHEMA_VERSION
 
     def to_dict(self) -> dict[str, Any]:
@@ -217,6 +224,7 @@ class AttemptRecord:
     frontier_before: str | None
     frontier_after: str | None
     result: dict[str, Any]
+    progress: dict[str, Any]
     schema_version: int = SCHEMA_VERSION
 
     def to_dict(self) -> dict[str, Any]:

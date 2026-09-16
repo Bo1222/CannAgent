@@ -29,6 +29,9 @@ context_request:
     dtypes: []
     attributes: {}
     alignment_hints: []
+    active_profile: smoke | shape | dtype | full | benchmark | null
+    profile_case_indices: []
+    profile_features: [broadcast | tail | dtype]
   platform:
     soc: string
     runtime_cann: string
@@ -55,6 +58,9 @@ context_request:
     secondary_reason: string | null
     debug_category: string
     routing_confidence: direct | corroborated | fallback
+    failure_ownership: Host | Host/Kernel boundary | Kernel
+    diagnostic_source_files: []
+    input_route: object
 ```
 
 The implementation may initially infer family, shapes, and dtypes from text.
@@ -88,16 +94,23 @@ selected_context:
       - symbol: string
         kinds: [failure | source | planned]
         sources: [evaluation | candidate | active_plan]
+        domains: [ascendc_api | host_abi | launch_abi | operator_semantic | project_local | compiler_noise]
     primary_skill: string
     route_reason: string
     secondary_skill: string | null
     secondary_reason: string | null
     environment_fingerprint: object
+    failure_ownership: string
+    diagnostic_source_files: []
+    active_profile: string | null
+    profile_case_indices: []
+    profile_features: []
+    input_route: object
   hard_constraints: []
   api_facts: []
   design_patterns: []
   failure_guidance: []
-  skill_capsules: []
+  skill_knowledge_modules: []
   exclusions: []
   provenance: []
   budget:
@@ -122,10 +135,10 @@ selected_context:
     truncated_sections: []
 ```
 
-Each `skill_capsule` has this form:
+Each `skill_knowledge_module` has this form:
 
 ```yaml
-skill_capsule:
+skill_knowledge_module:
   skill_id: string
   stage: string
   purpose: string
@@ -136,6 +149,8 @@ skill_capsule:
   exclusions: []
   excerpts:
     - source: relative/path
+      knowledge_module_id: string
+      section_id: string
       headings: []
       text: string
       origin: cannbot | adapter
@@ -156,6 +171,11 @@ skill_capsule:
 | `precision_debug` | explicit dtype/cast/accumulation/rounding/epsilon/tolerance evidence, failing/passing cases, dataflow facts | one matching trap/instrumentation section and exact implicated APIs | generic large mismatch, indexing/data-movement errors, environment and performance guidance |
 | `optimization` | correct baseline, per-case latency, operator family, architecture, current tiling/buffer design, one testable hypothesis | one family-specific and at most one common optimization | debug playbooks, unmeasured optimizations, other families, changes that relax correctness |
 
+`code_generation` is selected for the initial candidate. Later pure Kernel correctness,
+runtime, compile, and optimization repairs do not receive it automatically; their own
+stage knowledge modules carry the applicable contracts. Selected embedded sections are deduplicated
+by `knowledge_module_id + section_id` and are never partially truncated.
+
 ## 4. Audience projections
 
 ### Planner / diagnoser
@@ -168,7 +188,7 @@ Include:
 - task/platform facts;
 - project hard constraints;
 - family-specific design guidance;
-- failure cards and matching debug skill capsule when a failure exists;
+- failure cards and matching debug skill knowledge module when a failure exists;
 - brief provenance identifiers.
 
 Exclude:
@@ -213,9 +233,10 @@ Rules are ordered and deterministic:
    `kernel_design + code_generation`.
 3. Source/static/API-validation/build failure involving CUDA contamination,
    NPU tensor checks, stream, Host wrapper/link/import evidence:
-   `host_integration_debug`; generator also receives `code_generation`.
-4. Other source/static/API-validation/build failure:
-   `compile_debug`; generator also receives `code_generation`.
+   `host_integration_debug`.
+4. GM_ADDR/`__gm__`, descriptor transport, signature or cast evidence also routes
+   to `host_integration_debug` with Host/Kernel boundary ownership. Other exact
+   AscendC source/API/build failures route to `compile_debug`.
 5. Correctness-stage failure with runtime code, device exception, or
    ACL/AICORE/MTE/RUNTIME subsystem:
    `runtime_debug`.
@@ -226,8 +247,7 @@ Rules are ordered and deterministic:
    overflow/underflow, or a tolerance-boundary failure. It may be one optional
    secondary to `kernel_design` when the evidence supports both hypotheses.
 8. Valid correct baseline in optimization budget:
-   `optimization`; generator also receives `code_generation` contracts but not
-   the initial scaffold.
+   `optimization`.
 
 There is exactly one primary route. There is at most one secondary route, and
 it is empty unless current deterministic evidence states a second hypothesis.
@@ -243,7 +263,7 @@ Use category quotas rather than truncating one serialized JSON blob:
 | 1 | authority statement + hard project constraints | 2,500 | 3,000 |
 | 2 | current failure guidance | 3,000 | 4,000 |
 | 3 | exact API/header facts | 1,500 | 6,000 |
-| 4 | family design / CANNBot capsule | 4,000 | 5,000 |
+| 4 | family design / CANNBot knowledge module | 4,000 | 5,000 |
 | 5 | short examples and provenance IDs | 1,000 | 2,000 |
 
 Within a category, preserve complete facts/sections. If the next item does not
@@ -267,10 +287,9 @@ constraint, or code block.
 - All rejected skill mappings and excerpts should be traceable with a reason.
 - The same excerpt should not be repeated across planner and generator unless
   it is a hard constraint needed by both.
-- If the CANNBot repository is unavailable, external references are rejected
-  with `source_unavailable`, while path-confined CannAgent capsules remain
-  available. Hybrid retains its selected structured facts; Skills-only must
-  not fall back to structured prompt knowledge.
+- Missing manifests/documents, hash drift, unsafe paths, unknown knowledge module IDs, or
+  disallowed stages fail during Adapter initialization. Hybrid retains selected
+  structured facts; Skills-only must not fall back to structured prompt knowledge.
 
 ## 8. Runtime knowledge provenance and invalidation
 
@@ -316,7 +335,7 @@ Stages: ...
 ## Failure-specific guidance
 ...
 
-## Selected CANNBot skill capsules
+## Selected CANNBot skill knowledge modules
 ...
 
 ## Explicit exclusions
@@ -347,3 +366,18 @@ sizes, and LLM/evaluator stage latency. An unreached milestone is `null`
 
 These artifacts make baseline/new token and relevance comparisons possible
 without inspecting provider traffic.
+
+## 11. 渐进评测、单调进展与接口契约
+
+`EvalResult` 额外记录 `active_profile`、`passed_profiles`、`case_results` 和
+`passed_case_indices`。评测顺序固定为 `smoke → shape → dtype → full → benchmark`；只有
+`full` 通过才允许 `correctness=true`，只有随后获得有效正分数才建立 baseline。
+
+每轮同时持久化以下规范门：`source_valid`、`compiled`、`loaded`、`kernel_started`、
+`comparison_completed`、`full_correct`、`benchmarked`。Repair state 仅在未重现已清除错误且
+门、profile、已通过 case 集或直接诊断严格前进时接受整个 bundle，不进行逐文件拼接。
+
+首个被接受的已编译 bundle 生成 `interface_contract.json`。后续计划项默认
+`allow_interface_change=false`；候选改变 pybind 模块、Host wrapper 声明/定义或 Kernel entry 时，
+必须显式授权并重新通过编译。DIAGNOSE 计划还必须提供 `evidence_refs.line_excerpt` 和
+`falsifies`，避免在没有直接证据时重复同族假设。

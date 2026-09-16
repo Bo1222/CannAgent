@@ -41,7 +41,6 @@ workspace/
 *.env
 !.env.example
 
-# Agent.md and log files
-AGENTS.md
+# 代理规则和日志文件
 CHANGELOG.md
 .vscode/

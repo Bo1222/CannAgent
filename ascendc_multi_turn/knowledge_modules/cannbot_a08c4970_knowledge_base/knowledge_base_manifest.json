@@ -1,0 +1,1158 @@
+{
+  "schema_version": 1,
+  "knowledge_base_id": "cannbot-a08c4970-cannagent-routing-v2",
+  "upstream_commit": "a08c49706e35a400d7c77e0875bc7c72a3a79012",
+  "license": "CANN Open Software License Agreement 2.0",
+  "confidence_policy": "Static knowledge base text is Level 1 Documented. Installed headers, project source, or local compile/correctness evidence may supersede it.",
+  "documents": [
+    {
+      "knowledge_module_id": "cannbot.ascendc-api-best-practices.references.api-arithmetic",
+      "path": "docs/ascendc-api-best-practices/references/api-arithmetic.md",
+      "upstream_skill": "ascendc-api-best-practices",
+      "upstream_path": "ops/ascendc-api-best-practices/references/api-arithmetic.md",
+      "sha256": "252f2f29ea06a8fccb1f1cb5777e78ff8da5573ddb8e945eeb4f826eabeebcbe",
+      "knowledge_type": [
+        "api_constraint",
+        "best_practice",
+        "anti_pattern"
+      ],
+      "allowed_stages": [
+        "kernel_design",
+        "compile_debug",
+        "precision_debug"
+      ],
+      "conflicts_or_exclusions": [],
+      "provenance": "cannbot_upstream_documentation",
+      "confidence_level": 1
+    },
+    {
+      "knowledge_module_id": "cannbot.ascendc-api-best-practices.references.api-buffer",
+      "path": "docs/ascendc-api-best-practices/references/api-buffer.md",
+      "upstream_skill": "ascendc-api-best-practices",
+      "upstream_path": "ops/ascendc-api-best-practices/references/api-buffer.md",
+      "sha256": "2903b9183a2d97e0a0a7901d1f34c73820c34e830fb1d8980f931be49959ed88",
+      "knowledge_type": [
+        "api_constraint",
+        "best_practice",
+        "anti_pattern"
+      ],
+      "allowed_stages": [
+        "kernel_design",
+        "compile_debug",
+        "precision_debug"
+      ],
+      "conflicts_or_exclusions": [],
+      "provenance": "cannbot_upstream_documentation",
+      "confidence_level": 1
+    },
+    {
+      "knowledge_module_id": "cannbot.ascendc-api-best-practices.references.api-datacopy",
+      "path": "docs/ascendc-api-best-practices/references/api-datacopy.md",
+      "upstream_skill": "ascendc-api-best-practices",
+      "upstream_path": "ops/ascendc-api-best-practices/references/api-datacopy.md",
+      "sha256": "839d3f90a4e481d37ccd72e602777713e68a63da627dd7b69d787cfe9504077c",
+      "knowledge_type": [
+        "api_constraint",
+        "best_practice",
+        "anti_pattern"
+      ],
+      "allowed_stages": [
+        "kernel_design",
+        "compile_debug",
+        "precision_debug"
+      ],
+      "conflicts_or_exclusions": [],
+      "provenance": "cannbot_upstream_documentation",
+      "confidence_level": 1
+    },
+    {
+      "knowledge_module_id": "cannbot.ascendc-api-best-practices.references.api-matmul",
+      "path": "docs/ascendc-api-best-practices/references/api-matmul.md",
+      "upstream_skill": "ascendc-api-best-practices",
+      "upstream_path": "ops/ascendc-api-best-practices/references/api-matmul.md",
+      "sha256": "83cf8ddb0662f63284d8e5d0953f542179f252aa8afea06648930ef994b3fc10",
+      "knowledge_type": [
+        "api_constraint",
+        "best_practice",
+        "anti_pattern"
+      ],
+      "allowed_stages": [
+        "kernel_design",
+        "compile_debug",
+        "precision_debug"
+      ],
+      "conflicts_or_exclusions": [],
+      "provenance": "cannbot_upstream_documentation",
+      "confidence_level": 1
+    },
+    {
+      "knowledge_module_id": "cannbot.ascendc-api-best-practices.references.api-pipeline",
+      "path": "docs/ascendc-api-best-practices/references/api-pipeline.md",
+      "upstream_skill": "ascendc-api-best-practices",
+      "upstream_path": "ops/ascendc-api-best-practices/references/api-pipeline.md",
+      "sha256": "52537890e5b946ba65199402ed5b9f62f7db53ffaf764f811d5468b601393ad9",
+      "knowledge_type": [
+        "api_constraint",
+        "best_practice",
+        "anti_pattern"
+      ],
+      "allowed_stages": [
+        "kernel_design",
+        "compile_debug",
+        "precision_debug"
+      ],
+      "conflicts_or_exclusions": [],
+      "provenance": "cannbot_upstream_documentation",
+      "confidence_level": 1
+    },
+    {
+      "knowledge_module_id": "cannbot.ascendc-api-best-practices.references.api-precision",
+      "path": "docs/ascendc-api-best-practices/references/api-precision.md",
+      "upstream_skill": "ascendc-api-best-practices",
+      "upstream_path": "ops/ascendc-api-best-practices/references/api-precision.md",
+      "sha256": "e8491900ebad0fd7966627f36dbfcdc2eebbd4f133c751542c0bee041380f26d",
+      "knowledge_type": [
+        "api_constraint",
+        "best_practice",
+        "anti_pattern"
+      ],
+      "allowed_stages": [
+        "kernel_design",
+        "compile_debug",
+        "precision_debug"
+      ],
+      "conflicts_or_exclusions": [],
+      "provenance": "cannbot_upstream_documentation",
+      "confidence_level": 1
+    },
+    {
+      "knowledge_module_id": "cannbot.ascendc-api-best-practices.references.api-quickref",
+      "path": "docs/ascendc-api-best-practices/references/api-quickref.md",
+      "upstream_skill": "ascendc-api-best-practices",
+      "upstream_path": "ops/ascendc-api-best-practices/references/api-quickref.md",
+      "sha256": "a2657452e52dfc5fab6810c249524900a49118023058a71056a57600de87793a",
+      "knowledge_type": [
+        "api_constraint",
+        "best_practice",
+        "anti_pattern"
+      ],
+      "allowed_stages": [
+        "kernel_design",
+        "compile_debug",
+        "precision_debug"
+      ],
+      "conflicts_or_exclusions": [],
+      "provenance": "cannbot_upstream_documentation",
+      "confidence_level": 1
+    },
+    {
+      "knowledge_module_id": "cannbot.ascendc-api-best-practices.references.api-reduce-pattern",
+      "path": "docs/ascendc-api-best-practices/references/api-reduce-pattern.md",
+      "upstream_skill": "ascendc-api-best-practices",
+      "upstream_path": "ops/ascendc-api-best-practices/references/api-reduce-pattern.md",
+      "sha256": "1a1ebbc6b56bf5753b0b2a0731e773694d52c663c21cda12c8eda2c2b690dc19",
+      "knowledge_type": [
+        "api_constraint",
+        "best_practice",
+        "anti_pattern"
+      ],
+      "allowed_stages": [
+        "kernel_design",
+        "compile_debug",
+        "precision_debug"
+      ],
+      "conflicts_or_exclusions": [],
+      "provenance": "cannbot_upstream_documentation",
+      "confidence_level": 1
+    },
+    {
+      "knowledge_module_id": "cannbot.ascendc-api-best-practices.references.api-reduce",
+      "path": "docs/ascendc-api-best-practices/references/api-reduce.md",
+      "upstream_skill": "ascendc-api-best-practices",
+      "upstream_path": "ops/ascendc-api-best-practices/references/api-reduce.md",
+      "sha256": "1fcf91ef79a382d737c9a0cb0645485e062595e693979329d508b1700724d037",
+      "knowledge_type": [
+        "api_constraint",
+        "best_practice",
+        "anti_pattern"
+      ],
+      "allowed_stages": [
+        "kernel_design",
+        "compile_debug",
+        "precision_debug"
+      ],
+      "conflicts_or_exclusions": [],
+      "provenance": "cannbot_upstream_documentation",
+      "confidence_level": 1
+    },
+    {
+      "knowledge_module_id": "cannbot.ascendc-api-best-practices.references.api-repeat-limits",
+      "path": "docs/ascendc-api-best-practices/references/api-repeat-limits.md",
+      "upstream_skill": "ascendc-api-best-practices",
+      "upstream_path": "ops/ascendc-api-best-practices/references/api-repeat-limits.md",
+      "sha256": "ebe0032a2cef691f0867f9da144ed59b1098f4413f8b38ccd185fc821c79152c",
+      "knowledge_type": [
+        "api_constraint",
+        "best_practice",
+        "anti_pattern"
+      ],
+      "allowed_stages": [
+        "kernel_design",
+        "compile_debug",
+        "precision_debug"
+      ],
+      "conflicts_or_exclusions": [],
+      "provenance": "cannbot_upstream_documentation",
+      "confidence_level": 1
+    },
+    {
+      "knowledge_module_id": "cannbot.ascendc-api-best-practices.references.api-restrictions",
+      "path": "docs/ascendc-api-best-practices/references/api-restrictions.md",
+      "upstream_skill": "ascendc-api-best-practices",
+      "upstream_path": "ops/ascendc-api-best-practices/references/api-restrictions.md",
+      "sha256": "dc5377e82605a2a9f69958964a9626392bd9cde7ede1827697525554197829f9",
+      "knowledge_type": [
+        "api_constraint",
+        "best_practice",
+        "anti_pattern"
+      ],
+      "allowed_stages": [
+        "kernel_design",
+        "compile_debug",
+        "precision_debug"
+      ],
+      "conflicts_or_exclusions": [],
+      "provenance": "cannbot_upstream_documentation",
+      "confidence_level": 1
+    },
+    {
+      "knowledge_module_id": "cannbot.ascendc-api-best-practices.references.api-transpose",
+      "path": "docs/ascendc-api-best-practices/references/api-transpose.md",
+      "upstream_skill": "ascendc-api-best-practices",
+      "upstream_path": "ops/ascendc-api-best-practices/references/api-transpose.md",
+      "sha256": "6f832b6b7b280e01b5502d1f7f305aecfeb9654919bdf521e799b952546c2ea2",
+      "knowledge_type": [
+        "api_constraint",
+        "best_practice",
+        "anti_pattern"
+      ],
+      "allowed_stages": [
+        "kernel_design",
+        "compile_debug",
+        "precision_debug"
+      ],
+      "conflicts_or_exclusions": [],
+      "provenance": "cannbot_upstream_documentation",
+      "confidence_level": 1
+    },
+    {
+      "knowledge_module_id": "cannbot.ascendc-crash-debug.references.crash_workflow",
+      "path": "docs/ascendc-crash-debug/references/crash_workflow.md",
+      "upstream_skill": "ascendc-crash-debug",
+      "upstream_path": "ops/ascendc-crash-debug/references/crash_workflow.md",
+      "sha256": "6eb94766920d75355fca85bbbbddd634f48922ac0563447e96a8358b11a97af2",
+      "knowledge_type": [
+        "runtime_diagnostic",
+        "memory_safety"
+      ],
+      "allowed_stages": [
+        "runtime_debug"
+      ],
+      "conflicts_or_exclusions": [
+        "workflow_commands"
+      ],
+      "provenance": "cannbot_upstream_documentation",
+      "confidence_level": 1
+    },
+    {
+      "knowledge_module_id": "cannbot.ascendc-direct-invoke-template.references.kernel_launch_details",
+      "path": "docs/ascendc-direct-invoke-template/references/kernel_launch_details.md",
+      "upstream_skill": "ascendc-direct-invoke-template",
+      "upstream_path": "ops/ascendc-direct-invoke-template/references/kernel_launch_details.md",
+      "sha256": "eb945b3fbd64427384aa689afb81699e231df87c54a7b3ae0070469be48d5d7c",
+      "knowledge_type": [
+        "launch_pattern",
+        "dataflow"
+      ],
+      "allowed_stages": [
+        "code_generation",
+        "host_integration_debug"
+      ],
+      "conflicts_or_exclusions": [
+        "project_scaffold",
+        "workflow_commands"
+      ],
+      "provenance": "cannbot_upstream_documentation",
+      "confidence_level": 1
+    },
+    {
+      "knowledge_module_id": "cannbot.ascendc-performance-best-practices.references.broadcast.broadcast_design",
+      "path": "docs/ascendc-performance-best-practices/references/broadcast/broadcast_design.md",
+      "upstream_skill": "ascendc-performance-best-practices",
+      "upstream_path": "ops/ascendc-performance-best-practices/references/broadcast/broadcast_design.md",
+      "sha256": "149c3fa0bca35e53d4a6d354ca7adcf4175c70d59321db9ec26dad90c572c06c",
+      "knowledge_type": [
+        "performance_pattern",
+        "design_rule"
+      ],
+      "allowed_stages": [
+        "kernel_design",
+        "optimization"
+      ],
+      "conflicts_or_exclusions": [],
+      "provenance": "cannbot_upstream_documentation",
+      "confidence_level": 1
+    },
+    {
+      "knowledge_module_id": "cannbot.ascendc-performance-best-practices.references.broadcast.datacopypad_design",
+      "path": "docs/ascendc-performance-best-practices/references/broadcast/datacopypad_design.md",
+      "upstream_skill": "ascendc-performance-best-practices",
+      "upstream_path": "ops/ascendc-performance-best-practices/references/broadcast/datacopypad_design.md",
+      "sha256": "3c2e4a8f00297175b30e3abfa3fb853525bcf6a1d5315de758f188a23c34b31b",
+      "knowledge_type": [
+        "performance_pattern",
+        "design_rule"
+      ],
+      "allowed_stages": [
+        "kernel_design",
+        "optimization"
+      ],
+      "conflicts_or_exclusions": [],
+      "provenance": "cannbot_upstream_documentation",
+      "confidence_level": 1
+    },
+    {
+      "knowledge_module_id": "cannbot.ascendc-performance-best-practices.references.broadcast.nddma_design",
+      "path": "docs/ascendc-performance-best-practices/references/broadcast/nddma_design.md",
+      "upstream_skill": "ascendc-performance-best-practices",
+      "upstream_path": "ops/ascendc-performance-best-practices/references/broadcast/nddma_design.md",
+      "sha256": "3bbabda0c2908330bb643d5e7fb87bbabf0ba941f8514f530234eac726c31d24",
+      "knowledge_type": [
+        "performance_pattern",
+        "design_rule"
+      ],
+      "allowed_stages": [
+        "kernel_design",
+        "optimization"
+      ],
+      "conflicts_or_exclusions": [],
+      "provenance": "cannbot_upstream_documentation",
+      "confidence_level": 1
+    },
+    {
+      "knowledge_module_id": "cannbot.ascendc-performance-best-practices.references.broadcast.onedim_design",
+      "path": "docs/ascendc-performance-best-practices/references/broadcast/onedim_design.md",
+      "upstream_skill": "ascendc-performance-best-practices",
+      "upstream_path": "ops/ascendc-performance-best-practices/references/broadcast/onedim_design.md",
+      "sha256": "52ae6a42314051796243c356de0b26e00a80dfa6a5d6e7c18792478190b95f3f",
+      "knowledge_type": [
+        "performance_pattern",
+        "design_rule"
+      ],
+      "allowed_stages": [
+        "kernel_design",
+        "optimization"
+      ],
+      "conflicts_or_exclusions": [],
+      "provenance": "cannbot_upstream_documentation",
+      "confidence_level": 1
+    },
+    {
+      "knowledge_module_id": "cannbot.ascendc-performance-best-practices.references.broadcast.ub_broadcast_design",
+      "path": "docs/ascendc-performance-best-practices/references/broadcast/ub_broadcast_design.md",
+      "upstream_skill": "ascendc-performance-best-practices",
+      "upstream_path": "ops/ascendc-performance-best-practices/references/broadcast/ub_broadcast_design.md",
+      "sha256": "4c2c3690ad30388e18b904354ca5eca813dda8f192efb224237bcd2010fef41e",
+      "knowledge_type": [
+        "performance_pattern",
+        "design_rule"
+      ],
+      "allowed_stages": [
+        "kernel_design",
+        "optimization"
+      ],
+      "conflicts_or_exclusions": [],
+      "provenance": "cannbot_upstream_documentation",
+      "confidence_level": 1
+    },
+    {
+      "knowledge_module_id": "cannbot.ascendc-performance-best-practices.references.common.core_shrink_design",
+      "path": "docs/ascendc-performance-best-practices/references/common/core_shrink_design.md",
+      "upstream_skill": "ascendc-performance-best-practices",
+      "upstream_path": "ops/ascendc-performance-best-practices/references/common/core_shrink_design.md",
+      "sha256": "e26a7b99ae70043815322d6b1eb4d6d601aab621ac33166aa2572ab68c056925",
+      "knowledge_type": [
+        "performance_pattern",
+        "design_rule"
+      ],
+      "allowed_stages": [
+        "optimization"
+      ],
+      "conflicts_or_exclusions": [],
+      "provenance": "cannbot_upstream_documentation",
+      "confidence_level": 1
+    },
+    {
+      "knowledge_module_id": "cannbot.ascendc-performance-best-practices.references.common.datacopy_optimization_design",
+      "path": "docs/ascendc-performance-best-practices/references/common/datacopy_optimization_design.md",
+      "upstream_skill": "ascendc-performance-best-practices",
+      "upstream_path": "ops/ascendc-performance-best-practices/references/common/datacopy_optimization_design.md",
+      "sha256": "e8cc9f2915a016c276cf431de51a66748779c510f82de2cc293e523beaed679e",
+      "knowledge_type": [
+        "performance_pattern",
+        "design_rule"
+      ],
+      "allowed_stages": [
+        "optimization"
+      ],
+      "conflicts_or_exclusions": [],
+      "provenance": "cannbot_upstream_documentation",
+      "confidence_level": 1
+    },
+    {
+      "knowledge_module_id": "cannbot.ascendc-performance-best-practices.references.common.tail_block_design",
+      "path": "docs/ascendc-performance-best-practices/references/common/tail_block_design.md",
+      "upstream_skill": "ascendc-performance-best-practices",
+      "upstream_path": "ops/ascendc-performance-best-practices/references/common/tail_block_design.md",
+      "sha256": "2105fc001000d71355ae9c8e4bc3655ae5497ca62aae757c768b468b0e97fa8c",
+      "knowledge_type": [
+        "performance_pattern",
+        "design_rule"
+      ],
+      "allowed_stages": [
+        "optimization"
+      ],
+      "conflicts_or_exclusions": [],
+      "provenance": "cannbot_upstream_documentation",
+      "confidence_level": 1
+    },
+    {
+      "knowledge_module_id": "cannbot.ascendc-performance-best-practices.references.conversion.guide",
+      "path": "docs/ascendc-performance-best-practices/references/conversion/guide.md",
+      "upstream_skill": "ascendc-performance-best-practices",
+      "upstream_path": "ops/ascendc-performance-best-practices/references/conversion/guide.md",
+      "sha256": "1e89e7fbfd73700349f48555d8a6fde84dd81b1b890ad4febd6213c25fb540ab",
+      "knowledge_type": [
+        "performance_pattern",
+        "design_rule"
+      ],
+      "allowed_stages": [
+        "optimization"
+      ],
+      "conflicts_or_exclusions": [],
+      "provenance": "cannbot_upstream_documentation",
+      "confidence_level": 1
+    },
+    {
+      "knowledge_module_id": "cannbot.ascendc-performance-best-practices.references.elementwise.double_buffer_design",
+      "path": "docs/ascendc-performance-best-practices/references/elementwise/double_buffer_design.md",
+      "upstream_skill": "ascendc-performance-best-practices",
+      "upstream_path": "ops/ascendc-performance-best-practices/references/elementwise/double_buffer_design.md",
+      "sha256": "142cc0055136ff3bc203672f4c4365cf4f09b41a175a7bfa1d89f3df3b2500ae",
+      "knowledge_type": [
+        "performance_pattern",
+        "design_rule"
+      ],
+      "allowed_stages": [
+        "optimization"
+      ],
+      "conflicts_or_exclusions": [],
+      "provenance": "cannbot_upstream_documentation",
+      "confidence_level": 1
+    },
+    {
+      "knowledge_module_id": "cannbot.ascendc-performance-best-practices.references.elementwise.vector_efficiency_design",
+      "path": "docs/ascendc-performance-best-practices/references/elementwise/vector_efficiency_design.md",
+      "upstream_skill": "ascendc-performance-best-practices",
+      "upstream_path": "ops/ascendc-performance-best-practices/references/elementwise/vector_efficiency_design.md",
+      "sha256": "9f427095336cbb2e8024b29f664648b75abfe3b499471b999b30867d5c29213a",
+      "knowledge_type": [
+        "performance_pattern",
+        "design_rule"
+      ],
+      "allowed_stages": [
+        "optimization"
+      ],
+      "conflicts_or_exclusions": [],
+      "provenance": "cannbot_upstream_documentation",
+      "confidence_level": 1
+    },
+    {
+      "knowledge_module_id": "cannbot.ascendc-performance-best-practices.references.matmul.guide",
+      "path": "docs/ascendc-performance-best-practices/references/matmul/guide.md",
+      "upstream_skill": "ascendc-performance-best-practices",
+      "upstream_path": "ops/ascendc-performance-best-practices/references/matmul/guide.md",
+      "sha256": "25ebd59754e5fb5f87265f0d59aa8888fd244993e9193111102c5ca53e3c8bef",
+      "knowledge_type": [
+        "performance_pattern",
+        "design_rule"
+      ],
+      "allowed_stages": [
+        "optimization"
+      ],
+      "conflicts_or_exclusions": [],
+      "provenance": "cannbot_upstream_documentation",
+      "confidence_level": 1
+    },
+    {
+      "knowledge_module_id": "cannbot.ascendc-performance-best-practices.references.reduce.guide",
+      "path": "docs/ascendc-performance-best-practices/references/reduce/guide.md",
+      "upstream_skill": "ascendc-performance-best-practices",
+      "upstream_path": "ops/ascendc-performance-best-practices/references/reduce/guide.md",
+      "sha256": "22e05112789cfef3c23317fabecfecf7b2519da0ede57d568501a492aa9df0e9",
+      "knowledge_type": [
+        "performance_pattern",
+        "design_rule"
+      ],
+      "allowed_stages": [
+        "optimization"
+      ],
+      "conflicts_or_exclusions": [],
+      "provenance": "cannbot_upstream_documentation",
+      "confidence_level": 1
+    },
+    {
+      "knowledge_module_id": "cannbot.ascendc-performance-best-practices.references.simt.optimization-guide",
+      "path": "docs/ascendc-performance-best-practices/references/simt/optimization-guide.md",
+      "upstream_skill": "ascendc-performance-best-practices",
+      "upstream_path": "ops/ascendc-performance-best-practices/references/simt/optimization-guide.md",
+      "sha256": "61f04fbd6e2a6957395fb67d82ae06f7dcbd5476e5fadf8834bf625897b694c4",
+      "knowledge_type": [
+        "performance_pattern",
+        "design_rule"
+      ],
+      "allowed_stages": [
+        "optimization"
+      ],
+      "conflicts_or_exclusions": [],
+      "provenance": "cannbot_upstream_documentation",
+      "confidence_level": 1
+    },
+    {
+      "knowledge_module_id": "cannbot.ascendc-performance-best-practices.references.sort.radix_sort",
+      "path": "docs/ascendc-performance-best-practices/references/sort/radix_sort.md",
+      "upstream_skill": "ascendc-performance-best-practices",
+      "upstream_path": "ops/ascendc-performance-best-practices/references/sort/radix_sort.md",
+      "sha256": "eb28ec5257b760b1aa84bef42237242118c7410bf9fb2602ab2217589a17301f",
+      "knowledge_type": [
+        "performance_pattern",
+        "design_rule"
+      ],
+      "allowed_stages": [
+        "optimization"
+      ],
+      "conflicts_or_exclusions": [],
+      "provenance": "cannbot_upstream_documentation",
+      "confidence_level": 1
+    },
+    {
+      "knowledge_module_id": "cannbot.ascendc-precision-debug.references.ascendc-dumptensor",
+      "path": "docs/ascendc-precision-debug/references/ascendc-dumptensor.md",
+      "upstream_skill": "ascendc-precision-debug",
+      "upstream_path": "ops/ascendc-precision-debug/references/ascendc-dumptensor.md",
+      "sha256": "25dab481fa355579bf69c10c46defe78c6e1d41b19b2b5110aaf44dae51b5db2",
+      "knowledge_type": [
+        "precision_rule",
+        "diagnostic_pattern"
+      ],
+      "allowed_stages": [
+        "precision_debug"
+      ],
+      "conflicts_or_exclusions": [
+        "workflow_commands"
+      ],
+      "provenance": "cannbot_upstream_documentation",
+      "confidence_level": 1
+    },
+    {
+      "knowledge_module_id": "cannbot.ascendc-precision-debug.references.binary-search-debug",
+      "path": "docs/ascendc-precision-debug/references/binary-search-debug.md",
+      "upstream_skill": "ascendc-precision-debug",
+      "upstream_path": "ops/ascendc-precision-debug/references/binary-search-debug.md",
+      "sha256": "d838105d66a738a46b0561ccc84188ba81ddff424c147c401635bf15273793c6",
+      "knowledge_type": [
+        "precision_rule",
+        "diagnostic_pattern"
+      ],
+      "allowed_stages": [
+        "precision_debug"
+      ],
+      "conflicts_or_exclusions": [
+        "workflow_commands"
+      ],
+      "provenance": "cannbot_upstream_documentation",
+      "confidence_level": 1
+    },
+    {
+      "knowledge_module_id": "cannbot.ascendc-precision-debug.references.common-traps",
+      "path": "docs/ascendc-precision-debug/references/common-traps.md",
+      "upstream_skill": "ascendc-precision-debug",
+      "upstream_path": "ops/ascendc-precision-debug/references/common-traps.md",
+      "sha256": "2685a3001544a06cdcf3947499b9173bfdb4939692900b9b1b5a972a3824d797",
+      "knowledge_type": [
+        "precision_rule",
+        "diagnostic_pattern"
+      ],
+      "allowed_stages": [
+        "precision_debug"
+      ],
+      "conflicts_or_exclusions": [
+        "workflow_commands"
+      ],
+      "provenance": "cannbot_upstream_documentation",
+      "confidence_level": 1
+    },
+    {
+      "knowledge_module_id": "cannbot.ascendc-precision-debug.references.data-comparison",
+      "path": "docs/ascendc-precision-debug/references/data-comparison.md",
+      "upstream_skill": "ascendc-precision-debug",
+      "upstream_path": "ops/ascendc-precision-debug/references/data-comparison.md",
+      "sha256": "d1febf74f639a0f06387b7787b6f7374425d65f29a41ff50a081f8b78fd509e1",
+      "knowledge_type": [
+        "precision_rule",
+        "diagnostic_pattern"
+      ],
+      "allowed_stages": [
+        "precision_debug"
+      ],
+      "conflicts_or_exclusions": [
+        "workflow_commands"
+      ],
+      "provenance": "cannbot_upstream_documentation",
+      "confidence_level": 1
+    },
+    {
+      "knowledge_module_id": "cannbot.ascendc-registry-invoke-to-direct-invoke.SKILL",
+      "path": "docs/ascendc-registry-invoke-to-direct-invoke/SKILL.md",
+      "upstream_skill": "ascendc-registry-invoke-to-direct-invoke",
+      "upstream_path": "ops/ascendc-registry-invoke-to-direct-invoke/SKILL.md",
+      "sha256": "4ba575b62c63b7c2007b07c791ccb0e0cabf2003df01d3b254168f6d35aa8496",
+      "knowledge_type": [
+        "launch_abi",
+        "migration_constraint"
+      ],
+      "allowed_stages": [
+        "code_generation",
+        "host_integration_debug",
+        "compile_debug"
+      ],
+      "conflicts_or_exclusions": [
+        "registry_workflow",
+        "copy_commands"
+      ],
+      "provenance": "cannbot_upstream_documentation",
+      "confidence_level": 1
+    },
+    {
+      "knowledge_module_id": "cannbot.ascendc-registry-invoke-to-direct-invoke.references.custom-op-to-kernel-launch-checklist",
+      "path": "docs/ascendc-registry-invoke-to-direct-invoke/references/custom-op-to-kernel-launch-checklist.md",
+      "upstream_skill": "ascendc-registry-invoke-to-direct-invoke",
+      "upstream_path": "ops/ascendc-registry-invoke-to-direct-invoke/references/custom-op-to-kernel-launch-checklist.md",
+      "sha256": "589fa635fce011b10225f5ad04e0b9d102803073370c36e8eb4b99663d5454b8",
+      "knowledge_type": [
+        "launch_abi",
+        "migration_constraint"
+      ],
+      "allowed_stages": [
+        "code_generation",
+        "host_integration_debug",
+        "compile_debug"
+      ],
+      "conflicts_or_exclusions": [
+        "registry_workflow",
+        "copy_commands"
+      ],
+      "provenance": "cannbot_upstream_documentation",
+      "confidence_level": 1
+    },
+    {
+      "knowledge_module_id": "cannbot.ascendc-registry-invoke-to-direct-invoke.references.host-driver-template",
+      "path": "docs/ascendc-registry-invoke-to-direct-invoke/references/host-driver-template.md",
+      "upstream_skill": "ascendc-registry-invoke-to-direct-invoke",
+      "upstream_path": "ops/ascendc-registry-invoke-to-direct-invoke/references/host-driver-template.md",
+      "sha256": "078218d255cf22d0fbc8c528df5e2bfaf45efb774eccb2ba98e779480246aa4b",
+      "knowledge_type": [
+        "launch_abi",
+        "migration_constraint"
+      ],
+      "allowed_stages": [
+        "code_generation",
+        "host_integration_debug",
+        "compile_debug"
+      ],
+      "conflicts_or_exclusions": [
+        "registry_workflow",
+        "copy_commands"
+      ],
+      "provenance": "cannbot_upstream_documentation",
+      "confidence_level": 1
+    },
+    {
+      "knowledge_module_id": "cannbot.ascendc-runtime-debug.references.debug_workflow",
+      "path": "docs/ascendc-runtime-debug/references/debug_workflow.md",
+      "upstream_skill": "ascendc-runtime-debug",
+      "upstream_path": "ops/ascendc-runtime-debug/references/debug_workflow.md",
+      "sha256": "d848f5bb7466a44d86a263cb1c4867bf78b1ae022ea5a5010d15939841d65eff",
+      "knowledge_type": [
+        "runtime_diagnostic",
+        "memory_safety"
+      ],
+      "allowed_stages": [
+        "runtime_debug"
+      ],
+      "conflicts_or_exclusions": [
+        "workflow_commands"
+      ],
+      "provenance": "cannbot_upstream_documentation",
+      "confidence_level": 1
+    },
+    {
+      "knowledge_module_id": "cannbot.ascendc-runtime-debug.references.error_codes",
+      "path": "docs/ascendc-runtime-debug/references/error_codes.md",
+      "upstream_skill": "ascendc-runtime-debug",
+      "upstream_path": "ops/ascendc-runtime-debug/references/error_codes.md",
+      "sha256": "8970dd36440ead4f1f5348d407d60fff012e15b1406df5a7f6ca68b1f4902b93",
+      "knowledge_type": [
+        "runtime_diagnostic",
+        "memory_safety"
+      ],
+      "allowed_stages": [
+        "runtime_debug"
+      ],
+      "conflicts_or_exclusions": [
+        "workflow_commands"
+      ],
+      "provenance": "cannbot_upstream_documentation",
+      "confidence_level": 1
+    },
+    {
+      "knowledge_module_id": "cannbot.ascendc-runtime-debug.references.kernel_binary_debug",
+      "path": "docs/ascendc-runtime-debug/references/kernel_binary_debug.md",
+      "upstream_skill": "ascendc-runtime-debug",
+      "upstream_path": "ops/ascendc-runtime-debug/references/kernel_binary_debug.md",
+      "sha256": "39cd2edfc427b7ac0a8b8cd88dae4a1acd6718ef07927189c9a09b7fe2c56a10",
+      "knowledge_type": [
+        "runtime_diagnostic",
+        "memory_safety"
+      ],
+      "allowed_stages": [
+        "runtime_debug"
+      ],
+      "conflicts_or_exclusions": [
+        "workflow_commands"
+      ],
+      "provenance": "cannbot_upstream_documentation",
+      "confidence_level": 1
+    },
+    {
+      "knowledge_module_id": "cannbot.ascendc-sync-audit.references.fix-patterns",
+      "path": "docs/ascendc-sync-audit/references/fix-patterns.md",
+      "upstream_skill": "ascendc-sync-audit",
+      "upstream_path": "ops/ascendc-sync-audit/references/fix-patterns.md",
+      "sha256": "6d610d926d914e5c778216f2df7958e1d73052450c93f01052466114426839df",
+      "knowledge_type": [
+        "synchronization_rule",
+        "pipeline_pattern"
+      ],
+      "allowed_stages": [
+        "kernel_design",
+        "runtime_debug"
+      ],
+      "conflicts_or_exclusions": [
+        "audit_workflow",
+        "scripts"
+      ],
+      "provenance": "cannbot_upstream_documentation",
+      "confidence_level": 1
+    },
+    {
+      "knowledge_module_id": "cannbot.ascendc-sync-audit.references.sync-checklist",
+      "path": "docs/ascendc-sync-audit/references/sync-checklist.md",
+      "upstream_skill": "ascendc-sync-audit",
+      "upstream_path": "ops/ascendc-sync-audit/references/sync-checklist.md",
+      "sha256": "03991c1ce4066192fef7b46616bd4a26971d25ae1155acda33633f849025fa64",
+      "knowledge_type": [
+        "synchronization_rule",
+        "pipeline_pattern"
+      ],
+      "allowed_stages": [
+        "kernel_design",
+        "runtime_debug"
+      ],
+      "conflicts_or_exclusions": [
+        "audit_workflow",
+        "scripts"
+      ],
+      "provenance": "cannbot_upstream_documentation",
+      "confidence_level": 1
+    },
+    {
+      "knowledge_module_id": "cannbot.ascendc-sync-audit.references.sync-mechanisms",
+      "path": "docs/ascendc-sync-audit/references/sync-mechanisms.md",
+      "upstream_skill": "ascendc-sync-audit",
+      "upstream_path": "ops/ascendc-sync-audit/references/sync-mechanisms.md",
+      "sha256": "d5dd5b600f4878cad79a208f9d506d0fbf6331193a1d9df1b712a10aa3f30e43",
+      "knowledge_type": [
+        "synchronization_rule",
+        "pipeline_pattern"
+      ],
+      "allowed_stages": [
+        "kernel_design",
+        "runtime_debug"
+      ],
+      "conflicts_or_exclusions": [
+        "audit_workflow",
+        "scripts"
+      ],
+      "provenance": "cannbot_upstream_documentation",
+      "confidence_level": 1
+    },
+    {
+      "knowledge_module_id": "cannbot.ascendc-tiling-design.references.broadcast.dynamic-ub-broadcast",
+      "path": "docs/ascendc-tiling-design/references/broadcast/dynamic-ub-broadcast.md",
+      "upstream_skill": "ascendc-tiling-design",
+      "upstream_path": "ops/ascendc-tiling-design/references/broadcast/dynamic-ub-broadcast.md",
+      "sha256": "8d0fe5304c1399385b3faaf1964f22717f9ee236f1912ecf130f62907d5f2abc",
+      "knowledge_type": [
+        "design_rule",
+        "algorithm",
+        "formula"
+      ],
+      "allowed_stages": [
+        "kernel_design",
+        "optimization"
+      ],
+      "conflicts_or_exclusions": [],
+      "provenance": "cannbot_upstream_documentation",
+      "confidence_level": 1
+    },
+    {
+      "knowledge_module_id": "cannbot.ascendc-tiling-design.references.broadcast.nddma-broadcast",
+      "path": "docs/ascendc-tiling-design/references/broadcast/nddma-broadcast.md",
+      "upstream_skill": "ascendc-tiling-design",
+      "upstream_path": "ops/ascendc-tiling-design/references/broadcast/nddma-broadcast.md",
+      "sha256": "b7a1aca510fde5d007325f3df3842901fb5f6a0d68fb823633a4f6f4b5344c75",
+      "knowledge_type": [
+        "design_rule",
+        "algorithm",
+        "formula"
+      ],
+      "allowed_stages": [
+        "kernel_design",
+        "optimization"
+      ],
+      "conflicts_or_exclusions": [],
+      "provenance": "cannbot_upstream_documentation",
+      "confidence_level": 1
+    },
+    {
+      "knowledge_module_id": "cannbot.ascendc-tiling-design.references.broadcast.onedim",
+      "path": "docs/ascendc-tiling-design/references/broadcast/onedim.md",
+      "upstream_skill": "ascendc-tiling-design",
+      "upstream_path": "ops/ascendc-tiling-design/references/broadcast/onedim.md",
+      "sha256": "9b06639c66acdd912d39289720aa2ec668c9f4d1df7f423c9f601c2ce63a5738",
+      "knowledge_type": [
+        "design_rule",
+        "algorithm",
+        "formula"
+      ],
+      "allowed_stages": [
+        "kernel_design",
+        "optimization"
+      ],
+      "conflicts_or_exclusions": [],
+      "provenance": "cannbot_upstream_documentation",
+      "confidence_level": 1
+    },
+    {
+      "knowledge_module_id": "cannbot.ascendc-tiling-design.references.broadcast.patterns",
+      "path": "docs/ascendc-tiling-design/references/broadcast/patterns.md",
+      "upstream_skill": "ascendc-tiling-design",
+      "upstream_path": "ops/ascendc-tiling-design/references/broadcast/patterns.md",
+      "sha256": "a5da6eee04624b005022cc13135f23c900c6adda91938e0e53464b9d13e928ca",
+      "knowledge_type": [
+        "design_rule",
+        "algorithm",
+        "formula"
+      ],
+      "allowed_stages": [
+        "kernel_design",
+        "optimization"
+      ],
+      "conflicts_or_exclusions": [],
+      "provenance": "cannbot_upstream_documentation",
+      "confidence_level": 1
+    },
+    {
+      "knowledge_module_id": "cannbot.ascendc-tiling-design.references.broadcast.ub-broadcast",
+      "path": "docs/ascendc-tiling-design/references/broadcast/ub-broadcast.md",
+      "upstream_skill": "ascendc-tiling-design",
+      "upstream_path": "ops/ascendc-tiling-design/references/broadcast/ub-broadcast.md",
+      "sha256": "4aa3bffcf13401bfa2e2f2d13525a23bb107cf7ebf50f900db54bb08dccaa6ab",
+      "knowledge_type": [
+        "design_rule",
+        "algorithm",
+        "formula"
+      ],
+      "allowed_stages": [
+        "kernel_design",
+        "optimization"
+      ],
+      "conflicts_or_exclusions": [],
+      "provenance": "cannbot_upstream_documentation",
+      "confidence_level": 1
+    },
+    {
+      "knowledge_module_id": "cannbot.ascendc-tiling-design.references.conversion.patterns",
+      "path": "docs/ascendc-tiling-design/references/conversion/patterns.md",
+      "upstream_skill": "ascendc-tiling-design",
+      "upstream_path": "ops/ascendc-tiling-design/references/conversion/patterns.md",
+      "sha256": "3b11c42fec83631ee8b2c26eefd3ac7b16b2606b6a09ea7ad15991c0b806e306",
+      "knowledge_type": [
+        "design_rule",
+        "algorithm",
+        "formula"
+      ],
+      "allowed_stages": [
+        "kernel_design",
+        "optimization"
+      ],
+      "conflicts_or_exclusions": [],
+      "provenance": "cannbot_upstream_documentation",
+      "confidence_level": 1
+    },
+    {
+      "knowledge_module_id": "cannbot.ascendc-tiling-design.references.elewise.patterns",
+      "path": "docs/ascendc-tiling-design/references/elewise/patterns.md",
+      "upstream_skill": "ascendc-tiling-design",
+      "upstream_path": "ops/ascendc-tiling-design/references/elewise/patterns.md",
+      "sha256": "8a1351ff5295af67a53383682a4264aca6a19a113a2cdb47158938f73bae0cec",
+      "knowledge_type": [
+        "design_rule",
+        "algorithm",
+        "formula"
+      ],
+      "allowed_stages": [
+        "kernel_design",
+        "optimization"
+      ],
+      "conflicts_or_exclusions": [],
+      "provenance": "cannbot_upstream_documentation",
+      "confidence_level": 1
+    },
+    {
+      "knowledge_module_id": "cannbot.ascendc-tiling-design.references.elewise.tiling",
+      "path": "docs/ascendc-tiling-design/references/elewise/tiling.md",
+      "upstream_skill": "ascendc-tiling-design",
+      "upstream_path": "ops/ascendc-tiling-design/references/elewise/tiling.md",
+      "sha256": "40fd7187bf84f9c454fc5a53b0c5adc1e9594e6054901f21c518cae1ee3ad0ad",
+      "knowledge_type": [
+        "design_rule",
+        "algorithm",
+        "formula"
+      ],
+      "allowed_stages": [
+        "kernel_design",
+        "optimization"
+      ],
+      "conflicts_or_exclusions": [],
+      "provenance": "cannbot_upstream_documentation",
+      "confidence_level": 1
+    },
+    {
+      "knowledge_module_id": "cannbot.ascendc-tiling-design.references.flashattention.patterns",
+      "path": "docs/ascendc-tiling-design/references/flashattention/patterns.md",
+      "upstream_skill": "ascendc-tiling-design",
+      "upstream_path": "ops/ascendc-tiling-design/references/flashattention/patterns.md",
+      "sha256": "2dd2a9c6d500a6aed50b4d8b54f9e40cb3f2a802660142e075842d08270d98b6",
+      "knowledge_type": [
+        "design_rule",
+        "algorithm",
+        "formula"
+      ],
+      "allowed_stages": [
+        "kernel_design",
+        "optimization"
+      ],
+      "conflicts_or_exclusions": [],
+      "provenance": "cannbot_upstream_documentation",
+      "confidence_level": 1
+    },
+    {
+      "knowledge_module_id": "cannbot.ascendc-tiling-design.references.matmul.patterns",
+      "path": "docs/ascendc-tiling-design/references/matmul/patterns.md",
+      "upstream_skill": "ascendc-tiling-design",
+      "upstream_path": "ops/ascendc-tiling-design/references/matmul/patterns.md",
+      "sha256": "7df957796ad3ae65f1d0a651b4e5aa2c894354274cc086a166ce0231cde8ebbb",
+      "knowledge_type": [
+        "design_rule",
+        "algorithm",
+        "formula"
+      ],
+      "allowed_stages": [
+        "kernel_design",
+        "optimization"
+      ],
+      "conflicts_or_exclusions": [],
+      "provenance": "cannbot_upstream_documentation",
+      "confidence_level": 1
+    },
+    {
+      "knowledge_module_id": "cannbot.ascendc-tiling-design.references.reduction.patterns",
+      "path": "docs/ascendc-tiling-design/references/reduction/patterns.md",
+      "upstream_skill": "ascendc-tiling-design",
+      "upstream_path": "ops/ascendc-tiling-design/references/reduction/patterns.md",
+      "sha256": "9b8d774662fadf2fc4db38e48bd4124974d27a8ad7a6feac73a1ef55937fdcd8",
+      "knowledge_type": [
+        "design_rule",
+        "algorithm",
+        "formula"
+      ],
+      "allowed_stages": [
+        "kernel_design",
+        "optimization"
+      ],
+      "conflicts_or_exclusions": [],
+      "provenance": "cannbot_upstream_documentation",
+      "confidence_level": 1
+    },
+    {
+      "knowledge_module_id": "cannbot.ascendc-tiling-design.references.reduction.tiling-fields",
+      "path": "docs/ascendc-tiling-design/references/reduction/tiling-fields.md",
+      "upstream_skill": "ascendc-tiling-design",
+      "upstream_path": "ops/ascendc-tiling-design/references/reduction/tiling-fields.md",
+      "sha256": "e0ad1169ab9272c9266922980da1b65863c64383b720704badba1fdde9e3f2f8",
+      "knowledge_type": [
+        "design_rule",
+        "algorithm",
+        "formula"
+      ],
+      "allowed_stages": [
+        "kernel_design",
+        "optimization"
+      ],
+      "conflicts_or_exclusions": [],
+      "provenance": "cannbot_upstream_documentation",
+      "confidence_level": 1
+    },
+    {
+      "knowledge_module_id": "cannbot.ascendc-tiling-design.references.sort.patterns",
+      "path": "docs/ascendc-tiling-design/references/sort/patterns.md",
+      "upstream_skill": "ascendc-tiling-design",
+      "upstream_path": "ops/ascendc-tiling-design/references/sort/patterns.md",
+      "sha256": "915e5ca3f7c163d43b7c6d7c592ab8d45edd0776c6864a89bd8b0758395e2851",
+      "knowledge_type": [
+        "design_rule",
+        "algorithm",
+        "formula"
+      ],
+      "allowed_stages": [
+        "kernel_design",
+        "optimization"
+      ],
+      "conflicts_or_exclusions": [],
+      "provenance": "cannbot_upstream_documentation",
+      "confidence_level": 1
+    },
+    {
+      "knowledge_module_id": "cannbot.npu-arch.references.npu-arch-guide",
+      "path": "docs/npu-arch/references/npu-arch-guide.md",
+      "upstream_skill": "npu-arch",
+      "upstream_path": "ops/npu-arch/references/npu-arch-guide.md",
+      "sha256": "9970a79e770074e7b961b4739e750bb7ea3d5638da12e385c6a29bf29186d0d5",
+      "knowledge_type": [
+        "hardware_fact",
+        "compatibility_rule"
+      ],
+      "allowed_stages": [
+        "operator_analysis"
+      ],
+      "conflicts_or_exclusions": [],
+      "provenance": "cannbot_upstream_documentation",
+      "confidence_level": 1
+    },
+    {
+      "knowledge_module_id": "cannbot.npu-arch.references.npu-hardware-params",
+      "path": "docs/npu-arch/references/npu-hardware-params.md",
+      "upstream_skill": "npu-arch",
+      "upstream_path": "ops/npu-arch/references/npu-hardware-params.md",
+      "sha256": "14aa3e7d6ad2d50e37efa4ebdfb1e9fe7cde48a5f6dea5991316caa4f1262d3c",
+      "knowledge_type": [
+        "hardware_fact",
+        "compatibility_rule"
+      ],
+      "allowed_stages": [
+        "operator_analysis"
+      ],
+      "conflicts_or_exclusions": [],
+      "provenance": "cannbot_upstream_documentation",
+      "confidence_level": 1
+    },
+    {
+      "knowledge_module_id": "cannbot.torch-ascendc-op-extension.references.direct-invoke.anti_patterns",
+      "path": "docs/torch-ascendc-op-extension/references/direct-invoke/anti_patterns.md",
+      "upstream_skill": "torch-ascendc-op-extension",
+      "upstream_path": "ops/torch-ascendc-op-extension/references/direct-invoke/anti_patterns.md",
+      "sha256": "79b68b283de92258d8d61a111d91aa88076a0c753b83c187b93f65fc124552df",
+      "knowledge_type": [
+        "host_abi",
+        "stream_integration"
+      ],
+      "allowed_stages": [
+        "code_generation",
+        "host_integration_debug"
+      ],
+      "conflicts_or_exclusions": [
+        "stream(true)",
+        "stream(false)",
+        "foreign_project_layout"
+      ],
+      "provenance": "cannbot_upstream_documentation",
+      "confidence_level": 1
+    },
+    {
+      "knowledge_module_id": "cannbot.torch-ascendc-op-extension.references.direct-invoke.troubleshooting",
+      "path": "docs/torch-ascendc-op-extension/references/direct-invoke/troubleshooting.md",
+      "upstream_skill": "torch-ascendc-op-extension",
+      "upstream_path": "ops/torch-ascendc-op-extension/references/direct-invoke/troubleshooting.md",
+      "sha256": "a5ae54f391c114ae724ad276f262687831214c5a253c96b96770192075ec1403",
+      "knowledge_type": [
+        "host_abi",
+        "stream_integration"
+      ],
+      "allowed_stages": [
+        "code_generation",
+        "host_integration_debug"
+      ],
+      "conflicts_or_exclusions": [
+        "stream(true)",
+        "stream(false)",
+        "foreign_project_layout"
+      ],
+      "provenance": "cannbot_upstream_documentation",
+      "confidence_level": 1
+    },
+    {
+      "knowledge_module_id": "cannbot.torch-ascendc-op-extension.routes.direct-invoke",
+      "path": "docs/torch-ascendc-op-extension/routes/direct-invoke.md",
+      "upstream_skill": "torch-ascendc-op-extension",
+      "upstream_path": "ops/torch-ascendc-op-extension/routes/direct-invoke.md",
+      "sha256": "4dff1cf5ca2ade715b18a522e8255949b05844fe30ca1c0a58204225c04e0fc4",
+      "knowledge_type": [
+        "host_abi",
+        "stream_integration"
+      ],
+      "allowed_stages": [
+        "code_generation",
+        "host_integration_debug"
+      ],
+      "conflicts_or_exclusions": [
+        "stream(true)",
+        "stream(false)",
+        "foreign_project_layout"
+      ],
+      "provenance": "cannbot_upstream_documentation",
+      "confidence_level": 1
+    }
+  ]
+}

@@ -413,6 +413,16 @@ def _plan_response(*, initial: bool = False) -> str:
                         if initial
                         else "higher valid score"
                     ),
+                    "target_files": ["kernel/retry.cpp"],
+                    "edit_scope": "file",
+                    "allow_interface_change": initial,
+                    "evidence_refs": (
+                        []
+                        if initial
+                        else [{"source": "evaluation", "line_excerpt": "evaluation evidence"}]
+                    ),
+                    "falsifies": [] if initial else ["previous hypothesis"],
+                    "order": index,
                 }
                 for index in range(1, 2)
             ],
@@ -504,7 +514,7 @@ class PromptTests(unittest.TestCase):
         self.assertIn("concise failure", edit_prompt)
         self.assertIn("concise failure", plan_prompt)
 
-    def test_full_input_prompts_preserve_complete_evaluation_logs(self) -> None:
+    def test_full_input_prompts_compact_repeated_evaluation_logs(self) -> None:
         marker = "FULL_LOG_MUST_REACH_MODEL"
         result = EvalResult(
             False,
@@ -536,8 +546,12 @@ class PromptTests(unittest.TestCase):
             full_input=True,
         )
 
-        self.assertIn(marker * 1000, edit_prompt)
-        self.assertIn(marker * 1000, plan_prompt)
+        self.assertNotIn(marker * 1000, edit_prompt)
+        self.assertNotIn(marker * 1000, plan_prompt)
+        self.assertIn("concise failure", edit_prompt)
+        self.assertIn("concise failure", plan_prompt)
+        self.assertIn("class Model: pass", edit_prompt)
+        self.assertIn("class Model: pass", plan_prompt)
 
     def test_compilation_contract_is_phase_gated_and_uses_compact_episode_state(self) -> None:
         result = EvalResult(

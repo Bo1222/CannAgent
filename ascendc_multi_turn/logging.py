@@ -150,6 +150,7 @@ class TrajectoryLogger:
                 "outcome",
                 "frontier_before",
                 "frontier_after",
+                "progress",
             )
         }
         with self.attempt_ledger_path.open("a", encoding="utf-8") as handle:

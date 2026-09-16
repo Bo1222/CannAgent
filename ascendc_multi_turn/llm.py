@@ -177,6 +177,16 @@ class MockProvider:
                                 if initial
                                 else "higher valid score"
                             ),
+                            "target_files": ["kernel/mock.cpp"],
+                            "edit_scope": "file",
+                            "allow_interface_change": initial,
+                            "evidence_refs": (
+                                []
+                                if initial
+                                else [{"source": "evaluation", "line_excerpt": "mock evidence"}]
+                            ),
+                            "falsifies": [] if initial else ["previous mock hypothesis"],
+                            "order": index,
                         }
                         for index in range(1, 2)
                     ],

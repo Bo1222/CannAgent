@@ -51,7 +51,13 @@ Return exactly one JSON object and no Markdown fence:
       "kind": "correctness or performance",
       "hypothesis": "one testable hypothesis",
       "change": "one concrete source change",
-      "expected_signal": "evaluation result that would validate the hypothesis"
+      "expected_signal": "evaluation result that would validate the hypothesis",
+      "target_files": ["kernel/<name>.cpp"],
+      "edit_scope": "file or region",
+      "allow_interface_change": false,
+      "evidence_refs": [{"source": "evaluation or source", "line_excerpt": "exact excerpt"}],
+      "falsifies": ["previous hypothesis or approach id"],
+      "order": 1
     }
   ]
 }
@@ -70,7 +76,13 @@ Return exactly one JSON object and no Markdown fence:
       "kind": "correctness",
       "hypothesis": "one testable end-to-end AscendC implementation hypothesis",
       "change": "a complete implementation blueprint covering the algorithm, block/tiling strategy, memory and data movement, dtype/shape/tail handling, Host ABI, and source-file layout",
-      "expected_signal": "static validation, compilation, all correctness cases, and a valid benchmark score succeed"
+      "expected_signal": "static validation, compilation, all correctness cases, and a valid benchmark score succeed",
+      "target_files": ["model_new_ascendc.py", "kernel/pybind11.cpp", "kernel/<name>.cpp"],
+      "edit_scope": "file",
+      "allow_interface_change": true,
+      "evidence_refs": [],
+      "falsifies": [],
+      "order": 1
     }
   ]
 }
@@ -126,10 +138,13 @@ def render_repair_state(repair_state: dict[str, Any] | None) -> str:
         for approach in approaches:
             attempts = ",".join(str(item) for item in approach.get("attempt_ids", []))
             lines.append(
-                f"  - {approach.get('approach_id')}: {approach.get('summary', '')} "
+                f"  - {approach.get('approach_id')} (family={approach.get('approach_family_id', 'unknown')}): {approach.get('summary', '')} "
                 f"(outcome={approach.get('outcome')}; occurrences={approach.get('occurrences', 1)}; "
+                f"family_occurrences={approach.get('family_occurrences', approach.get('occurrences', 1))}; "
                 f"attempts={attempts or 'unknown'})"
             )
+    lines.extend(["", "Escalation state:", json.dumps(repair_state.get("escalation", {}), ensure_ascii=False)])
+    lines.extend(["", "Accepted frontier progress:", json.dumps(repair_state.get("accepted_progress", {}), ensure_ascii=False)])
     return "\n".join(lines)
 
 
@@ -140,7 +155,7 @@ def render_stage_context(selection: Any) -> str:
     audience = str(payload.get("audience", "generator"))
     budget = payload.setdefault("budget", {})
     full_selected = budget.get("input_mode") == "full_selected"
-    max_chars = None if full_selected else int(budget.get("max_chars", 12000))
+    max_chars = int(budget.get("max_chars") or 12000)
     truncated: list[str] = []
     chunks = [
         "# Selected AscendC reference context",
@@ -185,9 +200,9 @@ def render_stage_context(selection: Any) -> str:
             item = entry.strip()
             addition = len(item) + 2
             projected_global = len("\n".join([*chunks, *section, item]))
-            if not full_selected and (
+            if (
                 used + addition > quota
-                or (max_chars is not None and projected_global > max_chars)
+                or projected_global > max_chars
             ):
                 truncated.append(f"{title}[{index}]")
                 continue
@@ -234,25 +249,33 @@ def render_stage_context(selection: Any) -> str:
     append_section("Exact API and runtime facts", api_entries, quotas["api"])
 
     skill_entries: list[str] = []
-    for capsule in payload.get("skill_capsules", []):
+    for knowledge_module in payload.get("skill_knowledge_modules", []):
         skill_entries.append(
             "\n".join(
                 [
-                    f"### {capsule.get('skill_id')} [{capsule.get('stage')}; role={capsule.get('role', 'support')}]",
-                    f"Purpose: {capsule.get('purpose', '')}",
-                    f"Triggered because: {capsule.get('trigger_reason', '')}",
-                    f"Expected artifact: {capsule.get('expected_artifact', '')}",
+                    f"### {knowledge_module.get('skill_id')} [{knowledge_module.get('stage')}; role={knowledge_module.get('role', 'support')}]",
+                    f"Purpose: {knowledge_module.get('purpose', '')}",
+                    f"Triggered because: {knowledge_module.get('trigger_reason', '')}",
+                    f"Expected artifact: {knowledge_module.get('expected_artifact', '')}",
                 ]
             )
         )
-        for excerpt in capsule.get("excerpts", []):
-            headings = ", ".join(excerpt.get("headings", [])) or "bounded file excerpt"
+        for excerpt in knowledge_module.get("excerpts", []):
+            headings = ", ".join(excerpt.get("headings", [])) or "complete knowledge module"
             skill_entries.append(
-                f"#### {capsule.get('skill_id')} source: {excerpt.get('source')} ({headings})\n"
+                f"#### {knowledge_module.get('skill_id')} source: {excerpt.get('source')} ({headings})\n"
                 f"Origin: {excerpt.get('origin', 'cannbot')}; confidence=Level {excerpt.get('confidence_level', 1)}; provenance={excerpt.get('provenance', 'documented_skill')}\n"
                 + str(excerpt.get("text", ""))
             )
-    append_section("Selected CANNBot skill capsules", skill_entries, quotas["skills"])
+    # Selection is the prompt-width boundary for embedded knowledge modules. Once a
+    # knowledge module section is selected, render it atomically and completely.
+    if skill_entries:
+        chunks.append("\n## Relevant embedded knowledge modules")
+        chunks.extend(item.strip() for item in skill_entries)
+        rendered_sections.extend(
+            f"Relevant embedded knowledge modules[{index}]"
+            for index in range(len(skill_entries))
+        )
 
     other_entries = [
         f"- {item}" for item in payload.get("design_patterns", [])
@@ -277,12 +300,18 @@ def render_stage_context(selection: Any) -> str:
     metadata["rendered_estimated_tokens"] = (len(text) + 3) // 4
     metadata["input_mode"] = "full_selected" if full_selected else "bounded"
     metadata["input_truncated"] = bool(truncated)
+    metadata["rendered_skill_ids"] = [
+        str(item.get("skill_id"))
+        for item in payload.get("skill_knowledge_modules", [])
+        if item.get("skill_id")
+    ]
+    metadata["rendered_knowledge_module_sections"] = [
+        f"{excerpt.get('knowledge_module_id')}#{excerpt.get('section_id')}"
+        for item in payload.get("skill_knowledge_modules", [])
+        for excerpt in item.get("excerpts", [])
+        if excerpt.get("knowledge_module_id") and excerpt.get("section_id")
+    ]
     if full_selected:
-        metadata["rendered_skill_ids"] = [
-            str(item.get("skill_id"))
-            for item in payload.get("skill_capsules", [])
-            if item.get("skill_id")
-        ]
         metadata["rendered_structured_ids"] = [
             str(item.get("fact_id") or item.get("card_id"))
             for item in payload.get("api_facts", [])
@@ -321,12 +350,14 @@ def build_prompt(
     full_input: bool = False,
     repair_state: dict[str, Any] | None = None,
     compile_repair_active: bool = False,
+    knowledge_selection: Any = None,
+    protected_regions: dict[str, Any] | None = None,
 ) -> str:
     if previous_result is None:
         feedback = "No previous evaluation. Generate the initial implementation."
     else:
         feedback = json.dumps(
-            previous_result.to_dict() if full_input else compact_evaluation(previous_result),
+            compact_evaluation(previous_result),
             ensure_ascii=False,
             indent=2,
         )
@@ -340,24 +371,73 @@ def build_prompt(
         if plan_item
         else "(no active plan item; only valid for a historical EVAL checkpoint)"
     )
+    selection_payload = (
+        knowledge_selection.to_dict()
+        if hasattr(knowledge_selection, "to_dict")
+        else dict(knowledge_selection or {})
+    )
+    task_facts = selection_payload.get("task_facts", {})
+    ownership = str(task_facts.get("failure_ownership") or "Kernel")
+    active_profile = str(task_facts.get("active_profile") or "full evaluation / unspecified")
+    profile_details = json.dumps(
+        {
+            "case_indices": task_facts.get("profile_case_indices", []),
+            "features": task_facts.get("profile_features", []),
+            "diagnostic_source_files": task_facts.get("diagnostic_source_files", []),
+            "input_route": task_facts.get("input_route", {}),
+        },
+        ensure_ascii=False,
+        indent=2,
+    )
+    protected_text = json.dumps(
+        protected_regions or {"protected_region_ids": [], "protected_snippets": {}},
+        ensure_ascii=False,
+        indent=2,
+    )
+    forbidden = list(dict.fromkeys(selection_payload.get("exclusions", [])))
+    forbidden_text = "\n".join(f"- {item}" for item in forbidden) or "- Follow the mandatory negative rules below."
     compilation_section = (
         f"## Compilation repair contract\n{COMPILATION_REPAIR_CONTRACT}\n\n"
         if compile_repair_active
         else ""
     )
-    repair_section = (
-        f"## Current trajectory repair state\n{render_repair_state(repair_state)}\n\n"
-        if compile_repair_active
-        else ""
-    )
+    repair_section = f"## Open errors, cleared errors, and relevant failed approaches\n{render_repair_state(repair_state)}\n\n"
     return f"""# AscendC {phase.lower()} edit attempt {round_num}
 
+## Current objective
 {action}
 
-## Mandatory rules
+Active plan item:
+```json
+{plan_text}
+```
+
+## Failure ownership
+{ownership}
+
+## Active evaluation profile
+{active_profile}
+
+## Failing or newly introduced case features
+```json
+{profile_details}
+```
+
+## Protected regions
+```json
+{protected_text}
+```
+
+{repair_section}## Must-satisfy semantic and ABI contracts
 {RULES}
 
-{compilation_section}{repair_section}## Reference PyTorch model (read-only)
+{compilation_section}## Exact installed/Verified facts and relevant knowledge modules
+{knowledge_context}
+
+## Explicit forbidden patterns
+{forbidden_text}
+
+## Reference PyTorch model and benchmark semantics (read-only)
 ```python
 {reference_code}
 ```
@@ -374,14 +454,6 @@ def build_prompt(
 ```json
 {feedback}
 ```
-
-## Active plan item
-```json
-{plan_text}
-```
-
-## Stage-selected AscendC references
-{knowledge_context}
 
 ## Output contract
 {OUTPUT_CONTRACT}
@@ -404,14 +476,30 @@ def build_plan_prompt(
 ) -> str:
     feedback = (
         json.dumps(
-            result.to_dict() if full_input else compact_evaluation(result),
+            compact_evaluation(result),
             ensure_ascii=False,
             indent=2,
         )
         if result is not None
         else "No implementation has been evaluated yet."
     )
-    del history  # Full attempt history remains on disk; only repair_state is prompt-visible.
+    ledger_lines: list[str] = []
+    for record in history[-8:]:
+        repair = record.get("repair_attempt", {}) if isinstance(record, dict) else {}
+        item = record.get("plan_item", {}) if isinstance(record, dict) else {}
+        ledger_lines.append(
+            " | ".join(
+                (
+                    f"attempt={record.get('attempt_id', record.get('round'))}",
+                    f"hypothesis={str(item.get('hypothesis', ''))[:240]}",
+                    f"outcome={repair.get('outcome') or record.get('decision')}",
+                    f"cleared={repair.get('cleared_error_ids', [])}",
+                    f"new={repair.get('new_error_ids', [])}",
+                    f"progress={repair.get('progress', {})}",
+                )
+            )
+        )
+    ledger = "\n".join(ledger_lines) or "(no completed attempts)"
     if initial:
         purpose = (
             "Create one complete implementation blueprint directly in AscendC terms before any source is generated."
@@ -468,6 +556,9 @@ nullptr, stream>>>. acl/acl_rt_launch.h and ACLRT_LAUNCH_KERNEL are unsupported.
 {feedback}
 ```
 
+## Attempt ledger
+{ledger}
+
 ## Stage-selected AscendC references
 {knowledge_context or "(no additional reference material selected)"}
 
@@ -476,7 +567,13 @@ nullptr, stream>>>. acl/acl_rt_launch.h and ACLRT_LAUNCH_KERNEL are unsupported.
 """
 
 
-def parse_plan(text: str, *, min_items: int = 3, max_items: int = 5) -> dict:
+def parse_plan(
+    text: str,
+    *,
+    min_items: int = 3,
+    max_items: int = 5,
+    require_evidence: bool = False,
+) -> dict:
     stripped = text.strip()
     if stripped.startswith("```") and stripped.endswith("```"):
         stripped = stripped.split("\n", 1)[1].rsplit("```", 1)[0]
@@ -509,11 +606,35 @@ def parse_plan(text: str, *, min_items: int = 3, max_items: int = 5) -> dict:
                 change = change[: embedded.start()].rstrip()
         if not expected_signal:
             raise ValueError(f"plan item {index} is incomplete")
+        target_files = item.get("target_files", [])
+        evidence_refs = item.get("evidence_refs", [])
+        falsifies = item.get("falsifies", [])
+        if not isinstance(target_files, list) or not all(isinstance(path, str) for path in target_files):
+            raise ValueError(f"plan item {index} target_files must be a string list")
+        if not isinstance(evidence_refs, list) or not all(isinstance(ref, dict) for ref in evidence_refs):
+            raise ValueError(f"plan item {index} evidence_refs must be an object list")
+        if not isinstance(falsifies, list) or not all(isinstance(value, str) for value in falsifies):
+            raise ValueError(f"plan item {index} falsifies must be a string list")
+        if require_evidence and (
+            not evidence_refs
+            or any(not str(ref.get("line_excerpt", "")).strip() for ref in evidence_refs)
+        ):
+            raise ValueError(f"diagnosis plan item {index} must cite exact evidence excerpts")
+        if require_evidence and not falsifies:
+            raise ValueError(f"diagnosis plan item {index} must identify a falsified prior approach")
         normalized.append(
             {
                 **{key: str(item[key]).strip() for key in required if key != "change"},
                 "change": change,
                 "expected_signal": expected_signal,
+                "target_files": [path.strip() for path in target_files if path.strip()],
+                "edit_scope": str(item.get("edit_scope", "file")).strip() or "file",
+                "allow_interface_change": bool(
+                    item.get("allow_interface_change", item.get("allow_abi_change", False))
+                ),
+                "evidence_refs": evidence_refs,
+                "falsifies": [value.strip() for value in falsifies if value.strip()],
+                "order": int(item.get("order", index)),
             }
         )
     return {"diagnosis": str(payload.get("diagnosis", "")).strip(), "items": normalized}

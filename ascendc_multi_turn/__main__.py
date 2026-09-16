@@ -111,7 +111,10 @@ def parser() -> argparse.ArgumentParser:
         "--knowledge-input-mode",
         choices=("bounded", "full-selected"),
         default="bounded",
-        help="render selected prompt knowledge with normal budgets or without Agent-side input truncation",
+        help=(
+            "render compact or full-field selected knowledge; both modes keep deterministic "
+            "per-audience budgets and atomic knowledge-module boundaries"
+        ),
     )
     result.add_argument("--knowledge-store", default=str(DEFAULT_KNOWLEDGE_STORE))
     result.add_argument("--knowledge-build-id", default=None)
@@ -123,12 +126,12 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument(
         "--cannbot-skills-root",
         default="",
-        help="path to cannbot-skills/ops; otherwise use CANNBOT_SKILLS_ROOT or the sibling repository",
+        help="removed: passing this option reports the embedded-knowledge base migration error",
     )
     result.add_argument(
         "--skill-mapping",
         default="",
-        help="override ascendc_multi_turn/skill_mapping.yaml",
+        help="removed: passing this option reports the embedded-knowledge base migration error",
     )
     result.add_argument("--resume", action="store_true")
     result.add_argument("--quiet", action="store_true", help="suppress progress and failure details on stderr")

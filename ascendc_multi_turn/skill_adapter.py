@@ -1,13 +1,31 @@
 from __future__ import annotations
 
+import hashlib
 import json
-import os
 import re
+from collections.abc import Mapping
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any
 
-DEFAULT_MAPPING_PATH = Path(__file__).with_name("skill_mapping.yaml")
+PACKAGE_ROOT = Path(__file__).resolve().parent
+DEFAULT_MAPPING_PATH = PACKAGE_ROOT / "skill_mapping.yaml"
+KNOWLEDGE_MODULE_ROOT = PACKAGE_ROOT / "knowledge_modules"
+LOCAL_KNOWLEDGE_MODULE_MANIFEST_PATH = (
+    KNOWLEDGE_MODULE_ROOT / "knowledge_module_manifest.json"
+)
+CANNBOT_KNOWLEDGE_BASE_ROOT = (
+    KNOWLEDGE_MODULE_ROOT / "cannbot_a08c4970_knowledge_base"
+)
+CANNBOT_KNOWLEDGE_BASE_MANIFEST_PATH = (
+    CANNBOT_KNOWLEDGE_BASE_ROOT / "knowledge_base_manifest.json"
+)
+EXTERNAL_KNOWLEDGE_MIGRATION_ERROR = (
+    "External CANNBot skill paths are no longer supported. Remove "
+    "--cannbot-skills-root/--skill-mapping and CANNBOT_SKILLS_ROOT; CannAgent "
+    "now validates and loads its embedded CANNBot knowledge base."
+)
 
 
 @dataclass(frozen=True)
@@ -28,6 +46,7 @@ class SkillAdapterContext:
     source_symbols: list[str] = field(default_factory=list)
     planned_symbols: list[str] = field(default_factory=list)
     symbol_evidence: list[dict[str, Any]] = field(default_factory=list)
+    symbol_domains: list[str] = field(default_factory=list)
     primary_skill: str = "kernel_design"
     route_reason: str = "default_kernel_design"
     secondary_skill: str | None = None
@@ -36,15 +55,22 @@ class SkillAdapterContext:
     routing_confidence: str = "fallback"
     route_evidence_origin: str = "workflow"
     matched_route_trigger: str | None = None
+    diagnostic_source_files: list[str] = field(default_factory=list)
+    failure_ownership: str = "Kernel"
+    active_profile: str | None = None
+    profile_case_indices: list[int] = field(default_factory=list)
+    profile_features: list[str] = field(default_factory=list)
     environment_fingerprint: str | None = None
 
 
-@dataclass
+@dataclass(frozen=True)
 class SkillExcerpt:
+    knowledge_module_id: str
+    section_id: str
     source: str
     headings: list[str]
     text: str
-    origin: str = "cannbot"
+    origin: str = "cannbot_knowledge_base"
     confidence_level: int = 1
     provenance: str = "documented_skill"
 
@@ -53,7 +79,7 @@ class SkillExcerpt:
 
 
 @dataclass
-class SkillCapsule:
+class SkillKnowledgeModule:
     skill_id: str
     stage: str
     purpose: str
@@ -71,13 +97,28 @@ class SkillCapsule:
 
 @dataclass
 class SkillAdapterSelection:
-    capsules: list[SkillCapsule]
+    knowledge_modules: list[SkillKnowledgeModule]
     trace: list[dict[str, Any]]
-    source_root: str | None
+    source_root: str
     source_available: bool
+    knowledge_base_id: str
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+
+@dataclass(frozen=True)
+class _KnowledgeModuleDocument:
+    knowledge_module_id: str
+    path: str
+    text: str
+    sha256: str
+    knowledge_type: tuple[str, ...]
+    allowed_stages: tuple[str, ...]
+    conflicts_or_exclusions: tuple[str, ...]
+    provenance: str
+    confidence_level: int
+    origin: str
 
 
 def _normalized_text(value: str) -> str:
@@ -89,43 +130,11 @@ def _heading_title(line: str) -> str | None:
     return match.group(1).strip() if match else None
 
 
-def _markdown_blocks(text: str) -> list[str]:
-    blocks: list[str] = []
-    current: list[str] = []
-    in_fence = False
-    for line in text.splitlines():
-        if line.lstrip().startswith("```"):
-            in_fence = not in_fence
-        if not line.strip() and not in_fence:
-            if current:
-                blocks.append("\n".join(current).strip())
-                current = []
-            continue
-        current.append(line)
-    if current:
-        blocks.append("\n".join(current).strip())
-    return [item for item in blocks if item]
+def _extract_markdown_sections(text: str, headings: list[str]) -> str:
+    """Return complete mapped sections; never truncate a selected section."""
 
-
-def _fit_markdown_blocks(text: str, max_chars: int | None) -> str:
-    if max_chars is None:
-        return "\n\n".join(_markdown_blocks(text))
-    selected: list[str] = []
-    used = 0
-    for block in _markdown_blocks(text):
-        addition = len(block) + (2 if selected else 0)
-        if used + addition > max_chars:
-            break
-        selected.append(block)
-        used += addition
-    return "\n\n".join(selected)
-
-
-def _extract_markdown_sections(
-    text: str, headings: list[str], *, max_chars: int | None
-) -> str:
     if not headings:
-        return _fit_markdown_blocks(text, max_chars).rstrip()
+        return text.rstrip()
     wanted = [_normalized_text(item) for item in headings]
     lines = text.splitlines()
     selected: list[str] = []
@@ -144,23 +153,21 @@ def _extract_markdown_sections(
                 if candidate_level <= level:
                     break
             end += 1
-        section = "\n".join(lines[index:end]).strip()
-        remaining = (
-            None if max_chars is None else max_chars - len("\n\n".join(selected))
-        )
-        bounded = _fit_markdown_blocks(section, remaining)
-        if bounded:
-            selected.append(bounded)
+        selected.append("\n".join(lines[index:end]).strip())
         index = end
     return "\n\n".join(selected).rstrip()
 
 
-class SkillAdapter:
-    """Deterministically select bounded CANNBot knowledge capsules.
+def _freeze(value: Any) -> Any:
+    if isinstance(value, dict):
+        return MappingProxyType({str(key): _freeze(item) for key, item in value.items()})
+    if isinstance(value, list):
+        return tuple(_freeze(item) for item in value)
+    return value
 
-    The adapter reads only explicitly allowlisted references. It neither executes
-    skill workflows/scripts nor copies template directories into a task.
-    """
+
+class SkillAdapter:
+    """Select only validated, package-local knowledge from an immutable registry."""
 
     def __init__(
         self,
@@ -169,22 +176,114 @@ class SkillAdapter:
         source_root: Path | str | None = None,
         full_selected_input: bool = False,
     ):
-        self.mapping_path = (
-            Path(mapping_path or DEFAULT_MAPPING_PATH).expanduser().resolve()
-        )
-        self.mapping = json.loads(self.mapping_path.read_text(encoding="utf-8"))
-        if int(self.mapping.get("schema_version", 0)) not in {1, 2}:
-            raise ValueError(f"unsupported skill mapping schema: {self.mapping_path}")
-        configured = os.getenv(str(self.mapping.get("source_root_env", "")), "").strip()
-        root_value = (
-            source_root or configured or self.mapping.get("default_source_root", "")
-        )
-        root = Path(root_value).expanduser()
-        if not root.is_absolute():
-            root = self.mapping_path.parent / root
-        self.source_root = root.resolve()
-        self.adapter_root = (self.mapping_path.parent / "knowledge_capsules").resolve()
+        if mapping_path is not None or source_root is not None:
+            raise ValueError(EXTERNAL_KNOWLEDGE_MIGRATION_ERROR)
+        self.mapping_path = DEFAULT_MAPPING_PATH
+        self.source_root = CANNBOT_KNOWLEDGE_BASE_ROOT
+        self.adapter_root = KNOWLEDGE_MODULE_ROOT
         self.full_selected_input = full_selected_input
+        mapping = json.loads(self.mapping_path.read_text(encoding="utf-8"))
+        if int(mapping.get("schema_version", 0)) != 3:
+            raise ValueError(f"unsupported embedded skill mapping schema: {self.mapping_path}")
+        documents, knowledge_base_id = self._load_registry()
+        self._validate_mapping(mapping, documents)
+        self.mapping: Mapping[str, Any] = _freeze(mapping)
+        self.registry: Mapping[str, _KnowledgeModuleDocument] = MappingProxyType(documents)
+        self.knowledge_base_id = knowledge_base_id
+
+    @staticmethod
+    def _safe_manifest_path(root: Path, relative: str) -> Path:
+        path = (root / relative).resolve()
+        try:
+            path.relative_to(root.resolve())
+        except ValueError as error:
+            raise ValueError(f"unsafe embedded knowledge module path: {relative}") from error
+        if path.suffix.lower() != ".md" or not path.is_file():
+            raise ValueError(f"embedded knowledge module is missing or not Markdown: {path}")
+        return path
+
+    @classmethod
+    def _load_manifest_documents(
+        cls, manifest_path: Path, *, root: Path, list_key: str, origin: str
+    ) -> tuple[dict[str, _KnowledgeModuleDocument], dict[str, Any]]:
+        if not manifest_path.is_file():
+            raise ValueError(f"embedded knowledge module manifest is missing: {manifest_path}")
+        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+        records = payload.get(list_key)
+        if not isinstance(records, list) or not records:
+            raise ValueError(f"embedded knowledge module manifest has no {list_key}: {manifest_path}")
+        result: dict[str, _KnowledgeModuleDocument] = {}
+        for record in records:
+            knowledge_module_id = str(record.get("knowledge_module_id", "")).strip()
+            if not knowledge_module_id or knowledge_module_id in result:
+                raise ValueError(f"invalid or duplicate knowledge_module_id in {manifest_path}: {knowledge_module_id}")
+            path = cls._safe_manifest_path(root, str(record.get("path", "")))
+            content = path.read_bytes()
+            actual = hashlib.sha256(content).hexdigest()
+            expected = str(record.get("sha256", ""))
+            if actual != expected:
+                raise ValueError(
+                    f"embedded knowledge module hash mismatch for {knowledge_module_id}: expected {expected}, got {actual}"
+                )
+            result[knowledge_module_id] = _KnowledgeModuleDocument(
+                knowledge_module_id=knowledge_module_id,
+                path=path.relative_to(KNOWLEDGE_MODULE_ROOT).as_posix(),
+                text=content.decode("utf-8"),
+                sha256=actual,
+                knowledge_type=tuple(str(item) for item in record.get("knowledge_type", [])),
+                allowed_stages=tuple(str(item) for item in record.get("allowed_stages", [])),
+                conflicts_or_exclusions=tuple(
+                    str(item) for item in record.get("conflicts_or_exclusions", [])
+                ),
+                provenance=str(record.get("provenance", "unknown")),
+                confidence_level=int(record.get("confidence_level", 1)),
+                origin=origin,
+            )
+        return result, payload
+
+    def _load_registry(self) -> tuple[dict[str, _KnowledgeModuleDocument], str]:
+        local, _ = self._load_manifest_documents(
+            LOCAL_KNOWLEDGE_MODULE_MANIFEST_PATH,
+            root=KNOWLEDGE_MODULE_ROOT,
+            list_key="knowledge_modules",
+            origin="cannagent",
+        )
+        knowledge_base, payload = self._load_manifest_documents(
+            CANNBOT_KNOWLEDGE_BASE_MANIFEST_PATH,
+            root=CANNBOT_KNOWLEDGE_BASE_ROOT,
+            list_key="documents",
+            origin="cannbot_knowledge_base",
+        )
+        overlap = set(local).intersection(knowledge_base)
+        if overlap:
+            raise ValueError(f"duplicate embedded knowledge module IDs across manifests: {sorted(overlap)}")
+        return {**local, **knowledge_base}, str(
+            payload.get("knowledge_base_id", "unknown")
+        )
+
+    @staticmethod
+    def _validate_mapping(mapping: dict[str, Any], documents: dict[str, _KnowledgeModuleDocument]) -> None:
+        stage_mappings = [
+            *mapping.get("stages", {}).items(),
+            ("standing_contract", mapping.get("standing_contracts", {})),
+        ]
+        for stage, stage_mapping in stage_mappings:
+            for skill in stage_mapping.get("skills", []):
+                if "source" in skill:
+                    raise ValueError(f"embedded mapping exposes a filesystem source in {stage}:{skill.get('id')}")
+                for reference in skill.get("references", []):
+                    if "path" in reference or "max_chars" in reference:
+                        raise ValueError(
+                            f"embedded mapping reference must use knowledge_module_id/section_id only: {stage}:{skill.get('id')}"
+                        )
+                    knowledge_module_id = str(reference.get("knowledge_module_id", ""))
+                    section_id = str(reference.get("section_id", ""))
+                    if not knowledge_module_id or not section_id:
+                        raise ValueError(f"mapping reference lacks knowledge_module_id or section_id: {stage}:{skill.get('id')}")
+                    if knowledge_module_id not in documents:
+                        raise ValueError(f"mapping references unknown embedded knowledge module: {knowledge_module_id}")
+                    if stage not in documents[knowledge_module_id].allowed_stages:
+                        raise ValueError(f"knowledge module {knowledge_module_id} is not allowed in stage {stage}")
 
     @property
     def audience_budgets(self) -> dict[str, int]:
@@ -206,9 +305,7 @@ class SkillAdapter:
         evidence_text = _normalized_text(evidence)
         scored = []
         for family, terms in patterns.items():
-            score = sum(
-                1 for term in terms if _normalized_text(str(term)) in evidence_text
-            )
+            score = sum(1 for term in terms if _normalized_text(str(term)) in evidence_text)
             if score:
                 scored.append((score, family))
         if not scored:
@@ -217,249 +314,177 @@ class SkillAdapter:
         return sorted(family for score, family in scored if score == best)
 
     @staticmethod
-    def _condition_matches(
-        condition: dict[str, Any], context: SkillAdapterContext
-    ) -> tuple[bool, str]:
+    def _condition_matches(condition: Mapping[str, Any], context: SkillAdapterContext) -> tuple[bool, str]:
         reasons: list[str] = []
-        if (
-            condition.get("requires_correct_baseline")
-            and not context.has_correct_baseline
-        ):
-            return False, "requires a correct baseline"
-        stages = [str(item) for item in condition.get("failure_stages", [])]
+        if condition.get("requires_correct_baseline") and not context.has_correct_baseline:
+            return False, "requires_correct_baseline"
+        stages = [str(item) for item in condition.get("failure_stages", ())]
+        if stages and context.failure_stage not in stages:
+            return False, f"failure_stage={context.failure_stage or 'none'} not allowed"
         if stages:
-            if context.failure_stage not in stages:
-                return (
-                    False,
-                    f"failure stage {context.failure_stage or 'none'} not in mapping",
-                )
             reasons.append(f"failure_stage={context.failure_stage}")
-        terms = [str(item).lower() for item in condition.get("any_terms", [])]
-        if terms:
-            trigger_evidence = (
-                context.failure_evidence
-                if context.failure_stage and context.failure_evidence
-                else context.evidence
+        terms = [
+            str(item).lower()
+            for item in (
+                condition.get("any_terms", ()) or condition.get("when_any", ())
             )
+        ]
+        if terms:
             evidence = _normalized_text(
-                " ".join(
-                    [
-                        trigger_evidence,
-                        context.failure_code or "",
-                        context.failure_stage or "",
-                    ]
-                )
+                f"{context.failure_evidence} {context.failure_code or ''} {context.evidence}"
             )
             matched = [term for term in terms if term in evidence]
             if not matched:
-                return False, "no trigger term matched"
+                return False, "no_trigger_term"
             reasons.append("terms=" + ",".join(matched[:4]))
-        families = [str(item) for item in condition.get("operator_families", [])]
+        families = [str(item) for item in condition.get("operator_families", ())]
         if families and not set(families).intersection(context.operator_families):
-            return False, "operator family mismatch"
+            return False, "operator_family_mismatch"
+        domains = [str(item) for item in condition.get("when_domains", ())]
+        if domains and not set(domains).intersection(context.symbol_domains):
+            return False, "symbol_domain_mismatch"
+        profiles = [str(item) for item in condition.get("profiles", ())]
+        if profiles and context.active_profile not in profiles:
+            return False, "active_profile_mismatch"
+        features = [str(item) for item in condition.get("profile_features", ())]
+        if features and not set(features).intersection(context.profile_features):
+            return False, "profile_feature_mismatch"
         if condition.get("always"):
-            reasons.append("stage default")
+            reasons.append("stage_default")
         if condition.get("requires_correct_baseline"):
-            reasons.append("correct baseline exists")
-        return True, "; ".join(reasons) or "mapping conditions matched"
+            reasons.append("correct_baseline")
+        return True, "; ".join(reasons) or "mapping_conditions_matched"
 
     @staticmethod
-    def _safe_reference(skill_root: Path, allowed_root: Path, relative: str) -> Path | None:
-        candidate = (skill_root / relative).resolve()
-        try:
-            candidate.relative_to(skill_root)
-            candidate.relative_to(allowed_root)
-        except ValueError:
-            return None
-        if candidate.suffix.lower() != ".md" or not candidate.is_file():
-            return None
-        return candidate
-
-    @staticmethod
-    def _reference_matches(
-        reference: dict[str, Any], context: SkillAdapterContext
-    ) -> tuple[bool, str]:
-        operators = [str(item).lower() for item in reference.get("operators", [])]
+    def _reference_matches(reference: Mapping[str, Any], context: SkillAdapterContext) -> tuple[bool, str]:
+        operators = [str(item).lower() for item in reference.get("operators", ())]
         if operators and context.operator.lower() not in operators:
-            return False, "reference operator mismatch"
-        families = [str(item) for item in reference.get("operator_families", [])]
-        if families and not set(families).intersection(context.operator_families):
-            return False, "reference operator family mismatch"
-        terms = [str(item).lower() for item in reference.get("when_any", [])]
-        if terms:
-            evidence = _normalized_text(
-                f"{context.failure_evidence} {context.evidence}"
-            )
-            matched = [term for term in terms if term in evidence]
-            if not matched:
-                return False, "reference trigger terms did not match"
-            return True, "reference terms=" + ",".join(matched[:4])
-        return True, "reference mapping matched"
+            return False, "operator_mismatch"
+        return SkillAdapter._condition_matches(reference, context)
 
     def select(self, context: SkillAdapterContext) -> SkillAdapterSelection:
         trace: list[dict[str, Any]] = []
-        capsules: list[SkillCapsule] = []
-        source_available = self.source_root.is_dir()
-        if not source_available:
-            trace.append(
-                {
-                    "candidate": str(self.source_root),
-                    "decision": "rejected",
-                    "reason": "source_unavailable",
-                }
-            )
-        stage_mappings = self.mapping.get("stages", {})
-        for stage in context.stages:
-            stage_mapping = stage_mappings.get(stage, {})
-            for skill in stage_mapping.get("skills", []):
+        knowledge_modules: list[SkillKnowledgeModule] = []
+        seen_sections: set[tuple[str, str]] = set()
+        selected_chars = 0
+        audience_budget = self.audience_budgets.get(context.audience, 12000)
+        routed_groups = [
+            ("standing_contract", self.mapping.get("standing_contracts", {})),
+            *(
+                (stage, self.mapping.get("stages", {}).get(stage, {}))
+                for stage in context.stages
+            ),
+        ]
+        for stage, stage_mapping in routed_groups:
+            for skill in stage_mapping.get("skills", ()):
                 skill_id = str(skill.get("id", ""))
                 role = str(skill.get("role", "support"))
-                if role == "primary" and skill_id != context.primary_skill:
-                    trace.append(
-                        {
-                            "candidate": f"{stage}:{skill_id}",
-                            "decision": "rejected",
-                            "reason": f"primary route is {context.primary_skill}",
-                            "role": role,
-                        }
-                    )
-                    continue
-                if role == "secondary" and skill_id != context.secondary_skill:
-                    trace.append(
-                        {
-                            "candidate": f"{stage}:{skill_id}",
-                            "decision": "rejected",
-                            "reason": "secondary route not selected",
-                            "role": role,
-                        }
-                    )
-                    continue
-                matches, reason = self._condition_matches(
-                    skill.get("when", {}), context
-                )
+                matches, reason = self._condition_matches(skill.get("when", {}), context)
+                group_id = f"{stage}:{skill_id}"
                 if not matches:
-                    trace.append(
-                        {
-                            "candidate": f"{stage}:{skill_id}",
-                            "decision": "rejected",
-                            "reason": reason,
-                        }
-                    )
-                    continue
-                origin = str(skill.get("origin", "cannbot"))
-                allowed_root = self.adapter_root if origin == "adapter" else self.source_root
-                if origin == "cannbot" and not source_available:
-                    trace.append(
-                        {
-                            "candidate": f"{stage}:{skill_id}",
-                            "decision": "rejected",
-                            "reason": "source_unavailable",
-                            "role": role,
-                            "origin": origin,
-                        }
-                    )
-                    continue
-                skill_root = (allowed_root / str(skill.get("source", skill_id))).resolve()
-                try:
-                    skill_root.relative_to(allowed_root)
-                except ValueError:
-                    trace.append(
-                        {
-                            "candidate": f"{stage}:{skill_id}",
-                            "decision": "rejected",
-                            "reason": f"unsafe {origin} skill source",
-                        }
-                    )
+                    trace.append({"candidate": group_id, "decision": "rejected", "reason": reason})
                     continue
                 excerpts: list[SkillExcerpt] = []
-                for reference in skill.get("references", []):
-                    relative = str(reference.get("path", ""))
-                    reference_id = f"{stage}:{skill_id}:{relative}"
-                    ref_matches, ref_reason = self._reference_matches(
-                        reference, context
-                    )
+                selected_reference_ids: list[tuple[str, str]] = []
+                exclusions = [str(item) for item in skill.get("exclude", ())]
+                knowledge_types = [str(item) for item in skill.get("knowledge_type", ())]
+                for reference in skill.get("references", ()):
+                    knowledge_module_id = str(reference.get("knowledge_module_id"))
+                    section_id = str(reference.get("section_id"))
+                    reference_id = f"{knowledge_module_id}#{section_id}"
+                    ref_matches, ref_reason = self._reference_matches(reference, context)
                     if not ref_matches:
-                        trace.append(
-                            {
-                                "candidate": reference_id,
-                                "decision": "rejected",
-                                "reason": ref_reason,
-                            }
-                        )
+                        trace.append({"candidate": reference_id, "decision": "rejected", "reason": ref_reason})
                         continue
-                    path = self._safe_reference(skill_root, allowed_root, relative)
-                    if path is None:
-                        trace.append(
-                            {
-                                "candidate": reference_id,
-                                "decision": "rejected",
-                                "reason": "missing or unsafe Markdown reference",
-                            }
-                        )
+                    key = (knowledge_module_id, section_id)
+                    if key in seen_sections:
+                        trace.append({"candidate": reference_id, "decision": "rejected", "reason": "duplicate_knowledge_module_section"})
                         continue
-                    headings = [str(item) for item in reference.get("headings", [])]
-                    excerpt = _extract_markdown_sections(
-                        path.read_text(encoding="utf-8", errors="replace"),
-                        headings,
-                        max_chars=(
-                            None
-                            if self.full_selected_input
-                            else int(reference.get("max_chars", 3000))
-                        ),
-                    )
+                    document = self.registry[knowledge_module_id]
+                    headings = [str(item) for item in reference.get("headings", ())]
+                    excerpt = _extract_markdown_sections(document.text, headings)
                     if not excerpt:
-                        trace.append(
-                            {
-                                "candidate": reference_id,
-                                "decision": "rejected",
-                                "reason": "mapped headings produced no excerpt",
-                            }
-                        )
+                        trace.append({"candidate": reference_id, "decision": "rejected", "reason": "mapped_section_not_found"})
                         continue
+                    seen_sections.add(key)
+                    knowledge_types.extend(document.knowledge_type)
+                    exclusions.extend(document.conflicts_or_exclusions)
                     excerpts.append(
                         SkillExcerpt(
-                            relative,
-                            headings,
-                            excerpt,
-                            origin=origin,
-                            confidence_level=int(reference.get("confidence_level", 1)),
-                            provenance=str(reference.get("provenance", "documented_skill")),
+                            knowledge_module_id=knowledge_module_id,
+                            section_id=section_id,
+                            source=document.path,
+                            headings=headings,
+                            text=excerpt,
+                            origin=document.origin,
+                            confidence_level=document.confidence_level,
+                            provenance=document.provenance,
                         )
                     )
+                    selected_reference_ids.append((reference_id, ref_reason))
+                if not excerpts:
                     trace.append(
                         {
-                            "candidate": reference_id,
-                            "decision": "selected",
-                            "reason": ref_reason,
-                            "role": role,
-                            "origin": origin,
+                            "candidate": group_id,
+                            "decision": "rejected",
+                            "reason": "no_reference_selected",
                         }
                     )
-                capsules.append(
-                    SkillCapsule(
+                    continue
+                knowledge_module_chars = sum(len(item.text) for item in excerpts)
+                if selected_chars + knowledge_module_chars > audience_budget:
+                    for excerpt in excerpts:
+                        seen_sections.discard(
+                            (excerpt.knowledge_module_id, excerpt.section_id)
+                        )
+                    trace.append(
+                        {
+                            "candidate": group_id,
+                            "decision": "rejected",
+                            "reason": (
+                                "knowledge_module_budget_exceeded: "
+                                f"used={selected_chars}, candidate={knowledge_module_chars}, "
+                                f"limit={audience_budget}"
+                            ),
+                        }
+                    )
+                    trace.extend(
+                        {
+                            "candidate": reference_id,
+                            "decision": "rejected",
+                            "reason": "parent_knowledge_module_budget_exceeded",
+                        }
+                        for reference_id, _ in selected_reference_ids
+                    )
+                    continue
+                knowledge_modules.append(
+                    SkillKnowledgeModule(
                         skill_id=skill_id,
                         stage=stage,
                         purpose=str(skill.get("purpose", "")),
                         trigger_reason=reason,
                         expected_artifact=str(skill.get("expected_artifact", "")),
-                        knowledge_type=[
-                            str(item) for item in skill.get("knowledge_type", [])
-                        ],
-                        provided_context=[
-                            str(item) for item in skill.get("provide", [])
-                        ],
-                        exclusions=[str(item) for item in skill.get("exclude", [])],
+                        knowledge_type=list(dict.fromkeys(knowledge_types)),
+                        provided_context=[str(item) for item in skill.get("provide", ())],
+                        exclusions=list(dict.fromkeys(exclusions)),
                         excerpts=excerpts,
                         role=role,
                     )
                 )
-                trace.append(
+                selected_chars += knowledge_module_chars
+                trace.extend(
                     {
-                        "candidate": f"{stage}:{skill_id}",
+                        "candidate": reference_id,
                         "decision": "selected",
-                        "reason": reason,
-                        "role": role,
-                        "origin": origin,
+                        "reason": ref_reason,
                     }
+                    for reference_id, ref_reason in selected_reference_ids
                 )
-        return SkillAdapterSelection(capsules, trace, str(self.source_root), source_available)
+                trace.append({"candidate": group_id, "decision": "selected", "reason": reason})
+        return SkillAdapterSelection(
+            knowledge_modules=knowledge_modules,
+            trace=trace,
+            source_root=str(CANNBOT_KNOWLEDGE_BASE_ROOT),
+            source_available=True,
+            knowledge_base_id=self.knowledge_base_id,
+        )

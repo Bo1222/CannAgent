@@ -14,17 +14,25 @@ from .bundle import (
     capture_bundle,
     parse_file_bundle,
     restore_bundle,
+    semantic_bundle_hash,
     validate_initial_bundle,
 )
 from .context_selector import ContextSelector
 from .diagnostics import (
     diagnostic_fingerprint,
+    evaluation_gates,
     extract_api_symbols,
     observe_evaluation_stages,
     parse_structured_failure,
     read_result_log,
 )
 from .evaluator import Evaluator, extract_error_excerpt
+from .interface_contract import (
+    capture_interface_contract,
+    compare_interface_contract,
+    load_interface_contract,
+    save_interface_contract,
+)
 from .knowledge import (
     active_doc_ids,
     apply_selection_to_state,
@@ -43,6 +51,7 @@ from .logging import TrajectoryLogger
 from .models import EvalResult, FileBundle, LLMCallConfig, LLMResponse, RunConfig
 from .progress import ProgressReporter, token_detail
 from .prompts import build_plan_prompt, build_prompt, parse_plan, render_stage_context
+from .repair_policy import build_repair_policy
 from .repair_state import RepairStateManager
 from .runtime_knowledge import collect_runtime_facts
 from .skill_adapter import SkillAdapter
@@ -97,8 +106,6 @@ class MultiTurnRunner:
         self.progress = progress or ProgressReporter()
         self.skill_adapter = (
             SkillAdapter(
-                mapping_path=config.skill_mapping or None,
-                source_root=config.cannbot_skills_root or None,
                 full_selected_input=config.uses_full_selected_input,
             )
             if config.uses_skills
@@ -107,11 +114,6 @@ class MultiTurnRunner:
         self.context_selector = (
             ContextSelector(self.skill_adapter) if self.skill_adapter is not None else None
         )
-        if self.skill_adapter is not None and not self.skill_adapter.source_root.is_dir():
-            self.progress.emit(
-                "WARNING: CANNBot skill source is unavailable; continuing with empty "
-                f"skill capsules: {self.skill_adapter.source_root}"
-            )
 
     def _prepare_task(self) -> None:
         source = Path(self.config.op_file).expanduser().resolve()
@@ -234,8 +236,8 @@ class MultiTurnRunner:
             return ""
 
         knowledge = section(
-            ("Stage-selected AscendC references",),
-            ("Recent settled attempts", "Output contract"),
+            ("Exact installed/Verified facts and relevant knowledge modules", "Stage-selected AscendC references"),
+            ("Explicit forbidden patterns", "Reference PyTorch model and benchmark semantics (read-only)", "Output contract"),
         )
         source = section(
             ("Current implementation",),
@@ -246,8 +248,8 @@ class MultiTurnRunner:
             ("Active plan item", "Stage-selected AscendC references"),
         )
         repair_state = section(
-            ("Current trajectory repair state",),
-            ("Reference PyTorch model (read-only)", "Output contract"),
+            ("Open errors, cleared errors, and relevant failed approaches", "Current trajectory repair state"),
+            ("Must-satisfy semantic and ABI contracts", "Reference PyTorch model and benchmark semantics (read-only)", "Output contract"),
         )
 
         def measure(value: str) -> dict[str, int]:
@@ -307,8 +309,10 @@ class MultiTurnRunner:
             selection_metadata = selection_payload.get("selection_metadata", {})
             skill_text = "\n".join(
                 str(excerpt.get("text", ""))
-                for capsule in selection_payload.get("skill_capsules", [])
-                for excerpt in capsule.get("excerpts", [])
+                for knowledge_module in selection_payload.get(
+                    "skill_knowledge_modules", []
+                )
+                for excerpt in knowledge_module.get("excerpts", [])
             )
             structured_text = json.dumps(
                 {
@@ -480,6 +484,23 @@ file delta and no Markdown. The response must fit within the output-token limit.
         stage_timings: list[dict[str, Any]],
         repair_attempt: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        selection_payload = selection.to_dict()
+        input_route = selection_payload.get("task_facts", {}).get("input_route")
+        result_route = None
+        if result.error:
+            route = ContextSelector.derive_route(
+                workflow_phase=budget_phase,
+                current_exists=True,
+                previous=result,
+                evidence=read_result_log(result),
+            )
+            result_route = {
+                "primary": route.primary_skill,
+                "reason": route.route_reason,
+                "ownership": route.failure_ownership,
+                "debug_category": route.debug_category,
+                "matched_trigger": route.matched_route_trigger,
+            }
         return {
             "round": attempt_id,
             "attempt_id": attempt_id,
@@ -497,7 +518,9 @@ file delta and no Markdown. The response must fit within the output-token limit.
             "evaluation_attempts": [result.to_dict()],
             "repair_error": None,
             "response_finish_reason": response.finish_reason,
-            "knowledge": selection.to_dict(),
+            "knowledge": selection_payload,
+            "input_route": input_route,
+            "result_failure_route": result_route,
             "candidate": candidate_path,
             "plan_item": plan_item,
             "failure_fingerprint": fingerprint,
@@ -506,6 +529,7 @@ file delta and no Markdown. The response must fit within the output-token limit.
             "incident_id": incident_id,
             "confirmed_experience_id": confirmed_experience_id,
             "stage_observation": stage_observation,
+            "evaluation_gates": evaluation_gates(result),
             "stage_timings": stage_timings,
             "repair_attempt": repair_attempt,
         }
@@ -631,6 +655,7 @@ file delta and no Markdown. The response must fit within the output-token limit.
             f"# AscendC plan v{plan['version']}",
             "",
             f"Mode: {plan['mode']}",
+            f"Base attempt: {RepairStateManager(self.state_dir).accepted_attempt_id or 'none'}",
             "",
             plan.get("diagnosis", ""),
             "",
@@ -643,6 +668,9 @@ file delta and no Markdown. The response must fit within the output-token limit.
                     f"- [{checked}] {item['id']}: {item['change']}{outcome}",
                     f"  - Hypothesis: {item['hypothesis']}",
                     f"  - Expected: {item['expected_signal']}",
+                    f"  - Target files: {', '.join(item.get('target_files', [])) or 'unspecified'}",
+                    f"  - Allow interface change: {bool(item.get('allow_interface_change', False))}",
+                    f"  - Falsifies: {', '.join(item.get('falsifies', [])) or 'none'}",
                 ]
             )
         (self.state_dir / "plan.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -704,6 +732,7 @@ file delta and no Markdown. The response must fit within the output-token limit.
                     response_path.read_text(encoding="utf-8"),
                     min_items=1,
                     max_items=1,
+                    require_evidence=diagnosis_required,
                 )
                 self.progress.emit(
                     f"{call_type.upper()} v{version} · reused persisted response"
@@ -725,6 +754,7 @@ file delta and no Markdown. The response must fit within the output-token limit.
                 response.content,
                 min_items=1,
                 max_items=1,
+                require_evidence=diagnosis_required,
             )
         (plan_dir / "result.json").write_text(
             json.dumps(parsed, ensure_ascii=False, indent=2), encoding="utf-8"
@@ -773,6 +803,38 @@ file delta and no Markdown. The response must fit within the output-token limit.
         evidence_parts = [reference, cases, source_evidence, failure_evidence, planned_evidence]
         evidence = "\n".join(evidence_parts)
         if self.config.knowledge_mode == "structured":
+            failure_case_info = (
+                (previous.structured_failure or {}).get("case_info", {})
+                if previous and isinstance(previous.structured_failure, dict)
+                else {}
+            )
+            profile_match = re.search(
+                r"\b(?:active_)?profile\s*[:=]\s*(smoke|shape|dtype|full|benchmark)\b",
+                failure_evidence,
+                re.IGNORECASE,
+            )
+            active_profile = str(
+                (previous.active_profile if previous else None)
+                or failure_case_info.get("profile")
+                or failure_case_info.get("active_profile")
+                or (profile_match.group(1).lower() if profile_match else "")
+            ) or None
+            raw_indices = failure_case_info.get(
+                "profile_case_indices", failure_case_info.get("case_indices", [])
+            )
+            profile_indices = (
+                [int(item) for item in raw_indices]
+                if isinstance(raw_indices, (list, tuple))
+                else []
+            )
+            raw_features = failure_case_info.get(
+                "profile_features", failure_case_info.get("features", [])
+            )
+            profile_features = (
+                [str(item) for item in raw_features]
+                if isinstance(raw_features, (list, tuple))
+                else []
+            )
             stage_request = (
                 self.context_selector.request(
                     audience=audience,
@@ -786,6 +848,9 @@ file delta and no Markdown. The response must fit within the output-token limit.
                     evidence=evidence,
                     source_evidence=source_evidence,
                     planned_evidence=planned_evidence,
+                    active_profile=active_profile,
+                    profile_case_indices=profile_indices,
+                    profile_features=profile_features,
                 )
                 if self.context_selector is not None
                 else None
@@ -864,9 +929,7 @@ file delta and no Markdown. The response must fit within the output-token limit.
                         cache_path=round_dir
                         / f"runtime_header_facts_{audience}.json",
                         max_chars=(
-                            None
-                            if self.config.uses_full_selected_input
-                            else 4000
+                            4000
                         ),
                         soc_version=self.config.soc_version,
                         project_root=self.REPO_ROOT,
@@ -883,11 +946,10 @@ file delta and no Markdown. The response must fit within the output-token limit.
                 )
                 if getattr(runtime_facts, "environment_fingerprint", None):
                     selected_context.task_facts["environment_fingerprint"] = runtime_facts.environment_fingerprint
-                if not self.config.uses_full_selected_input:
-                    selected_context.budget["max_chars"] = min(
-                        int(selected_context.budget["max_chars"]),
-                        max_knowledge_chars,
-                    )
+                selected_context.budget["max_chars"] = min(
+                    int(selected_context.budget["max_chars"]),
+                    max_knowledge_chars,
+                )
                 rendered = render_stage_context(selected_context)
                 selected_result = selected_context
                 context_payload = selected_context.to_dict()
@@ -1128,6 +1190,17 @@ file delta and no Markdown. The response must fit within the output-token limit.
             )
         else:
             selection, knowledge_context = prepared_knowledge
+        protected_regions = build_repair_policy(
+            current,
+            previous,
+            active_item,
+            workflow_phase=budget_phase,
+        ).to_dict()
+        interface_contract = load_interface_contract(
+            self.state_dir / "interface_contract.json"
+        )
+        if interface_contract is not None:
+            protected_regions["interface_contract"] = interface_contract
         prompt = build_prompt(
             reference_code=reference,
             cases_text=cases,
@@ -1139,6 +1212,8 @@ file delta and no Markdown. The response must fit within the output-token limit.
             plan_item=active_item,
             full_input=self.config.uses_full_selected_input,
             repair_state=repair_state_manager.prompt_summary(previous),
+            knowledge_selection=selection,
+            protected_regions=protected_regions,
             compile_repair_active=bool(
                 budget_phase == "bootstrap"
                 and current is not None
@@ -1506,21 +1581,92 @@ file delta and no Markdown. The response must fit within the output-token limit.
                 final_status = "paused"
                 break
 
+            if (
+                not self.config.mock
+                and
+                base_bundle is not None
+                and semantic_bundle_hash(candidate) == semantic_bundle_hash(base_bundle)
+            ):
+                restore_bundle(self.task_dir, base_bundle)
+                no_op_path = round_dir / "no_op_edit.log"
+                message = "candidate changes only comments/whitespace or makes no source change"
+                self._write_error(no_op_path, message)
+                no_op_result = self._failure_result(
+                    stage="no_op_edit",
+                    code="no_op_edit_detected",
+                    message=message,
+                    details_path=no_op_path,
+                )
+                self._record_orchestration_failure(
+                    logger,
+                    attempt_id=attempt_id,
+                    evaluation_round=evaluation_round,
+                    result=no_op_result,
+                )
+                if active_item is not None:
+                    active_item["status"] = "SETTLED"
+                    active_item["decision"] = "NO_OP"
+                    active_item["attempt_id"] = attempt_id
+                    self._save_plan_progress(plan)
+                no_op_streak = int(workflow.get("no_op_streak", 0)) + 1
+                logger.complete_pending()
+                logger.update_workflow(
+                    phase="DIAGNOSE",
+                    active_plan_item=None,
+                    diagnose_pending=True,
+                    no_op_streak=no_op_streak,
+                )
+                workflow = logger.data["workflow"]
+                plan = None
+                if no_op_streak >= 3:
+                    stop_failure = no_op_result
+                    final_status = "paused"
+                    stop_reason = "repeated_no_op_edit"
+                    break
+                continue
+
             progress_cursor = self.progress.event_cursor()
-            try:
-                result = self._normalize_evaluation(
-                    self.evaluator.evaluate(self.task_dir, round_dir), round_dir
+            interface_path = self.state_dir / "interface_contract.json"
+            interface_contract = load_interface_contract(interface_path)
+            allow_interface_change = bool(
+                (active_item or {}).get(
+                    "allow_interface_change",
+                    (active_item or {}).get("allow_abi_change", False),
                 )
-            except Exception as error:
-                path = round_dir / "evaluation_error.log"
-                self._write_error(path, error)
+            )
+            interface_issues = (
+                []
+                if interface_contract is None or allow_interface_change
+                else compare_interface_contract(interface_contract, candidate)
+            )
+            if interface_issues:
+                path = round_dir / "interface_contract_validation.log"
+                message = "interface contract violation:\n" + "\n".join(
+                    f"- {issue}" for issue in interface_issues
+                )
+                self._write_error(path, message)
                 result = self._failure_result(
-                    stage="evaluation",
-                    code="evaluator_exception",
-                    message=f"local evaluator failed unexpectedly: {error}",
+                    stage="interface_contract_validation",
+                    code="interface_contract_changed_without_authorization",
+                    message=message,
                     details_path=path,
-                    failure_kind="infrastructure",
+                    failure_kind="candidate",
                 )
+            else:
+                try:
+                    result = self._normalize_evaluation(
+                        self.evaluator.evaluate(self.task_dir, round_dir), round_dir
+                    )
+                except Exception as error:
+                    path = round_dir / "evaluation_error.log"
+                    self._write_error(path, error)
+                    result = self._failure_result(
+                        stage="evaluation",
+                        code="evaluator_exception",
+                        message=f"local evaluator failed unexpectedly: {error}",
+                        details_path=path,
+                        failure_kind="infrastructure",
+                    )
             stage_timings = self.progress.events_since(progress_cursor)
             stage_observation = observe_evaluation_stages(
                 result, workflow_phase=budget_phase
@@ -1583,6 +1729,16 @@ file delta and no Markdown. The response must fit within the output-token limit.
                     restore_bundle(self.task_dir, best_bundle)
                     current = best_bundle
                     previous = best_result
+
+            accepted_candidate = (
+                bootstrap_attempt and (valid or repair_decision.accept_candidate)
+            ) or (not bootstrap_attempt and decision == "KEEP")
+            if result.compiled and accepted_candidate and (
+                interface_contract is None or allow_interface_change
+            ):
+                save_interface_contract(
+                    interface_path, capture_interface_contract(candidate)
+                )
 
             attempt_record = repair_state_manager.build_attempt(
                 attempt_id=attempt_id,
@@ -1669,6 +1825,7 @@ file delta and no Markdown. The response must fit within the output-token limit.
                         "cleared_error_ids": attempt_record.cleared_error_ids,
                         "new_error_ids": attempt_record.new_error_ids,
                         "reintroduced_error_ids": attempt_record.reintroduced_error_ids,
+                        "progress": repair_decision.progress,
                     },
                 ),
                 best_round=best_round,
@@ -1676,6 +1833,7 @@ file delta and no Markdown. The response must fit within the output-token limit.
             logger.complete_pending()
             workflow = logger.data.setdefault("workflow", {})
             consecutive = int(workflow.get("consecutive_failures", 0)) + 1 if decision == "FAIL" else 0
+            escalation = repair_state_manager.escalation_for(previous)
             bootstrap_count, optimization_count = self._budget_counts(logger)
             logger.update_workflow(
                 phase="PLAN" if decision == "BASELINE_KEEP" else "EDIT",
@@ -1685,7 +1843,11 @@ file delta and no Markdown. The response must fit within the output-token limit.
                 optimization_rounds_completed=optimization_count,
                 consecutive_failures=consecutive,
                 active_plan_item=None,
-                diagnose_pending=consecutive >= self.CONSECUTIVE_FAIL_THRESHOLD,
+                diagnose_pending=(
+                    consecutive >= self.CONSECUTIVE_FAIL_THRESHOLD
+                    or bool(escalation.get("diagnose_required"))
+                ),
+                no_op_streak=0,
             )
             workflow = logger.data["workflow"]
             self._report_result(evaluation_round, decision, result)
@@ -1780,6 +1942,14 @@ file delta and no Markdown. The response must fit within the output-token limit.
         totals = logger.token_totals()
         totals_by_type = logger.token_totals_by_call_type()
         normalized_metrics = logger.normalized_metrics()
+        repair_state = RepairStateManager(self.state_dir).state
+        accepted_attempt_id = repair_state.get("accepted_attempt_id")
+        rejected_outcomes = {"NO_PROGRESS", "REGRESSION", "UNCLASSIFIED", "INITIAL_REJECT"}
+        discarded_attempts = [
+            item.get("attempt_id", item.get("round"))
+            for item in counted
+            if item.get("repair_attempt", {}).get("outcome") in rejected_outcomes
+        ]
         summary = {
             "success": success,
             "status": final_status,
@@ -1796,6 +1966,11 @@ file delta and no Markdown. The response must fit within the output-token limit.
             "stop_reason": stop_reason,
             "historical_records": logger.historical_records,
             "attempts_completed": logger.last_attempt_id,
+            "accepted_attempt_id": accepted_attempt_id,
+            "latest_attempt_id": logger.last_attempt_id,
+            "accepted_candidate": repair_state.get("accepted_bundle"),
+            "latest_candidate": last_record.get("candidate") if last_record else None,
+            "discarded_attempts": discarded_attempts,
             "orchestration_failures": logger.orchestration_attempts,
             "pending_round": None if completed else len(counted) + 1,
             "baseline_round": baseline_round,

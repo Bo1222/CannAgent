@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .diagnostics import diagnostic_delta, diagnostics_for_result
+from .diagnostics import diagnostic_delta, diagnostics_for_result, evaluation_gates
 from .models import EvalResult, FileBundle
 from .structured_knowledge.experience import bundle_diff
 from .structured_knowledge.schema import AttemptRecord, DiagnosticRecord
@@ -17,6 +18,7 @@ _VALIDATION_STAGES = {
     "ascendc_source_validation",
     "api_constraint_validation",
     "static_validation",
+    "interface_contract_validation",
 }
 _COMPILE_STAGES = {"ascendc_build", "compile"}
 
@@ -35,6 +37,22 @@ def _stage_rank(result: EvalResult | None) -> int:
     return 2
 
 
+def _progress_state(result: EvalResult | None) -> dict[str, Any]:
+    if result is None:
+        return {
+            "stage_rank": -1,
+            "gates": {},
+            "passed_profiles": [],
+            "passed_case_indices": [],
+        }
+    return {
+        "stage_rank": _stage_rank(result),
+        "gates": evaluation_gates(result),
+        "passed_profiles": list(result.passed_profiles),
+        "passed_case_indices": sorted(set(result.passed_case_indices)),
+    }
+
+
 @dataclass(frozen=True)
 class RepairDecision:
     outcome: str
@@ -43,6 +61,7 @@ class RepairDecision:
     diagnostics_after: list[DiagnosticRecord]
     delta: dict[str, list[str]]
     base_attempt_id: int | None
+    progress: dict[str, Any]
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -52,6 +71,7 @@ class RepairDecision:
             "diagnostics_after": [item.to_dict() for item in self.diagnostics_after],
             "delta": self.delta,
             "base_attempt_id": self.base_attempt_id,
+            "progress": self.progress,
         }
 
 
@@ -124,6 +144,21 @@ class RepairStateManager:
             after,
             historically_cleared=self.state.get("cleared_error_ids", []),
         )
+        before_progress = _progress_state(base_result)
+        after_progress = _progress_state(result)
+        before_profiles = set(before_progress["passed_profiles"])
+        after_profiles = set(after_progress["passed_profiles"])
+        before_cases = set(before_progress["passed_case_indices"])
+        after_cases = set(after_progress["passed_case_indices"])
+        progress = {
+            "before": before_progress,
+            "after": after_progress,
+            "cleared_count": len(delta["cleared"]),
+            "new_count": len(delta["new"]),
+            "reintroduced_count": len(delta["reintroduced"]),
+            "profile_progress": after_profiles > before_profiles,
+            "case_progress": after_cases > before_cases,
+        }
         if base_result is None:
             if _stage_rank(result) >= 1:
                 outcome, accept = "INITIAL_KEEP", True
@@ -133,12 +168,18 @@ class RepairStateManager:
             outcome, accept = "FRONTIER_ADVANCED", True
         elif _stage_rank(result) < _stage_rank(base_result):
             outcome, accept = "REGRESSION", False
+        elif delta["reintroduced"]:
+            outcome, accept = "REGRESSION", False
+        elif result.compiled and (
+            delta["cleared"]
+            or progress["profile_progress"]
+            or progress["case_progress"]
+        ):
+            outcome, accept = "PARTIAL_KEEP", True
         elif (base_result.failure_stage or "") in _COMPILE_STAGES:
             direct_before = [item for item in before if item.category != "stage_error"]
             direct_after = [item for item in after if item.category != "stage_error"]
-            if delta["reintroduced"]:
-                outcome, accept = "REGRESSION", False
-            elif direct_before and direct_after and delta["cleared"]:
+            if direct_before and direct_after and delta["cleared"]:
                 outcome, accept = "PARTIAL_KEEP", True
             elif direct_before and not direct_after and not result.compiled:
                 # Losing parseable compiler evidence is not proof of progress.
@@ -154,6 +195,7 @@ class RepairStateManager:
             diagnostics_after=after,
             delta=delta,
             base_attempt_id=self.accepted_attempt_id,
+            progress=progress,
         )
 
     @staticmethod
@@ -164,6 +206,19 @@ class RepairStateManager:
         source = f"{hypothesis}\n{change}".strip() or "unspecified repair"
         approach_id = hashlib.sha256(source.encode("utf-8")).hexdigest()[:12]
         return approach_id, hypothesis, change
+
+    @staticmethod
+    def _approach_family(hypothesis: str, change: str) -> str:
+        source = f"{hypothesis}\n{change}".lower()
+        source = re.sub(r"0x[0-9a-f]+|\b\d+\b", "<n>", source)
+        source = re.sub(r"[^a-z_\u4e00-\u9fff]+", " ", source)
+        source = re.sub(
+            r"\b(?:change|fix|update|modify|replace|use|set|add|remove|ensure)\b",
+            " ",
+            source,
+        )
+        normalized = " ".join(source.split()) or "unspecified repair"
+        return hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:12]
 
     @staticmethod
     def _selection_ids(selection: Any) -> tuple[list[str], list[str], dict[str, Any]]:
@@ -238,6 +293,7 @@ class RepairStateManager:
             frontier_before=frontier_before,
             frontier_after=frontier_after,
             result=result.to_dict(),
+            progress=decision.progress,
         )
 
     def observe(
@@ -270,6 +326,7 @@ class RepairStateManager:
         approach_id = hashlib.sha256(
             f"{attempt.hypothesis}\n{attempt.change}".encode()
         ).hexdigest()[:12]
+        family_id = self._approach_family(attempt.hypothesis, attempt.change)
         summary = (attempt.change or attempt.hypothesis or "unspecified repair").strip()[:600]
         targets = attempt.target_error_ids or attempt.error_ids_after
         mapping = self.state.setdefault("failed_approaches_by_error", {})
@@ -282,6 +339,7 @@ class RepairStateManager:
                 entries.append(
                     {
                         "approach_id": approach_id,
+                        "approach_family_id": family_id,
                         "summary": summary,
                         "outcome": attempt.outcome,
                         "attempt_ids": [attempt.attempt_id],
@@ -295,6 +353,14 @@ class RepairStateManager:
                 ]
                 existing["occurrences"] = int(existing.get("occurrences", 1)) + 1
                 existing["outcome"] = attempt.outcome
+            family_occurrences = sum(
+                int(item.get("occurrences", 1))
+                for item in entries
+                if item.get("approach_family_id") == family_id
+            )
+            for item in entries:
+                if item.get("approach_family_id") == family_id:
+                    item["family_occurrences"] = family_occurrences
 
     def prompt_summary(self, result: EvalResult | None = None) -> dict[str, Any]:
         open_records = diagnostics_for_result(result) if result is not None else []
@@ -322,4 +388,31 @@ class RepairStateManager:
             "open_errors": open_errors,
             "cleared_error_ids": list(self.state.get("cleared_error_ids", [])),
             "failed_approaches_by_error": relevant,
+            "accepted_progress": _progress_state(self.accepted_evaluation()),
+            "escalation": self.escalation_for(result),
+        }
+
+    def escalation_for(self, result: EvalResult | None) -> dict[str, Any]:
+        records = diagnostics_for_result(result)
+        mapping = self.state.get("failed_approaches_by_error", {})
+        attempts = 0
+        max_family_occurrences = 0
+        error_ids: list[str] = []
+        for record in records:
+            error_ids.append(record.error_id)
+            entries = list(mapping.get(record.error_id, []))
+            if not entries and record.symbol:
+                for error_id, candidates in mapping.items():
+                    if f":{record.symbol}:" in error_id:
+                        entries.extend(candidates)
+            attempts += sum(int(item.get("occurrences", 1)) for item in entries)
+            max_family_occurrences = max(
+                [max_family_occurrences]
+                + [int(item.get("family_occurrences", item.get("occurrences", 1))) for item in entries]
+            )
+        return {
+            "open_error_ids": error_ids,
+            "rejected_attempts": attempts,
+            "max_approach_family_occurrences": max_family_occurrences,
+            "diagnose_required": attempts >= 2 or max_family_occurrences >= 2,
         }

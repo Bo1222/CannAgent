@@ -1,0 +1,77 @@
+{
+  "schema_version": 2,
+  "confidence_policy": "Local stable knowledge modules are project contracts; exact environment-bound declarations require matching installed-header or probe evidence.",
+  "knowledge_modules": [
+    {
+      "knowledge_module_id": "cannagent.host-abi",
+      "path": "cannagent_host_abi.md",
+      "sha256": "3170d2026eef1a250e2b19c3042d9c02099e42084233f20af201b2e3a37258dc",
+      "knowledge_type": ["project_contract", "host_abi", "negative_fact"],
+      "allowed_stages": ["code_generation", "host_integration_debug"],
+      "provenance": "cannagent_project_and_runtime_contract",
+      "confidence_level": 1,
+      "required_probe_ids": ["host_tensor_stream"],
+      "environment_bound": true
+    },
+    {
+      "knowledge_module_id": "cannagent.operator-invariants",
+      "path": "verified_operator_patterns.md",
+      "sha256": "8a295be181436a4ec480dd7f928777fca0fc641397b2c6ebb619fb8f189fa099",
+      "knowledge_type": ["semantic_invariant", "algorithm", "formula"],
+      "allowed_stages": ["kernel_design", "standing_contract"],
+      "provenance": "task_and_project_contract",
+      "confidence_level": 1,
+      "environment_bound": false
+    },
+    {
+      "knowledge_module_id": "cannagent.compiler-constraints",
+      "path": "compiler_constraints.md",
+      "sha256": "487fc395484143679c383435c9e858727f5ab85259aa95787af2832a9f3f06e3",
+      "knowledge_type": ["compiler_constraint", "boundary_rule"],
+      "allowed_stages": ["compile_debug", "host_integration_debug"],
+      "provenance": "compiler_and_project_contract",
+      "confidence_level": 1,
+      "environment_bound": false
+    },
+    {
+      "knowledge_module_id": "cannagent.broadcast-semantics",
+      "path": "broadcast_semantics.md",
+      "sha256": "87a91f33ef9286d0f0dcf737ef8230d9e1387e8f1eedc4dbada6bb83257695e5",
+      "knowledge_type": ["semantic_invariant", "broadcast", "data_movement"],
+      "allowed_stages": ["kernel_design", "standing_contract"],
+      "provenance": "task_reference_and_project_contract",
+      "confidence_level": 1,
+      "environment_bound": false
+    },
+    {
+      "knowledge_module_id": "cannagent.direct-launch-abi",
+      "path": "direct_launch_abi.md",
+      "sha256": "c96415991d33dd28281f0bba34eda48b35e90c3b18ac4f8ea262e89c32f835d4",
+      "knowledge_type": ["launch_abi", "boundary_rule", "negative_fact"],
+      "allowed_stages": ["code_generation", "host_integration_debug", "compile_debug", "runtime_debug"],
+      "provenance": "cannagent_project_compile_and_runtime_contract",
+      "confidence_level": 1,
+      "environment_bound": false
+    },
+    {
+      "knowledge_module_id": "cannagent.host-cpp-contract",
+      "path": "host_cpp_contract.md",
+      "sha256": "b3dad37641051a245046ba9fa7a41d3adb81727230f69b94f7502b94f4609f32",
+      "knowledge_type": ["host_cpp", "build_contract", "negative_fact"],
+      "allowed_stages": ["host_integration_debug"],
+      "provenance": "cannagent_project_and_compiler_contract",
+      "confidence_level": 1,
+      "environment_bound": false
+    },
+    {
+      "knowledge_module_id": "cannagent.kernel-memory-contract",
+      "path": "kernel_memory_contract.md",
+      "sha256": "f0dde398f2bf680a7ff58e91d4223cb9e93fce9523f15999314a739edca371e9",
+      "knowledge_type": ["memory_safety", "runtime_diagnostic", "data_movement"],
+      "allowed_stages": ["runtime_debug", "kernel_design"],
+      "provenance": "cannagent_runtime_and_project_contract",
+      "confidence_level": 1,
+      "environment_bound": false
+    }
+  ]
+}

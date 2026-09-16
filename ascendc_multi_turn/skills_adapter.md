@@ -1,8 +1,14 @@
 # CANNBot Skills Adapter for CannAgent
 
-本文说明 `ascendc_multi_turn` 如何把 CANNBot AscendC Skills 作为领域知识模块接入现有 CannAgent。Adapter 只改变向 Planner 和 Generator 提供知识的方式，不执行 CANNBot 工作流，不替换 CannAgent Agent 框架、代码生成器或评测流程。
+本文说明 `ascendc_multi_turn` 如何把内置 CANNBot AscendC 精选知识库作为领域知识模块接入
+CannAgent。Adapter 只负责向 Planner 和 Generator 提供知识，不执行 CANNBot 工作流，也不替换
+CannAgent Agent 框架或代码生成器。Evaluator 的渐进 profile 与 Runner 的单调验收属于独立的
+本地可靠性机制，不由 CANNBot 文档驱动。
 
-当前真实 NPU A/B 尚未完成，因此本文描述的是已经实现的适配机制和待执行的评测方案，不代表 Adapter 已经证明能够提高编译率或正确率。
+生产运行不再读取外部 CANNBot 仓库。包内 knowledge base 固定到 upstream commit
+`a08c49706e35a400d7c77e0875bc7c72a3a79012`，保留 CANN Open Software License
+Agreement 2.0、来源说明和逐文档 manifest。所有静态 CANNBot 内容默认仅为 Level 1
+Documented；installed header、项目源码和本地 compile/correctness evidence 具有更高 authority。
 
 ## 1. Stage 路由表及与 Baseline 的详细对比
 
@@ -27,7 +33,7 @@ operator/cases/current source/previous result
           Planner     Generator
 ```
 
-`--knowledge-source skills` 只向 prompt 注入 CANNBot Skill capsules：Planner 和 Generator 分别推导 stage，official `KnowledgeBundle` 为空，但固定规则、真实 evaluator evidence 和 installed-header facts 保留。`--knowledge-source hybrid` 则先路由 structured official knowledge，再与对应 Skill capsules 合并。两个 Skills 模式都不会默认共享 Planner 和 Generator 的最终知识文本。旧 `--skill-adapter` 等价于 `--knowledge-source hybrid`。
+`--knowledge-source skills` 只向 prompt 注入 CANNBot Skill knowledge modules：Planner 和 Generator 分别推导 stage，official `KnowledgeBundle` 为空，但固定规则、真实 evaluator evidence 和 installed-header facts 保留。`--knowledge-source hybrid` 则先路由 structured official knowledge，再与对应 Skill knowledge modules 合并。两个 Skills 模式都不会默认共享 Planner 和 Generator 的最终知识文本。旧 `--skill-adapter` 等价于 `--knowledge-source hybrid`。
 
 ```text
 Skills / Hybrid
@@ -50,7 +56,7 @@ Skills / Hybrid
           Planner                       Generator
 ```
 
-Hybrid 在现有 structured bundle 之上增加按 stage、audience 和失败证据选择的 capsules；Skills-only 则保留相同 selector、runtime facts 和本地适配 capsule，但给 prompt 的旧 structured `KnowledgeBundle` 明确为空，不发生 fallback。两者都不删除 Structured Knowledge A。
+Hybrid 在现有 structured bundle 之上增加按 stage、audience 和失败证据选择的 knowledge modules；Skills-only 则保留相同 selector、runtime facts 和本地适配 knowledge module，但给 prompt 的旧 structured `KnowledgeBundle` 明确为空，不发生 fallback。两者都不删除 Structured Knowledge A。
 
 ### 1.2 Workflow 状态到 stage 的路由
 
@@ -59,13 +65,14 @@ Stage 由 `ContextSelector.derive_stages()` 根据 audience、workflow phase、�
 | 当前状态 | Structured baseline | Hybrid / Skills-only Planner stages | Hybrid / Skills-only Generator stages |
 |---|---|---|---|
 | 首次生成，没有当前实现 | 通用 `plan_generate` | `operator_analysis`, `kernel_design` | `kernel_design`, `code_generation` |
-| 已有实现，没有明确失败 | 通用 `plan_generate` | `kernel_design` | `kernel_design`, `code_generation` |
-| CUDA contamination、NPU tensor/stream、Host binding 失败 | 通用 diagnose bundle | `host_integration_debug` | `host_integration_debug`, `code_generation` |
-| 其他 Bundle、源码、API、静态校验或编译失败 | 通用 diagnose bundle | `compile_debug` | `compile_debug`, `code_generation` |
-| Correctness 阶段出现 ACL、AICore、MTE、device exception 等运行时信号 | 通用 diagnose bundle | `runtime_debug` | `runtime_debug`, `code_generation` |
-| 已 compile/load/execute，但出现一般 correctness mismatch | 通用 diagnose bundle | `kernel_design` | `kernel_design`, `code_generation` |
-| 已有 dtype/cast/accumulation/rounding/epsilon/tolerance 直接证据 | 通用 diagnose bundle | `precision_debug`，或 `kernel_design` + 一个 precision secondary | 同 Planner，并附加 `code_generation` |
-| 已获得正确 baseline，进入优化 | 通用 optimization knowledge | `optimization` | `optimization`, `code_generation` |
+| 已有实现，没有明确失败 | 通用 `plan_generate` | `kernel_design` | `kernel_design` |
+| pybind/include/ATen container/NPU tensor/stream Host 失败 | 通用 diagnose bundle | `host_integration_debug` | `host_integration_debug` |
+| GM_ADDR/`__gm__`/descriptor/signature/cast boundary 失败 | 通用 diagnose bundle | `host_integration_debug` | `host_integration_debug` |
+| 精确 AscendC overload/template/owner 编译失败 | 通用 diagnose bundle | `compile_debug` | `compile_debug` |
+| 507001/507035、ACL、AICore、MTE、address/device exception | 通用 diagnose bundle | `runtime_debug` | `runtime_debug` |
+| 已 compile/load/execute，但出现一般 correctness mismatch | 通用 diagnose bundle | `kernel_design` | `kernel_design` |
+| 已有 dtype/cast/accumulation/rounding/epsilon/tolerance 直接证据 | 通用 diagnose bundle | `precision_debug`，或带明确提示的 secondary | 同 Planner |
+| 已获得正确 baseline，进入优化 | 通用 optimization knowledge | `optimization` | `optimization` |
 
 编译类 stage 包括：`bundle_validation`、`ascendc_source_validation`、`api_constraint_validation`、`static_validation`、`ascendc_build`、`compile` 和 `response_format`。
 
@@ -78,11 +85,10 @@ Stage 由 `ContextSelector.derive_stages()` 根据 audience、workflow phase、�
 | `operator_analysis` | `npu-arch` | 初始 Planner，stage 存在即触发 | SoC 身份、运行时查询要求、能力约束、兼容性分支 | Triton 指南、无关 SKU 表、硬编码 core/UB 参数、完整架构白皮书 |
 | `kernel_design` | `ascendc-tiling-design` | stage 存在即触发，再按 operator family 选引用 | 多核切分、UB tiling、buffer 生命周期、tail、tiling fields 和分支覆盖 | 无关算子族、一次注入所有 tiling 方案、正确性前的性能调优 |
 | `kernel_design` | `ascendc-api-best-practices` | stage 存在即触发，引用再按 API/关键词过滤 | 与当前设计相关的 API、对齐、buffer、精度和 pipeline 约束 | 完整 API 目录、源码中未涉及的 API、平台不支持的高级 API |
-| `code_generation` | `ascendc-direct-invoke-template` | 所有 Generator 的代码生成 stage | CannAgent ABI 兼容的 wrapper、host、kernel、launch 和数据流结构 | CMake、复制命令、运行脚本、测试工程、完整模板目录、PyTorch fallback |
-| `code_generation` | `cannagent-host-abi`（本地 capsule） | 所有 Generator；只采用 project/header/probe 可追溯事实 | NPU tensor、stream、`*_do` wrapper、module/include contract 与 CUDA negative facts | 未经当前环境验证的精确 Host 调用、CUDA API、CANNBot scaffold |
+| `code_generation` | direct-launch + `cannagent-host-abi` | 仅首次完整候选 | CannAgent ABI 兼容的 wrapper、host、kernel、launch、descriptor 和数据流结构 | CMake、复制命令、运行脚本、测试工程、完整模板目录、PyTorch fallback |
 | `host_integration_debug` | `cannagent-host-abi`（Primary route） | Host binding、NPU tensor/stream 或 CUDA contamination 的确定性 evidence | 一个最小 Host ABI 修复及 positive/negative facts | Kernel 数学、tiling、无关 API cards |
 | `compile_debug` | `ascendc-api-best-practices` | 上一轮属于源码/API/编译失败 | 失败调用点对应的 signature、owner、overload、参数或约束修复依据 | 无关 API、整份 API 文档、精度和性能建议、与 installed headers 冲突的签名 |
-| `compile_debug` | `ascendc-direct-invoke-template` | 源码结构、launch ABI 或 build 失败 | 最小 wrapper/kernel/launch 结构修正 | 工程重写、示例模块命名、完整 add_custom 项目和工作流步骤 |
+| `host_integration_debug` | direct-launch ABI leaves | GM_ADDR、`__gm__`、descriptor、wrapper signature 或 cast evidence | 三方 ABI 与 Host/device memory boundary | 工程重写、冲突 stream 示例、未经验证强转 |
 | `runtime_debug` | `ascendc-runtime-debug` | runtime/correctness failure 且包含 ACL、AICore、MTE、错误码、tiling、kernel lookup 等信号 | 错误分类、排序后的检查项、下一诊断动作及确认信号 | 完整错误码目录、无环境信号时的环境排查、性能建议 |
 | `precision_debug` | `ascendc-precision-debug` | correctness failure 且存在明确 dtype/cast/accumulation/rounding/epsilon/tolerance 证据 | 一项可验证的精度假设、最小 instrumentation/fix 和预期信号 | 仅凭大幅 mismatch 触发、index/data movement 错误、runtime/performance 流程 |
 | `optimization` | `ascendc-performance-best-practices` | 已存在正确 baseline | 一个有证据支持的优化假设、适用条件、最小改动和期望性能信号 | 无关算子族、没有证据的优化、放宽正确性、模板重写 |
@@ -97,7 +103,7 @@ Skill 触发分为两层：
 
 ### 1.4 Planner 和 Generator 的知识差异
 
-Planner 面向方案决策，默认只需要任务事实、项目硬约束、少量设计模式和与 stage 匹配的 Skill capsules。非 debug Planner 不会接收完整 API facts。
+Planner 面向方案决策，默认只需要任务事实、项目硬约束、少量设计模式和与 stage 匹配的 Skill knowledge modules。非 debug Planner 不会接收完整 API facts。
 
 Generator 面向代码实现，会接收 API facts、API cards、installed public-header facts、更多设计模式以及 `code_generation` Skill。进入 debug stage 后，API facts 按 `failure_symbols > source_symbols > planned_symbols` 排序。三类 evidence 分别来自当前 compiler/linker/runtime/correctness 失败、candidate source 和 active plan。某一集合为空不会把其余 API cards 清空；selector 仍保留小额 fallback，并在 metadata 中记录每项知识命中的 symbol 类型。
 
@@ -105,18 +111,27 @@ Generator 面向代码实现，会接收 API facts、API cards、installed publi
 
 | Audience | 总预算 | 重点配额 |
 |---|---:|---|
-| Planner | 12,000 字符 | hard constraints、failure guidance、精简 API、Skill capsules |
-| Generator | 20,000 字符 | hard constraints、failure guidance、API/header facts、Skill capsules |
+| Planner | 12,000 字符 | hard constraints、failure guidance、精简 API、Skill knowledge modules |
+| Generator | 20,000 字符 | hard constraints、failure guidance、API/header facts、Skill knowledge modules |
 
-最终渲染仍受 Runner 的 `max_knowledge_chars` 限制。超出分区或总预算的条目不会注入 prompt，并记录在 `truncated_sections`。
+Structured/runtime 条目始终受 Runner 的确定性字符预算约束，`full_selected` 不再关闭预算。
+Embedded Skill section 的宽度在 selection 阶段由 stage、failure ownership、operator family、profile
+和 evidence 控制；超出预算时拒绝整个知识模块，一旦 selected 就完整、原子投递，不从正文中间截断，并记录实际渲染的
+`knowledge_module_id#section_id`。
+
+当前算子的最小语义契约通过 `standing_contract` 叠加到主路由。例如 Add 在进入 Host、编译或
+runtime 调试后仍保留广播 offset/stride 约束；完整 Host/API/性能教程仍按当前证据选择，不会全部常驻。
 
 ## 2. 对 CANNBot Skill 内容所做的适配
 
 ### 2.1 当前实现不是动态执行完整 Skill
 
-Adapter 不会在算子生成期间解释或执行 CANNBot 的完整 `SKILL.md`。七个目标 Skill 的 purpose、trigger condition、required context、expected artifact、knowledge type、references 和 exclusions 已人工提取并固化在 `skill_mapping.yaml` 中。
+Adapter 不会在算子生成期间解释或执行 CANNBot 的完整 Skill workflow。精选 Skill 的
+purpose、trigger condition、required context、expected artifact、knowledge type、leaf
+references 和 exclusions 已人工提取并固化在 `skill_mapping.yaml` 中。
 
-运行时读取的是映射中明确允许的 reference Markdown，而不是整个 Skill 目录。以下内容不会被执行或复制：
+Runner 初始化时一次性读取、校验并缓存 mapping 中明确允许的 package-local reference，
+后续轮次不再读取 Markdown 文件。以下内容不会被执行或复制：
 
 - CANNBot workflow 和 agent orchestration；
 - Skill 中的 shell/Python 脚本；
@@ -126,12 +141,12 @@ Adapter 不会在算子生成期间解释或执行 CANNBot 的完整 `SKILL.md`�
 - 与目标 SoC、operator family 或当前失败无关的材料；
 - PyTorch fallback 实现。
 
-### 2.2 从 Skill 文档到 knowledge capsule
+### 2.2 从 Skill 文档到 knowledge module
 
 每个选中的 Skill 被转换为以下结构：
 
 ```text
-SkillCapsule
+SkillKnowledgeModule
   skill_id
   stage
   purpose
@@ -141,9 +156,11 @@ SkillCapsule
   provided_context[]
   exclusions[]
   excerpts[]
-    source
+    knowledge_module_id
+    section_id
+    source                     # package-local provenance path
     headings[]
-    bounded text
+    complete selected text
 ```
 
 这一转换把 CANNBot 中面向其自身工作流的说明，约束为 CannAgent 可以直接放入 Planner/Generator prompt 的领域知识：
@@ -154,20 +171,25 @@ SkillCapsule
 - debug Skill 输出一个可验证的诊断动作，而不是运行调试工具链；
 - performance Skill 输出单个证据驱动假设，而不是展开所有优化方案。
 
-### 2.3 文档安全与裁剪
+### 2.3 文档完整性与选择边界
 
 Reference 必须同时满足：
 
-- 路径位于目标 Skill 目录内；
-- 路径也位于配置的 CANNBot Skills root 内；
+- knowledge module ID 存在于 package-local manifest；
+- manifest 路径位于对应 package knowledge base/local knowledge module root 内；
 - 文件扩展名为 `.md`；
 - 文件真实存在；
+- 内容 SHA256 与 manifest 一致；
+- mapping stage 位于该 knowledge module 的 allowed stages；
 - operator family 与 mapping 匹配；
 - 配置了 `when_any` 时，当前 evidence 必须命中至少一个关键词。
 
-通过检查后，Adapter 只抽取 mapping 指定的 Markdown heading。若没有指定 heading，则从文档开头按 Markdown block 读取。每个 reference 都有独立的 `max_chars`，抽取过程不会截断一个已选择 block 的中间内容。
+通过检查后，Adapter 只抽取 mapping 指定的完整 Markdown heading；没有 heading 时选择完整
+knowledge module。选择按 `knowledge_module_id + section_id` 去重，不使用 per-reference `max_chars`。
 
-缺失、越界、不安全或没有匹配内容的 reference 会被拒绝，并把原因写入 selection trace。外部 CANNBot root 不存在时 Adapter fail-open：拒绝外部 references，但仍可选择 path-confined 的 CannAgent 本地 capsules。Hybrid 保留已路由的 Structured A；Skills-only 仍禁止 fallback 到 Structured A。
+manifest 缺失、越界、hash drift 或 mapping 非法会在 Runner 初始化时 fail fast；条件不匹配或
+heading 不存在则在 selection trace 中记录确定性拒绝原因。Hybrid 保留已路由的 Structured A；
+Skills-only 仍禁止 fallback 到 Structured A。
 
 ### 2.4 权威顺序
 
@@ -194,11 +216,14 @@ CLI 使用 `--knowledge-source structured|skills|hybrid` 选择 prompt knowledge
 Runner 仅在 `knowledge_source` 为 `skills` 或 `hybrid` 时创建：
 
 ```text
-SkillAdapter(mapping_path, cannbot_skills_root)
+SkillAdapter()  # validates and freezes embedded manifests/mapping/documents
 ContextSelector(skill_adapter)
 ```
 
-`structured` 模式下两者均为 `None`，原有知识和 prompt 路径保持不变。`skills` 模式为 official knowledge 构造带 source-policy trace 的空 bundle；`hybrid` 模式路由真实 official bundle，再与 Skill capsules 合并。
+`--cannbot-skills-root`、`--skill-mapping` 或 `CANNBOT_SKILLS_ROOT` 一旦出现即返回迁移错误；
+不存在外部 source 不可用后静默生成空 knowledge modules 的 fallback。
+
+`structured` 模式下两者均为 `None`，原有知识和 prompt 路径保持不变。`skills` 模式为 official knowledge 构造带 source-policy trace 的空 bundle；`hybrid` 模式路由真实 official bundle，再与 Skill knowledge modules 合并。
 
 ### 3.2 每个 audience 的调用链
 
@@ -226,10 +251,10 @@ Runner._knowledge_context()
         +-- SkillAdapter.select()
         |     +-- _condition_matches()
         |     +-- _reference_matches()
-        |     +-- _safe_reference()
         |     +-- _extract_markdown_sections()
+        |     +-- knowledge_module_id + section_id deduplication
         +-- 投影 official bundle
-        +-- 合并 Skill capsules
+        +-- 合并 Skill knowledge modules
         +-- 建立 authority/exclusions/budget/trace
   |
   +-- render_stage_context()
@@ -243,13 +268,13 @@ Runner._knowledge_context()
 
 | 文件 | 作用 |
 |---|---|
-| `__main__.py` | 暴露 `--skill-adapter`、`--cannbot-skills-root` 和 `--skill-mapping` |
-| `models.py` | 保存配置并限制 Adapter 只能用于 structured mode |
+| `__main__.py` | 暴露 knowledge-source；旧外部路径参数只用于给出迁移错误 |
+| `models.py` | 保存配置、限制 Adapter mode 并拒绝外部知识路径/环境变量 |
 | `runner.py` | 初始化 Adapter，分别准备 Planner/Generator knowledge，并写审计文件 |
 | `context_selector.py` | stage 推导、operator family 检测、official knowledge 投影和 audience 隔离 |
-| `skill_adapter.py` | mapping 加载、条件判断、安全 reference 读取、heading 抽取和 capsule 构造 |
-| `skill_mapping.yaml` | stage-to-skill、trigger、input、exclusion、reference 和预算配置 |
-| `prompts.py` | 按 authority、section quota 和总字符预算渲染最终上下文 |
+| `skill_adapter.py` | 双 manifest/hash 校验、immutable registry、内存条件选择、section 抽取和去重 |
+| `skill_mapping.yaml` | schema v3 stage-to-knowledge module/section、trigger、input 和 exclusion 配置 |
+| `prompts.py` | 按 authority 渲染 Structured facts，并完整投递 selected embedded sections |
 | `knowledge_probe.py` | 生成环境 fingerprint，执行受控最小 compile probe，并写入可审计 manifest |
 | `runtime_knowledge.py` | 从本机 installed headers 提取声明，按 matching probe 标记 Level 2/3 |
 | `source_validation.py` | comment/literal-aware、brace/scope-aware 的源码检查及 Host negative checks |
@@ -290,7 +315,6 @@ RunConfig(
     ...,
     knowledge_mode="structured",
     knowledge_source="hybrid",
-    cannbot_skills_root="/mnt/workspace/cannbot-skills/ops",
 )
 ```
 
@@ -298,12 +322,12 @@ RunConfig(
 
 ### 4.2 当前哪些工作发生在生成过程中
 
-当前实现会在 Runner 创建时读取一次 `skill_mapping.yaml`，并在每个 Planner/Generator knowledge preparation 中执行：
+Runner 创建时读取并冻结 mapping、两个 manifests 和所有已校验 Markdown。每个
+Planner/Generator knowledge preparation 只执行：
 
 - stage 推导和 operator-family 关键词匹配；
 - structured knowledge build 加载和路由（仅 `hybrid`；`skills` prompt 跳过）；
-- CANNBot reference 条件匹配；
-- 匹配到的 Markdown 文件读取和 heading 抽取；
+- embedded knowledge module/section 条件匹配与内存 heading 投影；
 - installed-header facts 收集，并只消费预先生成、fingerprint 匹配的 probe manifest；
 - context 合并和字符预算渲染；
 - 审计 JSON/Markdown 写入。
@@ -312,27 +336,25 @@ RunConfig(
 
 当前没有针对 Adapter 各步骤的独立计时，因此不能在没有测量的情况下声称其开销只有固定的毫秒数。特别是 `hybrid` 的 structured knowledge 分 audience 路由、installed-header 扫描和审计文件写入也应在后续评测中单独计时；`skills` 模式可以用于隔离这部分 prompt-routing 开销。
 
-### 4.3 可以离线化的部分
+### 4.3 已内置离线化的部分
 
-大部分静态 Skill 内容处理可以脱离算子生成命令，预编译为只读 catalog：
+静态 Skill 来源已经以只读 knowledge base + manifest 形式脱离算子生成命令：
 
 ```text
-CANNBot Markdown + skill_mapping.yaml
+CANNBot upstream Markdown + curated allowlist
                     |
                     v
-           offline skill compiler
+           explicit knowledge base refresh
                     |
                     v
-             skill_catalog.json
-               - normalized metadata
-               - pre-extracted headings
-               - bounded excerpts
-               - family/term indexes
-               - source hashes
-               - provenance
+        knowledge_base_manifest.json + skill_mapping.yaml
+               - knowledge module/section IDs
+               - family/term/domain routes
+               - source hashes and provenance
+               - stage/conflict allowlists
                     |
                     v
-        Agent 运行时加载一次并内存选择
+        Runner 初始化校验并加载一次，随后内存选择
 ```
 
 适合离线处理的内容包括：
@@ -364,19 +386,15 @@ CANNBot Markdown + skill_mapping.yaml
 
 当前已实现：
 
-- `skill_mapping.yaml` 结构化映射；
+- schema v3 `skill_mapping.yaml` knowledge module/section 映射；
 - 本地确定性 stage/Skill/reference 路由；
-- 安全 Markdown 读取和限额抽取；
+- manifest/hash/stage 校验和跨轮 immutable document cache；
+- selected section 原子完整投递与 knowledge module/section 去重；
 - Planner/Generator 独立投影；
 - 审计产物。
 
-当前未实现：
-
-- 独立的 offline Skill compiler；
-- `skill_catalog.json`；
-- Markdown excerpt 的跨轮内存缓存；
-- `KnowledgeBuild` 的 run-level 共享缓存；
-- Adapter 分阶段耗时埋点。
+仍未实现的优化包括 `KnowledgeBuild` 的 run-level 共享缓存和 Adapter 分阶段耗时埋点；
+这不影响 package knowledge base 的完整性或 fail-fast 行为。
 
 上述未实现项属于后续性能优化方向，不应被当作现有能力。即使未来离线化，也必须通过 source hash 或 build ID 检测 CANNBot 文档和 mapping 是否发生变化，避免使用陈旧 catalog。
 
@@ -420,7 +438,9 @@ PyTorch reference + cases + SoC/CANN
     真实证据驱动下一轮 stage
 ```
 
-Adapter 只作用于图中的两个 context routing 节点。其后的 source validation、API validation、compile、correctness、performance、frontier 和 settle 逻辑都沿用原 CannAgent。
+Adapter 只作用于图中的两个 context routing 节点。其后的 source validation、API validation、
+compile、渐进 correctness、performance、frontier 和 settle 均由 CannAgent 本地逻辑执行；
+知识模块不能绕过这些确定性检查。
 
 以当前 GELU baseline 的错误为例：
 
@@ -430,11 +450,11 @@ failure = missing_kernel_launch
                  |
                  v
 Planner stages = [compile_debug]
-Generator stages = [compile_debug, code_generation]
+Generator stages = [compile_debug]
                  |
                  v
 ascendc-api-best-practices
-ascendc-direct-invoke-template
+current compile knowledge module selected by diagnostic ownership
                  |
                  v
 只选择命中 launch/kernel/stream/blockDim 的结构片段
@@ -508,7 +528,6 @@ stdbuf -oL -eL python -m ascendc_multi_turn \
   --soc-version Ascend910B3 \
   --device 0 \
   --knowledge-source skills \
-  --cannbot-skills-root /mnt/workspace/cannbot-skills/ops \
   > outputs/ab_gelu_clean_skills.live.log 2>&1
 ```
 
@@ -539,7 +558,6 @@ stdbuf -oL -eL python -m ascendc_multi_turn \
   --device 0 \
   --knowledge-mode structured \
   --knowledge-source hybrid \
-  --cannbot-skills-root /mnt/workspace/cannbot-skills/ops \
   > outputs/ab_gelu_clean_adapter.live.log 2>&1
 ```
 
@@ -612,7 +630,6 @@ stdbuf -oL -eL python -m ascendc_multi_turn \
   --soc-version Ascend910B3 --device 0 --cann-version auto \
   --knowledge-mode structured \
   --knowledge-source <hybrid-or-skills> \
-  --cannbot-skills-root /mnt/workspace/cannbot-skills/ops \
   --generator-thinking disabled --generator-max-tokens 32768 \
   --planner-thinking disabled --planner-max-tokens 8192 \
   > <paired-output>/<mode>.live.log 2>&1

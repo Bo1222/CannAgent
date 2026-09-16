@@ -365,9 +365,8 @@ def collect_runtime_facts(
             None if max_chars is None else max_chars - sum(len(item) for item in chunks)
         )
         if remaining is None or remaining >= 200:
-            if remaining is not None and len(chunk) > remaining:
-                chunk = chunk[:remaining]
-            chunks.append(chunk)
+            if remaining is None or len(chunk) <= remaining:
+                chunks.append(chunk)
     missing = [symbol for symbol in normalized if symbol not in found]
     lowered_failure = failure_evidence.lower()
     for symbol in missing:

@@ -1,0 +1,88 @@
+[
+  {
+    "id": "r1_invalid_platform_include",
+    "failure_stage": "ascendc_build",
+    "error": "kernel/pybind11.cpp:7: fatal error: torch_npu/csrc/framework/OpCommand.h file not found",
+    "expected_route": "host_integration_debug",
+    "expected_category": "host_cpp",
+    "expected_knowledge_module": "cannagent.host-cpp-contract"
+  },
+  {
+    "id": "shape_entry",
+    "operator": "add",
+    "active_profile": "shape",
+    "profile_features": ["broadcast"],
+    "failure": null,
+    "expected_route": "kernel_design",
+    "expected_knowledge_module": "cannagent.broadcast-semantics"
+  },
+  {
+    "id": "r3_missing_gm_qualifier",
+    "failure_stage": "ascendc_build",
+    "error": "kernel/add.cpp:44: error: descriptor parameter must point to __gm__ address space",
+    "expected_route": "host_integration_debug",
+    "expected_category": "launch_abi",
+    "expected_knowledge_module": "cannagent.direct-launch-abi"
+  },
+  {
+    "id": "r4_host_vec",
+    "failure_stage": "ascendc_build",
+    "error": "kernel/pybind11.cpp:31: error: no member named 'vec' in 'std::vector<long>'",
+    "expected_route": "host_integration_debug",
+    "expected_category": "host_cpp",
+    "expected_knowledge_module": "cannagent.host-cpp-contract",
+    "rejected_knowledge_module": "cannbot.ascendc-api-best-practices.references.api-arithmetic"
+  },
+  {
+    "id": "r5_507035",
+    "failure_stage": "correctness",
+    "error": "ACL_ERROR_RT_AICORE_OVER_FLOW 507035: MTE address exception while reading descriptor",
+    "failure_code": "507035",
+    "expected_route": "runtime_debug",
+    "expected_knowledge_module": "cannagent.kernel-memory-contract"
+  },
+  {
+    "id": "r6_illegal_cast",
+    "failure_stage": "ascendc_build",
+    "error": "kernel/add.cpp: error: reinterpret_cast from const void * to GM_ADDR casts away qualifiers",
+    "expected_route": "host_integration_debug",
+    "expected_category": "launch_abi",
+    "expected_knowledge_module": "cannagent.direct-launch-abi"
+  },
+  {
+    "id": "r7_507001",
+    "failure_stage": "correctness",
+    "error": "507001 MTE illegal address: DataCopy source range exceeds allocation",
+    "failure_code": "507001",
+    "expected_route": "runtime_debug",
+    "expected_knowledge_module": "cannagent.kernel-memory-contract"
+  },
+  {
+    "id": "r8_wrapper_mismatch",
+    "failure_stage": "ascendc_build",
+    "error": "kernel/add.cpp: error: conflicting types for 'add_do'; wrapper mismatch with pybind declaration",
+    "expected_route": "host_integration_debug",
+    "expected_category": "launch_abi",
+    "expected_knowledge_module": "cannagent.host-abi"
+  },
+  {
+    "id": "r9_descriptor_cast",
+    "failure_stage": "ascendc_build",
+    "error": "kernel/pybind11.cpp: error: invalid const_cast from host descriptor const void* to GM_ADDR",
+    "expected_route": "host_integration_debug",
+    "expected_category": "launch_abi",
+    "expected_knowledge_module": "cannagent.direct-launch-abi"
+  },
+  {
+    "id": "r10_broadcast_mismatch",
+    "failure_stage": "correctness",
+    "error": "profile=shape comparison mismatch for [128,128] + [128,1]; y stride=0 was copied as a contiguous output tile",
+    "verify_output": "Comparison case[17]: max_abs_diff=9.0 passed=False",
+    "active_profile": "shape",
+    "profile_features": ["broadcast", "stride_zero"],
+    "expected_route": "kernel_design",
+    "expected_knowledge_module": "cannagent.broadcast-semantics",
+    "prompt_contains": "A zero logical stride means reuse one stored value",
+    "prompt_excludes_stage": "precision_debug"
+  }
+]

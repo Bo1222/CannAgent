@@ -3,13 +3,59 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 from ascendc_multi_turn.diagnostics import observe_evaluation_stages
 from ascendc_multi_turn.logging import TrajectoryLogger
-from ascendc_multi_turn.models import EvalResult
+from ascendc_multi_turn.models import EvalResult, LLMResponse
+from ascendc_multi_turn.runner import MultiTurnRunner
 
 
 class KnowledgeObservabilityTests(unittest.TestCase):
+    def test_round_records_input_and_result_failure_routes_separately(self) -> None:
+        selection = SimpleNamespace(
+            to_dict=lambda: {
+                "task_facts": {
+                    "input_route": {
+                        "primary": "host_integration_debug",
+                        "reason": "host_kernel_launch_abi_evidence",
+                        "ownership": "Host/Kernel boundary",
+                        "debug_category": "launch_abi",
+                    }
+                }
+            }
+        )
+        result = EvalResult(
+            compiled=True,
+            correctness=False,
+            error="profile=shape mismatch [128,128] + [128,1]",
+            failure_stage="correctness",
+            verify_output="Comparison case[17]: passed=False",
+        )
+        record = MultiTurnRunner._round_record(
+            attempt_id=10,
+            evaluation_round=10,
+            budget_phase="bootstrap",
+            budget_round=10,
+            decision="FAIL",
+            result=result,
+            selection=selection,
+            response=LLMResponse(content="", model="fixture"),
+            generation_attempts=1,
+            candidate_path="round_10/candidate.json",
+            plan_item=None,
+            fingerprint=None,
+            frontier={},
+            incident_id="fixture",
+            confirmed_experience_id=None,
+            stage_observation={},
+            stage_timings=[],
+        )
+
+        self.assertEqual(record["input_route"]["primary"], "host_integration_debug")
+        self.assertEqual(record["result_failure_route"]["primary"], "kernel_design")
+        self.assertEqual(record["result_failure_route"]["ownership"], "Kernel")
+
     def test_binding_failure_is_distinct_from_execution_and_correctness(self) -> None:
         stages = observe_evaluation_stages(
             EvalResult(

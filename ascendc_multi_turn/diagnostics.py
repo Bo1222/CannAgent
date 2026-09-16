@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -16,15 +17,34 @@ ERROR_LINE = re.compile(
 QUOTED_SYMBOL = re.compile(r"'(?:AscendC::)?([A-Za-z_][A-Za-z0-9_:<>]*)'")
 SOURCE_SYMBOL = re.compile(r"\b(?:AscendC::)?([A-Z][A-Za-z0-9_]*)\s*(?:<[^;{}()]*>)?\s*\(")
 TYPE_SYMBOL = re.compile(r"\b(?:AscendC::)?([A-Z][A-Za-z0-9_]*)\s*(?:<[^;{}()]*>)?")
+BOUNDARY_SYMBOL = re.compile(
+    r"\b(GM_ADDR|__gm__|PYBIND11_MODULE|getCurrentNPUStream|is_npu|[A-Za-z_]\w*_do)\b"
+)
+SEMANTIC_SYMBOL = re.compile(r"\b(broadcast|stride|shape|tail|dtype|descriptor)\b", re.IGNORECASE)
 _SYMBOL_NOISE = {
     "CMake",
+    "COMPILER",
+    "Compiler",
     "Error",
     "Exception",
     "Failed",
     "Kernel",
     "Model",
+    "PYBIND11_MODULE",
+    "Tensor",
+    "TraceBack",
     "Traceback",
 }
+_ASCENDC_API_SYMBOLS = {
+    "Abs", "Add", "Adds", "Cast", "Compare", "Copy", "DataCopy",
+    "DataCopyExtParams", "DataCopyPad", "DataCopyPadExtParams", "Div", "Erf",
+    "Exp", "FreeTensor", "Gather", "GatherMask", "GlobalTensor", "InitBuffer",
+    "LocalTensor", "Log", "Max", "Min", "Mul", "Muls", "PipeBarrier",
+    "ReduceMax", "ReduceMean", "ReduceMin", "ReduceSum", "SetFlag", "Sqrt",
+    "Sub", "TBuf", "TBufPool", "TEventID", "TPipe", "TQue", "TQueBind",
+    "Tanh", "TransDataTo5HD", "WaitFlag",
+}
+_HOST_ABI_SYMBOLS = {"getCurrentNPUStream", "is_npu"}
 _LOCATED_ERROR = re.compile(
     r"(?P<path>(?:[A-Za-z]:)?[^:\n]+):\d+(?::\d+)?:\s*"
     r"(?P<severity>fatal\s+error|error):\s*(?P<message>.+)$",
@@ -41,6 +61,7 @@ class SymbolEvidence:
     symbol: str
     kinds: tuple[str, ...]
     sources: tuple[str, ...]
+    domains: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -72,7 +93,64 @@ def diagnostic_lines(output: str, *, max_lines: int = 30, max_chars: int = 6000)
 
 
 def compact_diagnostics(output: str, *, max_lines: int = 30, max_chars: int = 6000) -> str:
-    return "\n".join(diagnostic_lines(output, max_lines=max_lines, max_chars=max_chars))
+    return "\n".join(
+        diagnostic_lines(
+            collapse_device_dump(output), max_lines=max_lines, max_chars=max_chars
+        )
+    )
+
+
+def collapse_device_dump(output: str) -> str:
+    """Collapse repeated per-core device diagnostics into an auditable summary."""
+
+    lines = output.splitlines()
+    device_lines = [
+        line.strip()
+        for line in lines
+        if re.search(r"the error from device|the extend info", line, re.IGNORECASE)
+    ]
+    if len(device_lines) < 3:
+        return output
+
+    def integers(pattern: str) -> list[int]:
+        return sorted(
+            {
+                int(value)
+                for value in re.findall(pattern, output, flags=re.IGNORECASE)
+            }
+        )
+
+    def tokens(pattern: str) -> list[str]:
+        return list(
+            dict.fromkeys(
+                value.strip().rstrip(",;)")
+                for value in re.findall(pattern, output, flags=re.IGNORECASE)
+                if value.strip()
+            )
+        )
+
+    summary = {
+        "repeated_device_records": len(device_lines),
+        "cores": integers(r"core[_ ]?id\s*[:=]\s*(\d+)"),
+        "blocks": integers(r"(?:block|blk)[_ ]?id\s*[:=]\s*(\d+)"),
+        "pc_start": tokens(r"(?:pc\s*start|start\s*pc)\s*[:=]\s*(0x[0-9a-f]+)"),
+        "pc_current": tokens(r"(?:pc\s*current|current\s*pc)\s*[:=]\s*(0x[0-9a-f]+)"),
+        "serial": tokens(r"serial(?:\s*number)?\s*[:=]\s*([^,;\s]+)"),
+        "extend_error_str": tokens(r"(?:errorstr|error[_ ]str)\s*[:=]\s*([^,;\n]+)"),
+    }
+    retained: list[str] = []
+    kept_template = False
+    for line in lines:
+        if re.search(r"the error from device|the extend info", line, re.IGNORECASE):
+            if not kept_template:
+                retained.append(line)
+                kept_template = True
+            continue
+        retained.append(line)
+    retained.append(
+        "[设备诊断折叠] " + json.dumps(summary, ensure_ascii=False, separators=(",", ":"))
+    )
+    return "\n".join(retained)
 
 
 def diagnostic_fingerprint(output: str) -> str:
@@ -112,6 +190,8 @@ def _diagnostic_symbol(message: str) -> str | None:
 
 def _diagnostic_category(stage: str, message: str, source_file: str | None) -> str:
     lowered = message.lower()
+    if any(marker in lowered for marker in ("gm_addr", "__gm__", "address space", "descriptor", "const void")):
+        return "launch_abi"
     if any(
         marker in lowered
         for marker in (
@@ -124,6 +204,8 @@ def _diagnostic_category(stage: str, message: str, source_file: str | None) -> s
     ):
         return "host_abi"
     if source_file and Path(source_file).name == "pybind11.cpp":
+        if any(marker in lowered for marker in (".vec", "std::vector", "no member named", "include file", "file not found", "no such file")):
+            return "host_cpp"
         return "host_abi"
     if "static assertion failed" in lowered and "dtype" in lowered:
         return "kernel_api_dtype"
@@ -248,15 +330,30 @@ def diagnostic_delta(
     }
 
 
-def extract_api_symbols(*texts: str) -> list[str]:
-    symbols: list[str] = []
+def classify_symbol_domain(symbol: str) -> str:
+    base = symbol.split("::")[-1].split("<", 1)[0]
+    if base in _SYMBOL_NOISE or base.lower() in {"compiler", "traceback"}:
+        return "compiler_noise"
+    if base in _HOST_ABI_SYMBOLS:
+        return "host_abi"
+    if base in {"GM_ADDR", "__gm__"} or base.endswith("_do") or base.lower() == "descriptor":
+        return "launch_abi"
+    if base.lower() in {"broadcast", "stride", "shape", "tail", "dtype"}:
+        return "operator_semantic"
+    if base in _ASCENDC_API_SYMBOLS or base.startswith(("DataCopy", "Reduce")):
+        return "ascendc_api"
+    return "project_local"
+
+
+def _extract_symbols(*texts: str) -> list[tuple[str, str]]:
+    symbols: list[tuple[str, str]] = []
     seen: set[str] = set()
 
     def add(token: str) -> None:
         symbol = token.split("::")[-1].split("<", 1)[0]
-        if len(symbol) >= 3 and symbol not in _SYMBOL_NOISE and symbol not in seen:
+        if len(symbol) >= 3 and symbol not in seen:
             seen.add(symbol)
-            symbols.append(symbol)
+            symbols.append((symbol, classify_symbol_domain(symbol)))
 
     for text in texts:
         for match in QUOTED_SYMBOL.finditer(text):
@@ -267,7 +364,21 @@ def extract_api_symbols(*texts: str) -> list[str]:
             token = match.group(1)
             if token.startswith(("DataCopy", "GlobalTensor", "LocalTensor", "TQue", "TPipe", "TBuf")):
                 add(token)
+        for token in BOUNDARY_SYMBOL.findall(text):
+            add(token)
+        for token in SEMANTIC_SYMBOL.findall(text):
+            add(token.lower())
     return symbols
+
+
+def extract_api_symbols(*texts: str) -> list[str]:
+    """Return only symbols eligible for installed-header/API lookup."""
+
+    return [
+        symbol
+        for symbol, domain in _extract_symbols(*texts)
+        if domain in {"ascendc_api", "host_abi", "launch_abi"}
+    ]
 
 
 def extract_symbol_evidence(
@@ -285,19 +396,22 @@ def extract_symbol_evidence(
         ("source", "candidate", source),
         ("planned", "active_plan", planned),
     ):
-        for symbol in extract_api_symbols(text):
+        for symbol, domain in _extract_symbols(text):
             if symbol not in evidence:
                 ordered.append(symbol)
-                evidence[symbol] = {"kinds": [], "sources": []}
+                evidence[symbol] = {"kinds": [], "sources": [], "domains": []}
             if kind not in evidence[symbol]["kinds"]:
                 evidence[symbol]["kinds"].append(kind)
             if label not in evidence[symbol]["sources"]:
                 evidence[symbol]["sources"].append(label)
+            if domain not in evidence[symbol]["domains"]:
+                evidence[symbol]["domains"].append(domain)
     return [
         SymbolEvidence(
             symbol=symbol,
             kinds=tuple(evidence[symbol]["kinds"]),
             sources=tuple(evidence[symbol]["sources"]),
+            domains=tuple(evidence[symbol]["domains"]),
         )
         for symbol in ordered
     ]
@@ -316,6 +430,7 @@ def observe_evaluation_stages(
         "ascendc_source_validation",
         "api_constraint_validation",
         "static_validation",
+        "interface_contract_validation",
         "response_format",
     }
     observed: dict[str, dict[str, str]] = {}
@@ -348,8 +463,16 @@ def observe_evaluation_stages(
             "input must be an npu tensor",
         )
     )
-    comparison = "comparison" in verification and "case[" in verification
-    runtime_failure = any(
+    comparison = (
+        "comparison" in verification and "case[" in verification
+    ) or any(
+        isinstance(item, dict) and item.get("status") in {"passed", "failed"}
+        for item in result.case_results
+    )
+    signal_failure = any(
+        marker in verification for marker in ("sigsegv", "terminated by signal")
+    )
+    runtime_failure = signal_failure or any(
         marker in verification
         for marker in (
             "aicore exception",
@@ -358,6 +481,12 @@ def observe_evaluation_stages(
             "mte",
             "kernel not found",
         )
+    )
+    case_started = any(isinstance(item, dict) for item in result.case_results)
+    candidate_started = any(
+        isinstance(item, dict)
+        and item.get("status") in {"candidate_started", "candidate_returned", "passed", "failed"}
+        for item in result.case_results
     )
     if not result.compiled:
         put("C_load", "not_reached", "compile did not pass")
@@ -368,9 +497,23 @@ def observe_evaluation_stages(
     elif load_failure:
         put("C_load", "fail", "verification reported module/binding failure")
         put("D_execute", "not_reached", "binding failed")
+    elif signal_failure:
+        put(
+            "C_load",
+            "pass" if case_started else "unknown",
+            "active case proves module/model loading" if case_started else "native signal does not prove load status",
+        )
+        put("D_execute", "unknown", "native signal does not prove NPU kernel entry")
     elif runtime_failure:
         put("C_load", "pass", "runtime failure occurred after binding")
         put("D_execute", "fail", "device/runtime failure")
+    elif case_started:
+        put("C_load", "pass", "verification persisted an active case after module/model loading")
+        put(
+            "D_execute",
+            "pass" if candidate_started else "unknown",
+            "candidate invocation started" if candidate_started else "active case does not prove candidate invocation",
+        )
     else:
         put("C_load", "unknown", "verification log does not prove load status")
         put("D_execute", "unknown", "verification log does not prove execution status")
@@ -398,15 +541,58 @@ def observe_evaluation_stages(
     return observed
 
 
+def evaluation_gates(result: EvalResult) -> dict[str, str]:
+    """Return canonical, non-overlapping evaluation gates for acceptance and audit."""
+
+    observed = observe_evaluation_stages(result)
+    a = observed["A_source_valid"]["status"]
+    b = observed["B_compile"]["status"]
+    c = observed["C_load"]["status"]
+    d = observed["D_execute"]["status"]
+    e = observed["E_correct"]["status"]
+    comparison_completed = (
+        "pass"
+        if e in {"pass", "fail"}
+        else "not_reached" if e == "not_reached" else "unknown"
+    )
+    return {
+        "source_valid": a,
+        "compiled": b,
+        "loaded": c,
+        "kernel_started": "pass" if d in {"pass", "fail"} else d,
+        "comparison_completed": comparison_completed,
+        "full_correct": "pass" if result.correctness else (
+            "not_reached" if comparison_completed == "not_reached" else "fail"
+        ),
+        "benchmarked": observed["F_benchmark"]["status"],
+    }
+
+
 def parse_structured_failure(
     *, stage: str, output: str, case_info: dict[str, Any] | None = None
 ) -> StructuredFailure:
     lowered = output.lower()
-    runtime_match = re.search(r"\b(ACL_ERROR_[A-Z0-9_]+|[A-Z]+-\d{3,}|(?:50|56)\d{4})\b", output)
+    compile_stage = stage in {
+        "ascendc_build",
+        "compile",
+        "static_validation",
+        "ascendc_source_validation",
+        "api_constraint_validation",
+        "bundle_validation",
+        "interface_contract_validation",
+        "response_format",
+    }
+    runtime_match = None if compile_stage else re.search(
+        r"\b(ACL_ERROR_[A-Z0-9_]+|[A-Z]+-\d{3,}|(?:50|56)\d{4})\b",
+        output,
+    )
     core_match = re.search(r"\bcore[_ ]?id\s*[:=]\s*(\d+)", output, re.IGNORECASE)
     block_match = re.search(r"\bblock[_ ]?id\s*[:=]\s*(\d+)", output, re.IGNORECASE)
     sub_error_match = re.search(r"\bsub[_ ]?error(?:[_ ]?type)?\s*[:=]\s*([^,;\n]+)", output, re.IGNORECASE)
-    if "mte" in lowered:
+    if compile_stage:
+        subsystem = "COMPILER" if stage in {"ascendc_build", "compile"} else "SOURCE"
+        reason = compact_diagnostics(output, max_lines=1, max_chars=1000) or "build validation failure"
+    elif "mte" in lowered:
         subsystem = "MTE"
         reason = "illegal configuration" if "illegal configuration" in lowered else "MTE failure"
     elif "aicore" in lowered or "ai core" in lowered:
@@ -415,9 +601,6 @@ def parse_structured_failure(
     elif "acl_error" in lowered or stage.startswith("acl"):
         subsystem = "ACL"
         reason = "ACL runtime error"
-    elif stage in {"ascendc_build", "compile", "static_validation", "ascendc_source_validation"}:
-        subsystem = "COMPILER" if stage in {"ascendc_build", "compile"} else "SOURCE"
-        reason = compact_diagnostics(output, max_lines=1, max_chars=1000) or "build validation failure"
     else:
         subsystem = "RUNTIME" if stage == "correctness" else stage.upper()
         reason = compact_diagnostics(output, max_lines=1, max_chars=1000) or "evaluation failure"
@@ -429,6 +612,40 @@ def parse_structured_failure(
         ),
         None,
     )
+    related_symbols = extract_api_symbols(output)
+    faulting_cores = sorted(
+        {int(value) for value in re.findall(r"core[_ ]?id\s*[:=]\s*(\d+)", output, re.IGNORECASE)}
+    )
+    faulting_blocks = sorted(
+        {int(value) for value in re.findall(r"(?:block|blk)[_ ]?id\s*[:=]\s*(\d+)", output, re.IGNORECASE)}
+    )
+
+    def unique_tokens(pattern: str) -> list[str]:
+        return list(
+            dict.fromkeys(
+                value.strip().rstrip(",;)")
+                for value in re.findall(pattern, output, flags=re.IGNORECASE)
+                if value.strip()
+            )
+        )
+
+    pc_start = unique_tokens(r"(?:pc\s*start|start\s*pc)\s*[:=]\s*(0x[0-9a-f]+)")
+    pc_current = unique_tokens(r"(?:pc\s*current|current\s*pc)\s*[:=]\s*(0x[0-9a-f]+)")
+    serial = unique_tokens(r"serial(?:\s*number)?\s*[:=]\s*([^,;\s]+)")
+    extend_error_str = unique_tokens(r"(?:errorstr|error[_ ]str)\s*[:=]\s*([^,;\n]+)")
+    attribution_status = "attributed" if any(
+        (
+            runtime_match,
+            core_match,
+            block_match,
+            sub_error_match,
+            related_symbols,
+            faulting_cores,
+            faulting_blocks,
+            pc_current,
+            (case_info or {}).get("failed_case_index") is not None,
+        )
+    ) else "stage_only"
     return StructuredFailure(
         stage=stage,
         runtime_code=runtime_match.group(1) if runtime_match else None,
@@ -439,7 +656,14 @@ def parse_structured_failure(
         block_id=int(block_match.group(1)) if block_match else None,
         sub_error_type=sub_error_match.group(1).strip() if sub_error_match else None,
         case_info=case_info or {},
-        related_symbols=extract_api_symbols(output),
+        related_symbols=related_symbols,
+        attribution_status=attribution_status,
+        faulting_cores=faulting_cores,
+        faulting_blocks=faulting_blocks,
+        pc_start=pc_start,
+        pc_current=pc_current,
+        serial=serial,
+        extend_error_str=extend_error_str,
     )
 
 
@@ -458,6 +682,10 @@ def compact_evaluation(result: EvalResult | None) -> dict[str, Any] | None:
         "message": result.error,
         "diagnostics": compact_diagnostics(output),
         "structured_failure": result.structured_failure,
+        "active_profile": result.active_profile,
+        "passed_profiles": result.passed_profiles,
+        "passed_case_indices": result.passed_case_indices,
+        "evaluation_gates": evaluation_gates(result),
     }
 
 

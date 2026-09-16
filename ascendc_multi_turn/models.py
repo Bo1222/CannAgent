@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
@@ -50,6 +51,21 @@ class EvalResult:
     details_path: str | None = None
     failure_kind: str = "candidate"
     structured_failure: dict[str, Any] | None = None
+    active_profile: str | None = None
+    passed_profiles: list[str] = field(default_factory=list)
+    case_results: list[dict[str, Any]] = field(default_factory=list)
+    passed_case_indices: list[int] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class EvaluationProfile:
+    name: str
+    case_indices: tuple[int, ...]
+    run_performance: bool = False
+    features: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -128,6 +144,16 @@ class RunConfig:
     deprecated_repair_options_active: bool = field(default=False, init=False)
 
     def __post_init__(self) -> None:
+        if (
+            self.cannbot_skills_root.strip()
+            or self.skill_mapping.strip()
+            or os.environ.get("CANNBOT_SKILLS_ROOT", "").strip()
+        ):
+            raise ValueError(
+                "External CANNBot skill paths are no longer supported. Remove "
+                "--cannbot-skills-root/--skill-mapping and CANNBOT_SKILLS_ROOT; "
+                "CannAgent now uses its validated embedded CANNBot knowledge base."
+            )
         self.provider = self.provider.lower()
         if self.provider not in {"deepseek", "openai"}:
             raise ValueError("provider must be 'deepseek' or 'openai'")

@@ -62,7 +62,7 @@ class FrontierTests(unittest.TestCase):
             )
             first = manager.observe(_bundle("source-ok"), compile_failure, 1)
             runtime_failure = EvalResult(
-                True, False, error="runtime", failure_stage="correctness"
+                True, False, error="507035 MTE runtime", failure_stage="correctness"
             )
             second = manager.observe(_bundle("compiled"), runtime_failure, 2)
 

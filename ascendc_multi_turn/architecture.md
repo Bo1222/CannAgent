@@ -1,10 +1,27 @@
 # CannAgent AscendC Agent analysis and CANNBot skill adaptation plan
 
+## 2026-09-16 执行架构补充
+
+生产评测已改为 `source validation → API validation → static validation → compile → smoke →
+shape → dtype → full → benchmark`。每个 correctness profile 在独立子进程运行并即时写入逐 case
+JSON；首个失败 profile 终止后续 profile。Runner 以七个规范门和已通过 profile/case 集判断单调
+进展，仍以完整 Host/Kernel bundle 为原子接受单位。
+
+首个被接受的已编译候选会生成确定性的 `InterfaceContract`。未显式声明
+`allow_interface_change=true` 的计划不得改变 pybind 模块、`*_do` 声明/定义和 Kernel entry。
+只修改注释或空白的非 mock 候选不会进入 evaluator，而会触发 DIAGNOSE。Prompt 保留完整参考
+模型、完整用例和当前源码，但评测日志改为结构化摘要；知识模块按条目原子选择并受确定性预算约束。
+
 ## Scope and evidence
 
-This analysis covers only `CannAgent/ascendc_multi_turn` and the seven requested
-skills under the sibling `cannbot-skills/ops` repository. It does not propose
+This analysis covers only `CannAgent/ascendc_multi_turn` and the embedded curated
+CANNBot knowledge base under `knowledge_modules/cannbot_a08c4970_knowledge_base`. It does not propose
 replacing the agent framework, evaluator, code generator, or workflow.
+
+As of 2026-09-15, the knowledge base is the only production Skill source. The adapter
+validates both manifests and every content hash once during Runner construction,
+freezes the mapping and document registry, then performs in-memory selection. External
+roots/mappings are migration errors; missing or modified knowledge module files fail fast.
 
 The findings are based on the current source and on the checked-in GELU run at
 `outputs/1_GELU/.llm_state`. That run is useful evidence, but it is one operator
@@ -96,18 +113,21 @@ Planner/diagnoser prompt sections:
 
 Generator prompt sections:
 
-1. bootstrap/repair action;
-2. the same global mandatory rules;
-3. reference model and test cases;
-4. the complete current implementation;
-5. compact previous evaluation;
-6. active plan item and prior failure fingerprints;
-7. one rendered knowledge context;
-8. JSON file-bundle output contract.
+1. current objective and active plan item;
+2. Host / Host↔Kernel boundary / Kernel failure ownership;
+3. active evaluation profile, case indices/features, and diagnostic source files;
+4. protected regions;
+5. open and cleared errors plus only failed approaches relevant to open errors;
+6. must-satisfy semantic and ABI contracts;
+7. exact installed/Verified facts and routed embedded knowledge modules;
+8. explicit forbidden patterns;
+9. complete reference model, benchmark cases, current implementation, and evaluation;
+10. JSON file-bundle output contract.
 
-Important consequence: the same task inputs and often the same rendered
-knowledge are repeated in planner and generator prompts. The prompt builder has
-no typed stage context and cannot enforce per-section budgets.
+Embedded knowledge module sections are selected by stage/domain/profile and delivered atomically;
+structured/runtime entries retain bounded/full-selected projection. The prompt records a
+typed `input_route`, while the evaluated candidate records a separate
+`result_failure_route` for the next iteration.
 
 ### 1.4 Knowledge retrieval and injection
 
@@ -343,9 +363,9 @@ copy template directories, ask another LLM to route, or mutate source. It only:
 
 1. derives one or more fine-grained CannAgent stages;
 2. applies deterministic mappings from `skill_mapping.yaml`;
-3. loads bounded excerpts from explicitly allowed skill references;
-4. emits a typed, auditable context capsule;
-5. lets the context selector merge that capsule with a stage projection of the
+3. selects complete sections from the validated in-memory knowledge module registry;
+4. emits a typed, auditable context knowledge module;
+5. lets the context selector merge that knowledge module with a stage projection of the
    existing structured knowledge.
 
 ### 3.2 Authority and conflict order
@@ -390,7 +410,7 @@ Out of scope:
 
 1. Keep the adapter opt-in so the existing agent remains a true baseline.
 2. Add deterministic stage derivation and audit files.
-3. Add bounded CANNBot capsules selected from explicit allowlists.
+3. Embed curated CANNBot documents with manifests and select complete knowledge module sections.
 4. Project current structured knowledge separately for planner and generator.
 5. Add prompt labels and authority/exclusion instructions.
 6. Run unit/mock orchestration tests.

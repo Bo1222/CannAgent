@@ -1,13 +1,15 @@
 from __future__ import annotations
 
+import hashlib
+import io
 import json
 import os
 import re
 import shutil
+import tokenize
 from pathlib import Path
 
 from .models import FileBundle
-
 
 _ALLOWED_ROOT_FILE = "model_new_ascendc.py"
 _ALLOWED_SUFFIXES = {".py", ".cpp", ".cc", ".cxx", ".h", ".hpp"}
@@ -126,3 +128,30 @@ def validate_initial_bundle(bundle: FileBundle) -> None:
     kernel_cpp = [p for p in paths if p.startswith("kernel/") and p.endswith(".cpp") and p != "kernel/pybind11.cpp"]
     if not kernel_cpp:
         raise ValueError("initial generation must include at least one AscendC kernel .cpp file")
+
+
+def _semantic_source(path: str, source: str) -> str:
+    if path.endswith(".py"):
+        try:
+            tokens = tokenize.generate_tokens(io.StringIO(source).readline)
+            source = tokenize.untokenize(
+                token for token in tokens if token.type != tokenize.COMMENT
+            )
+        except (tokenize.TokenError, IndentationError):
+            pass
+    else:
+        source = re.sub(r"/\*.*?\*/", " ", source, flags=re.DOTALL)
+        source = re.sub(r"//[^\n]*", " ", source)
+    return re.sub(r"\s+", "", source)
+
+
+def semantic_bundle_hash(bundle: FileBundle | None) -> str | None:
+    if bundle is None or not bundle.files:
+        return None
+    digest = hashlib.sha256()
+    for path, source in sorted(bundle.files.items()):
+        digest.update(path.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(_semantic_source(path, source).encode("utf-8"))
+        digest.update(b"\0")
+    return digest.hexdigest()

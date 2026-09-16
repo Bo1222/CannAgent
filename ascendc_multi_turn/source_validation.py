@@ -17,6 +17,9 @@ _DO_DEFINITION = re.compile(
     re.DOTALL | re.MULTILINE,
 )
 _KERNEL_LAUNCH = re.compile(r"\b[A-Za-z_]\w*\s*<<<\s*[^>]+>>>")
+_POINTER_PARAMETER = re.compile(
+    r"(?:^|,)\s*[^,()]*[*&]\s*([A-Za-z_]\w*)\s*(?=,|$)"
+)
 _EXTERNAL_QUOTED_HEADERS = {
     "kernel_operator.h",
     "kernel_tiling/kernel_tiling.h",
@@ -285,6 +288,38 @@ def validate_source_tree(task_dir: Path) -> list[SourceIssue]:
                     f"{name} must launch an __aicore__ kernel with kernel<<<blockDim, nullptr, stream>>>",
                 )
             )
+        pointer_parameters = _POINTER_PARAMETER.findall(def_parameters)
+        for parameter in pointer_parameters:
+            aliases = re.findall(
+                rf"\b[A-Za-z_]\w*(?:::\w+)*(?:\s*<[^;=]+>)?\s*\*\s*"
+                rf"([A-Za-z_]\w*)\s*=\s*(?:\([^;]+\)|reinterpret_cast<[^>]+>)?\s*"
+                rf"{re.escape(parameter)}\s*;",
+                body,
+            )
+            dereferenced = re.search(rf"\b{re.escape(parameter)}\s*->", body)
+            alias = next(
+                (
+                    value
+                    for value in aliases
+                    if re.search(rf"\b{re.escape(value)}\s*->", body)
+                ),
+                None,
+            )
+            if dereferenced or alias:
+                token = alias or parameter
+                offset = body.find(f"{token}->")
+                issues.append(
+                    SourceIssue(
+                        str(def_path.relative_to(task_dir)),
+                        def_line + body[: max(0, offset)].count("\n"),
+                        "host_dereferences_device_pointer",
+                        (
+                            f"{name} dereferences {parameter!r} through {token!r} on the Host; "
+                            "*_do pointer arguments are NPU addresses and may only be forwarded "
+                            "to the kernel launch"
+                        ),
+                    )
+                )
         if len(re.findall(rf"\b{re.escape(name)}\b", pybind_text)) < 2:
             issues.append(
                 SourceIssue(
