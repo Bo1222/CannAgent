@@ -673,6 +673,56 @@ def compact_evaluation(result: EvalResult | None) -> dict[str, Any] | None:
     output = result.error_excerpt
     if not output:
         output = result.verify_output if result.failure_stage == "correctness" else result.compile_output
+    first_incomplete_or_failed = next(
+        (
+            item
+            for item in result.case_results
+            if isinstance(item, dict)
+            and item.get("status") not in {"passed", "reference_passed", "candidate_returned"}
+        ),
+        None,
+    )
+    if first_incomplete_or_failed is None and not result.correctness and result.case_results:
+        first_incomplete_or_failed = next(
+            (item for item in reversed(result.case_results) if isinstance(item, dict)),
+            None,
+        )
+    case_keys = (
+        "case_index",
+        "index",
+        "profile",
+        "status",
+        "checkpoint",
+        "shape",
+        "shapes",
+        "dtype",
+        "dtypes",
+        "attrs",
+        "error",
+        "expected_summary",
+        "actual_summary",
+        "max_abs_diff",
+        "max_rel_diff",
+    )
+    first_case = (
+        {
+            key: first_incomplete_or_failed[key]
+            for key in case_keys
+            if key in first_incomplete_or_failed
+        }
+        if first_incomplete_or_failed
+        else None
+    )
+    performance = {
+        key: value
+        for key, value in result.performance.items()
+        if key in {"overall_speedup", "framework", "implementation", "mock"}
+    }
+    per_case = result.performance.get("per_case_speedup", [])
+    if isinstance(per_case, list):
+        performance["per_case_speedup"] = per_case[:8]
+        if len(per_case) > 8:
+            performance["per_case_speedup_omitted"] = len(per_case) - 8
     return {
         "compiled": result.compiled,
         "correctness": result.correctness,
@@ -685,6 +735,9 @@ def compact_evaluation(result: EvalResult | None) -> dict[str, Any] | None:
         "active_profile": result.active_profile,
         "passed_profiles": result.passed_profiles,
         "passed_case_indices": result.passed_case_indices,
+        "first_incomplete_or_failed_case": first_case,
+        "case_result_count": len(result.case_results),
+        "performance": performance,
         "evaluation_gates": evaluation_gates(result),
     }
 

@@ -19,11 +19,12 @@ from ascendc_multi_turn.evaluator import (
     _run,
     extract_error_excerpt,
 )
-from ascendc_multi_turn.llm import MockProvider
+from ascendc_multi_turn.llm import MockProvider, system_prompt_for, system_prompt_id_for
 from ascendc_multi_turn.models import EvalResult, LLMResponse
 from ascendc_multi_turn.models import RunConfig as RepositoryRunConfig
 from ascendc_multi_turn.progress import ProgressReporter
 from ascendc_multi_turn.prompts import build_plan_prompt, build_prompt, parse_plan
+from ascendc_multi_turn.repair_policy import build_repair_policy
 from ascendc_multi_turn.runner import MultiTurnRunner
 
 
@@ -55,7 +56,7 @@ class TruncatingProvider:
             )
             finish_reason = "stop"
         elif call_type in {"planner", "diagnose"}:
-            content = _plan_response(initial="Return exactly one complete baseline item" in prompt)
+            content = _plan_response(initial="返回恰好一个完整 baseline item" in prompt)
             finish_reason = "stop"
         else:
             self.generator_calls += 1
@@ -131,7 +132,7 @@ class EmptyRouterThenSuccessProvider:
                 }
             )
         elif call_config and call_config.call_type in {"planner", "diagnose"}:
-            content = _plan_response(initial="Return exactly one complete baseline item" in prompt)
+            content = _plan_response(initial="返回恰好一个完整 baseline item" in prompt)
         else:
             content = _valid_bundle_response()
         return LLMResponse(
@@ -206,7 +207,7 @@ class CompilerRepairProvider:
                 }
             )
         elif call_type in {"planner", "diagnose"}:
-            content = _plan_response(initial="Return exactly one complete baseline item" in prompt)
+            content = _plan_response(initial="返回恰好一个完整 baseline item" in prompt)
         elif self.generator_calls:
             content = json.dumps(
                 {
@@ -320,7 +321,7 @@ class CumulativeRepairProvider:
             )
         elif call_type in {"planner", "diagnose"}:
             content = _plan_response(
-                initial="Return exactly one complete baseline item" in prompt
+                initial="返回恰好一个完整 baseline item" in prompt
             )
         else:
             self.generator_prompts.append(prompt)
@@ -347,6 +348,57 @@ class CumulativeRepairProvider:
                         "delete": [],
                     }
                 )
+        return LLMResponse(
+            content=content,
+            model="test-model",
+            usage={"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+            finish_reason="stop",
+        )
+
+
+class InsufficientDiagnosisProvider:
+    def __init__(self):
+        self.call_types: list[str] = []
+
+    def generate(self, prompt: str, *, call_config=None) -> LLMResponse:
+        call_type = call_config.call_type if call_config else "generator"
+        self.call_types.append(call_type)
+        if call_type == "knowledge_router":
+            content = json.dumps(
+                {
+                    "domain": "ascendc",
+                    "topics": [],
+                    "doc_ids": [],
+                    "supplements": [],
+                    "reason": "test",
+                }
+            )
+        elif call_type == "diagnose":
+            content = json.dumps(
+                {
+                    "evidence_status": "insufficient",
+                    "observations": [
+                        {
+                            "source": "evaluation",
+                            "line_excerpt": "compiler failure repeats",
+                            "interpretation": "现有证据只能确认编译失败重复",
+                        }
+                    ],
+                    "ruled_out": [],
+                    "unknowns": [
+                        {
+                            "question": "准确的源码根因是什么",
+                            "required_evidence": "精确 symbol 对应的 installed declaration",
+                        }
+                    ],
+                    "diagnosis": "当前证据不足以确定源码根因",
+                    "items": [],
+                }
+            )
+        elif call_type == "planner":
+            content = _plan_response(initial="返回恰好一个完整 baseline item" in prompt)
+        else:
+            content = _valid_bundle_response()
         return LLMResponse(
             content=content,
             model="test-model",
@@ -397,6 +449,20 @@ def _valid_bundle_response() -> str:
 def _plan_response(*, initial: bool = False) -> str:
     return json.dumps(
         {
+            "evidence_status": "sufficient",
+            "observations": (
+                []
+                if initial
+                else [
+                    {
+                        "source": "evaluation",
+                        "line_excerpt": "evaluation evidence",
+                        "interpretation": "evidence supports the next change",
+                    }
+                ]
+            ),
+            "ruled_out": [],
+            "unknowns": [],
             "diagnosis": "direct baseline design" if initial else "use evaluation evidence",
             "items": [
                 {
@@ -458,9 +524,26 @@ class BundleTests(unittest.TestCase):
 
 
 class PromptTests(unittest.TestCase):
+    def test_role_system_prompts_are_distinct_chinese_control_layers(self) -> None:
+        roles = ("planner", "diagnose", "generator", "knowledge_router")
+        prompts = {role: system_prompt_for(role) for role in roles}
+        identifiers = {role: system_prompt_id_for(role) for role in roles}
+
+        self.assertEqual(len(set(prompts.values())), len(roles))
+        self.assertEqual(len(set(identifiers.values())), len(roles))
+        self.assertTrue(all("只返回" in value for value in prompts.values()))
+        self.assertEqual(system_prompt_for("generator_retry"), prompts["generator"])
+        self.assertEqual(system_prompt_id_for("generator_retry"), identifiers["generator"])
+        with self.assertRaisesRegex(ValueError, "unsupported LLM call type"):
+            system_prompt_for("unknown")
+
     def test_plan_parser_recovers_explicit_embedded_expected_signal(self) -> None:
         response = json.dumps(
             {
+                "evidence_status": "sufficient",
+                "observations": [],
+                "ruled_out": [],
+                "unknowns": [],
                 "diagnosis": "ready",
                 "items": [
                     {
@@ -479,6 +562,43 @@ class PromptTests(unittest.TestCase):
         self.assertEqual(
             parsed["items"][0]["expected_signal"], "- compile\n- correctness"
         )
+
+    def test_diagnose_may_return_zero_items_only_when_evidence_is_insufficient(self) -> None:
+        response = json.dumps(
+            {
+                "evidence_status": "insufficient",
+                "observations": [
+                    {
+                        "source": "evaluation",
+                        "line_excerpt": "candidate_started only",
+                        "interpretation": "Kernel entry is not proven",
+                    }
+                ],
+                "ruled_out": [],
+                "unknowns": [
+                    {
+                        "question": "Kernel 是否启动",
+                        "required_evidence": "candidate_returned 或 device trace",
+                    }
+                ],
+                "diagnosis": "证据不足",
+                "items": [],
+            }
+        )
+
+        parsed = parse_plan(response, require_evidence=True, allow_insufficient=True)
+        self.assertEqual(parsed["items"], [])
+        with self.assertRaisesRegex(ValueError, "only DIAGNOSE"):
+            parse_plan(response)
+
+        contradictory = json.loads(response)
+        contradictory["items"] = json.loads(_plan_response())["items"]
+        with self.assertRaisesRegex(ValueError, "zero plan items"):
+            parse_plan(
+                json.dumps(contradictory),
+                require_evidence=True,
+                allow_insufficient=True,
+            )
 
     def test_edit_and_plan_prompts_exclude_full_evaluation_logs(self) -> None:
         marker = "FULL_LOG_SHOULD_NOT_BE_IN_PROMPT"
@@ -514,7 +634,7 @@ class PromptTests(unittest.TestCase):
         self.assertIn("concise failure", edit_prompt)
         self.assertIn("concise failure", plan_prompt)
 
-    def test_full_input_prompts_compact_repeated_evaluation_logs(self) -> None:
+    def test_prompt_builders_do_not_control_selected_input_mode(self) -> None:
         marker = "FULL_LOG_MUST_REACH_MODEL"
         result = EvalResult(
             False,
@@ -534,7 +654,6 @@ class PromptTests(unittest.TestCase):
             previous_result=result,
             round_num=2,
             knowledge_context="facts",
-            full_input=True,
         )
         plan_prompt = build_plan_prompt(
             reference_code="class Model: pass",
@@ -543,7 +662,6 @@ class PromptTests(unittest.TestCase):
             result=result,
             mode="bootstrap",
             history=[{"round": 1, "decision": "FAIL", "evaluation": result.to_dict()}],
-            full_input=True,
         )
 
         self.assertNotIn(marker * 1000, edit_prompt)
@@ -593,7 +711,7 @@ class PromptTests(unittest.TestCase):
             round_num=2,
             knowledge_context="stable facts",
             repair_state=state,
-            compile_repair_active=True,
+            protected_regions={"stage": "compile_repair"},
         )
         optimization_prompt = build_prompt(
             reference_code="class Model: pass",
@@ -604,15 +722,49 @@ class PromptTests(unittest.TestCase):
             knowledge_context="performance facts",
             phase="OPTIMIZATION",
             repair_state=state,
-            compile_repair_active=False,
+            protected_regions={"stage": "optimization"},
         )
 
-        self.assertIn("Compilation repair contract", repair_prompt)
-        self.assertIn("runtime `if` statement", repair_prompt)
+        self.assertIn("阶段：compile_repair", repair_prompt)
+        self.assertIn("runtime `if`", repair_prompt)
         self.assertIn("occurrences=3", repair_prompt)
         self.assertIn("AddTiling", repair_prompt)
-        self.assertNotIn("Compilation repair contract", optimization_prompt)
-        self.assertNotIn("Current trajectory repair state", optimization_prompt)
+        self.assertIn("阶段：optimization", optimization_prompt)
+        self.assertNotIn("当前轨迹修复状态", optimization_prompt)
+
+    def test_generator_uses_each_deterministic_stage_contract(self) -> None:
+        bundle = parse_file_bundle(_valid_bundle_response())
+        for stage, marker in (
+            ("bootstrap_generation", "完整端到端实现"),
+            ("compile_repair", "open compiler errors"),
+            ("runtime_repair", "runtime code"),
+            ("correctness_repair", "首个 failing case"),
+            ("performance_tuning", "真实性能测量"),
+            ("optimization", "accepted baseline"),
+        ):
+            with self.subTest(stage=stage):
+                prompt = build_prompt(
+                    reference_code="class Model: pass",
+                    cases_text="{}",
+                    current=bundle,
+                    previous_result=EvalResult(True, False),
+                    round_num=2,
+                    knowledge_context="facts",
+                    protected_regions={"stage": stage},
+                )
+                self.assertIn(f"阶段：{stage}", prompt)
+                self.assertIn(marker, prompt)
+                self.assertNotIn("Repair or optimize", prompt)
+
+    def test_performance_failure_overrides_generic_optimization_stage(self) -> None:
+        policy = build_repair_policy(
+            parse_file_bundle(_valid_bundle_response()),
+            EvalResult(True, True, failure_stage="performance"),
+            None,
+            workflow_phase="optimization",
+        )
+
+        self.assertEqual(policy.stage, "performance_tuning")
 
 
 class EvaluatorTests(unittest.TestCase):
@@ -946,7 +1098,7 @@ class RunnerTests(unittest.TestCase):
                 ["FAIL", "PARTIAL_KEEP", "BASELINE_KEEP"],
             )
             self.assertIn("ROUND_2", provider.generator_prompts[2])
-            self.assertIn("Compilation repair contract", provider.generator_prompts[1])
+            self.assertIn("阶段：compile_repair", provider.generator_prompts[1])
             self.assertIn("AddTiling", provider.generator_prompts[2])
             attempt = json.loads(
                 (output / ".llm_state/attempts/attempt_0002.json").read_text(
@@ -1079,6 +1231,56 @@ class RunnerTests(unittest.TestCase):
                 (output / ".llm_state" / "knowledge_state.json").read_text(encoding="utf-8")
             )
             self.assertEqual(state["full_route_count"], 1)
+
+    def test_insufficient_diagnosis_blocks_before_generator_without_budget_use(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "model.py"
+            source.write_text("class Model: pass\n", encoding="utf-8")
+            output = root / "generated"
+            provider = InsufficientDiagnosisProvider()
+            config = RunConfig(
+                str(source),
+                str(output),
+                max_rounds=3,
+                max_bootstrap_rounds=10,
+                max_total_rounds=10,
+                evaluator="mock",
+                mock=True,
+            )
+
+            summary = MultiTurnRunner(
+                config, provider, RepeatingBuildFailureEvaluator()
+            ).run()
+
+            self.assertEqual(summary["status"], "blocked")
+            self.assertEqual(summary["stop_reason"], "diagnosis_evidence_insufficient")
+            self.assertEqual(summary["pending_phase"], "DIAGNOSE")
+            self.assertEqual(summary["evaluations_completed"], 3)
+            self.assertEqual(provider.call_types.count("generator"), 3)
+            self.assertEqual(provider.call_types.count("diagnose"), 1)
+            self.assertEqual(
+                summary["blocked_detail"]["unknowns"][0]["question"],
+                "准确的源码根因是什么",
+            )
+            self.assertFalse((output / ".llm_state" / "DONE").exists())
+
+            resumed = RunConfig(
+                str(source),
+                str(output),
+                max_rounds=3,
+                max_bootstrap_rounds=10,
+                max_total_rounds=10,
+                evaluator="mock",
+                mock=True,
+                resume=True,
+            )
+            resumed_summary = MultiTurnRunner(
+                resumed, provider, RepeatingBuildFailureEvaluator()
+            ).run()
+            self.assertEqual(resumed_summary["evaluations_completed"], 3)
+            self.assertEqual(provider.call_types.count("generator"), 3)
+            self.assertEqual(provider.call_types.count("diagnose"), 2)
 
     def test_refuses_nonempty_output_without_resume(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

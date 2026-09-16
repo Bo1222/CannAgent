@@ -126,7 +126,9 @@ BOOTSTRAP → PLAN → GENERATE → SOURCE VALIDATION
 - `COMPILE/CORRECTNESS/PERFORMANCE`：在真实工具链和 NPU 上编译，按固定 profile 逐级校验，
   仅在完整用例通过后测量性能；smoke、shape 或 dtype 通过都不能建立正确基线。
 - `SETTLE`：更新 source、compile、runtime、correctness 和 performance frontier。
-- `DIAGNOSE/OPTIMIZATION`：把失败转换为结构化证据，提出局部修复并重新评估。
+- `DIAGNOSE`：把失败转换为 `observations/ruled_out/unknowns`；证据充分时只提出一个局部修复，
+  证据不足时返回零 item，并在 Generator 前以可恢复 `blocked` 停止且不消耗候选预算。
+- `OPTIMIZATION`：仅在完整正确 baseline 和实际性能测量基础上提出一个局部优化并重新评估。
 
 `--max-bootstrap-rounds` 限制建立正确基线的尝试数，`--max-rounds` 限制基线后的
 性能优化轮数，`--max-total-rounds` 限制两者合计的候选评估次数。
@@ -305,7 +307,7 @@ outputs/1_GELU/
   `PLAN/EDIT/EVAL/DIAGNOSE` 等 pending phase。`--resume` 主要依据它继续。
 - `summary.json`：本次命令结束时打印到终端的最终摘要副本，包括是否成功、停止原因、
   baseline/best round、accepted/latest attempt 身份与候选路径、被拒尝试、token 用量、最后失败及
-  `stage_normalized_metrics`。未到达阶段的
+  `stage_normalized_metrics`；证据不足阻塞时还包含 `blocked_detail`。未到达阶段的
   tokens/time-to-first 值为 `null`（censored），不是 0。
 - `token_usage.json`：总 token 和 planner、generator、diagnose 等调用类型的分类统计。
 - `calls.jsonl`：每次 LLM 调用一行，记录模型、耗时、finish reason、token、重试序号和

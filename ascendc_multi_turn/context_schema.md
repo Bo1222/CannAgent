@@ -379,5 +379,7 @@ without inspecting provider traffic.
 
 首个被接受的已编译 bundle 生成 `interface_contract.json`。后续计划项默认
 `allow_interface_change=false`；候选改变 pybind 模块、Host wrapper 声明/定义或 Kernel entry 时，
-必须显式授权并重新通过编译。DIAGNOSE 计划还必须提供 `evidence_refs.line_excerpt` 和
-`falsifies`，避免在没有直接证据时重复同族假设。
+必须显式授权并重新通过编译。DIAGNOSE 计划必须提供 `evidence_status`、`observations`、
+`ruled_out`、`unknowns`、`diagnosis` 和 `items`。证据充分时 item 必须提供
+`evidence_refs.line_excerpt` 与 `falsifies`；证据不足时 `items=[]` 且 `unknowns` 非空，
+Runner 在 Generator 前进入可恢复 `blocked`，不消耗候选预算。

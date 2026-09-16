@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
@@ -344,6 +345,7 @@ class ContextSelector:
             evidence=failure_evidence,
         )
         families = self.adapter.detect_operator_families(operator, evidence)
+        shape_regime, risk_flags = self._shape_and_risk(families, evidence)
         symbols = extract_symbol_evidence(
             failure=failure_evidence,
             source=source_evidence,
@@ -391,6 +393,8 @@ class ContextSelector:
             stages=stages,
             operator=operator,
             operator_families=families,
+            shape_regime=shape_regime,
+            risk_flags=risk_flags,
             soc=soc,
             runtime_version=runtime_version,
             knowledge_version=knowledge_version,
@@ -420,6 +424,71 @@ class ContextSelector:
             profile_case_indices=list(profile_case_indices or []),
             profile_features=inferred_features,
             environment_fingerprint=environment_fingerprint,
+        )
+
+    @staticmethod
+    def _shape_and_risk(
+        operator_families: list[str], evidence: str
+    ) -> tuple[dict[str, Any], list[str]]:
+        """Derive coarse routing facts without an additional model call."""
+
+        lowered = evidence.lower()
+        ranks: set[int] = set()
+        for match in re.finditer(r"\[\s*\d+(?:\s*,\s*\d+)*\s*\]", evidence):
+            ranks.add(match.group(0).count(",") + 1)
+        dynamic = any(
+            marker in lowered
+            for marker in ("dynamic shape", "dynamic_shape", "symbolic", "shape=None")
+        )
+        if "broadcast" in operator_families:
+            relation = "broadcast"
+        elif "reduction" in operator_families:
+            relation = "reduction"
+        elif "matmul" in operator_families:
+            relation = "matmul"
+        elif "elementwise" in operator_families:
+            relation = "same_shape"
+        else:
+            relation = "unknown"
+        if "axis=-1" in lowered or "last axis" in lowered or "last_axis" in lowered:
+            axis_position = "last"
+        elif "axis=" in lowered or "dim=" in lowered:
+            axis_position = "non_last_or_mixed"
+        else:
+            axis_position = "unknown"
+        tail = any(
+            marker in lowered
+            for marker in ("tail", "unaligned", "remainder", "datacopypad")
+        )
+        risk_flags = [
+            flag
+            for flag, present in (
+                ("reduction", "reduction" in operator_families),
+                ("broadcast", "broadcast" in operator_families),
+                ("dynamic_shape", dynamic),
+                ("tail", tail),
+                ("multi_output", any(marker in lowered for marker in ("multi output", "multi_output", "tuple"))),
+                ("atomic", "atomic" in lowered),
+                ("matmul_cube", "matmul" in operator_families or "cube" in lowered),
+                (
+                    "host_kernel_coupling",
+                    any(
+                        marker in lowered
+                        for marker in ("tiling", "descriptor", "pybind", "host wrapper", "_do")
+                    ),
+                ),
+            )
+            if present
+        ]
+        return (
+            {
+                "ranks": sorted(ranks),
+                "relation": relation,
+                "axis_position": axis_position,
+                "alignment": "tail_or_unaligned" if tail else "unknown",
+                "dynamic": dynamic,
+            },
+            risk_flags,
         )
 
     @staticmethod
@@ -556,11 +625,18 @@ class ContextSelector:
             if debug_stage
             else []
         )
-        patterns = list(
-            bundle.examples
-            if full_selected
-            else bundle.examples[: (1 if request.audience == "planner" else 2)]
-        )
+        # Structured pattern descriptions do not carry hardware verification,
+        # operator-family, or shape-regime metadata. They are therefore not
+        # eligible to act as exemplars.
+        patterns: list[str] = []
+        for index, _ in enumerate(bundle.examples):
+            selection_trace.append(
+                {
+                    "candidate": f"structured-example:{index}",
+                    "decision": "rejected",
+                    "reason": "unverified_or_shape_incompatible_exemplar",
+                }
+            )
         exclusions = list(
             dict.fromkeys(
                 exclusion
@@ -585,8 +661,8 @@ class ContextSelector:
         for symbol in request.failure_symbols:
             if symbol.lower() not in runtime_symbol_ids | structured_symbols:
                 warning = (
-                    f"UNVERIFIED_API: {symbol} — do not use in plan.change or source "
-                    "until an installed declaration or compile probe verifies it"
+                    f"UNVERIFIED_API: {symbol} — 在 installed declaration 或 compile probe 验证前，"
+                    "不得用于 plan.change 或源码"
                 )
                 exclusions.append(warning)
                 selection_trace.append(
@@ -612,6 +688,8 @@ class ContextSelector:
             task_facts={
                 "operator": request.operator,
                 "operator_families": request.operator_families,
+                "shape_regime": request.shape_regime,
+                "risk_flags": request.risk_flags,
                 "soc": request.soc,
                 "runtime_cann": request.runtime_version,
                 "knowledge_cann": request.knowledge_version,

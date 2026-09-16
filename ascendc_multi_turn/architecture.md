@@ -34,9 +34,9 @@ and is not by itself an evaluation result for the proposed adapter.
 | Component / role | Implementation | Responsibility |
 |---|---|---|
 | Orchestrator | `runner.MultiTurnRunner` | Owns resume state, budgets, planning, editing, evaluation, frontier rollback, and termination. |
-| Planner | LLM call type `planner` | Creates one complete bootstrap plan or 3–5 evidence-driven repair/optimization items. |
-| Diagnoser | LLM call type `diagnose` | Uses the same plan prompt/JSON contract with a diagnosis-specific instruction after three consecutive failures. It is a mode of the planner, not an independent agent. |
-| Generator/editor | LLM call type `generator` | Returns a JSON file delta for the Python wrapper, pybind host source, kernel source, and optional headers. |
+| Planner | LLM call type `planner` | Creates exactly one complete bootstrap or evidence-driven repair/optimization item. |
+| Diagnoser | LLM call type `diagnose` | Uses a diagnosis-specific Chinese system prompt and evidence schema after repeated failures. It returns one item only with sufficient evidence; otherwise it returns zero items and blocks before generation. |
+| Generator/editor | LLM call type `generator` | Returns a JSON file bundle containing complete post-edit contents for changed Python, pybind, kernel, or header files; it does not return a textual diff/patch. |
 | Document knowledge router | LLM call type `knowledge_router`, only in `document` mode | Selects a bounded working set of raw Markdown API documents. This is the legacy comparison path. |
 | Structured knowledge router | `StructuredKnowledgeRouter` | Deterministically selects API cards/facts, failure cards, pattern cards, project contracts, and provenance from a published knowledge build. |
 | Runtime header collector | `collect_runtime_facts` | Looks up exact symbols in installed public CANN headers and emits bounded excerpts in `document` mode. |
@@ -60,7 +60,9 @@ flowchart TD
     E --> F
     F -- no --> G[PLAN or DIAGNOSE LLM]
     F -- yes --> H[Use active plan item]
-    G --> H
+    G --> Z{Diagnosis evidence sufficient?}
+    Z -- no --> ZA[Recoverable blocked; no candidate budget used]
+    Z -- yes --> H
     H --> I[Knowledge routing and prompt construction]
     I --> J[GENERATOR LLM returns file delta]
     J --> K[Bundle parse and source restore]
@@ -96,12 +98,13 @@ becomes evidence for the next plan/generator cycle.
 
 ### 1.3 Prompt construction
 
-The provider supplies a short system prompt: act as an expert AscendC engineer
-and return one JSON object. Nearly all behavior is specified in the user prompt.
+The provider receives a role-specific Chinese system prompt for planner,
+diagnose, generator, or knowledge router. Machine identifiers, JSON keys, API
+names, source, diagnostics, document IDs, and upstream knowledge remain unchanged.
 
 Planner/diagnoser prompt sections:
 
-1. purpose and execution rules;
+1. role-specific purpose, evidence status, observations, ruled-out hypotheses, and unknowns;
 2. global mandatory AscendC/project rules;
 3. reference PyTorch model;
 4. all supplied test cases;
@@ -118,7 +121,7 @@ Generator prompt sections:
 3. active evaluation profile, case indices/features, and diagnostic source files;
 4. protected regions;
 5. open and cleared errors plus only failed approaches relevant to open errors;
-6. must-satisfy semantic and ABI contracts;
+6. deterministic bootstrap/compile/runtime/correctness/performance stage contract;
 7. exact installed/Verified facts and routed embedded knowledge modules;
 8. explicit forbidden patterns;
 9. complete reference model, benchmark cases, current implementation, and evaluation;

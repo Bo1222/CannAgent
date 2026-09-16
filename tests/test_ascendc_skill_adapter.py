@@ -30,6 +30,14 @@ def _context(*, stages: list[str], operator: str = "add", domains: list[str] | N
         stages=stages,
         operator=operator,
         operator_families=["broadcast"] if operator == "add" else ["elementwise"],
+        shape_regime={
+            "ranks": [2],
+            "relation": "broadcast" if operator == "add" else "same_shape",
+            "axis_position": "unknown",
+            "alignment": "tail_or_unaligned",
+            "dynamic": False,
+        },
+        risk_flags=["broadcast", "tail"] if operator == "add" else ["tail"],
         soc="Ascend910B3",
         runtime_version="8.5.2",
         knowledge_version="8.5.2",
@@ -117,6 +125,9 @@ class EmbeddedSkillAdapterTests(unittest.TestCase):
         self.assertIn("[128,128] + [128,1]", broadcast.text)
         self.assertIn("Do not turn `stride == 0`", broadcast.text)
         self.assertTrue(any("broadcast.onedim" in item.knowledge_module_id for item in excerpts))
+        self.assertTrue(
+            any(item["reason"] == "duplicate_knowledge_content" for item in selected.trace)
+        )
 
         duplicate_stages = adapter.select(
             _context(stages=["code_generation", "host_integration_debug"])
@@ -131,7 +142,7 @@ class EmbeddedSkillAdapterTests(unittest.TestCase):
             any(item["reason"] == "duplicate_knowledge_module_section" for item in duplicate_stages.trace)
         )
 
-    def test_renderer_never_truncates_selected_knowledge_module(self) -> None:
+    def test_renderer_skips_oversized_knowledge_module_atomically(self) -> None:
         marker = "selected-knowledge-module-tail-marker"
         selection = SelectedStageContext(
             schema_version=2,
@@ -161,8 +172,20 @@ class EmbeddedSkillAdapterTests(unittest.TestCase):
             budget={"input_mode": "bounded", "max_chars": 500, "used_chars": 0, "truncated_sections": []},
         )
         rendered = render_stage_context(selection)
+        self.assertNotIn(marker, rendered)
+        self.assertNotIn("fixture.broadcast#all", selection.selection_metadata["rendered_knowledge_module_sections"])
+        self.assertNotIn("broadcast", selection.selection_metadata["rendered_skill_ids"])
+        self.assertIn("相关内置知识模块[0]", selection.budget["truncated_sections"])
+
+        selection.budget.update(input_mode="full_selected", truncated_sections=[])
+        selection.selection_metadata = {}
+        rendered = render_stage_context(selection)
         self.assertIn(marker, rendered)
-        self.assertIn("fixture.broadcast#all", selection.selection_metadata["rendered_knowledge_module_sections"])
+        self.assertIn(
+            "fixture.broadcast#all",
+            selection.selection_metadata["rendered_knowledge_module_sections"],
+        )
+        self.assertIn("broadcast", selection.selection_metadata["rendered_skill_ids"])
 
     def test_missing_sibling_repository_is_irrelevant(self) -> None:
         with tempfile.TemporaryDirectory() as temporary, patch(

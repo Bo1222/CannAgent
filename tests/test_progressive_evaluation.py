@@ -9,7 +9,11 @@ from unittest.mock import patch
 from ascendc_multi_turn.bundle import semantic_bundle_hash
 from ascendc_multi_turn.case_profiles import build_case_profiles
 from ascendc_multi_turn.context_selector import ContextSelector
-from ascendc_multi_turn.diagnostics import evaluation_gates, parse_structured_failure
+from ascendc_multi_turn.diagnostics import (
+    compact_evaluation,
+    evaluation_gates,
+    parse_structured_failure,
+)
 from ascendc_multi_turn.evaluator import LocalAscendEvaluator, extract_error_excerpt
 from ascendc_multi_turn.interface_contract import (
     capture_interface_contract,
@@ -21,6 +25,37 @@ from ascendc_multi_turn.source_validation import validate_source_tree
 
 
 class ProgressiveEvaluationTests(unittest.TestCase):
+    def test_compact_evaluation_exposes_first_case_and_bounded_performance(self) -> None:
+        result = EvalResult(
+            True,
+            False,
+            failure_stage="correctness",
+            case_results=[
+                {"case_index": 0, "status": "passed", "shape": [128]},
+                {
+                    "case_index": 1,
+                    "status": "failed",
+                    "shape": [127],
+                    "dtype": "float16",
+                    "max_abs_diff": 0.5,
+                },
+            ],
+            passed_case_indices=[0],
+            performance={
+                "overall_speedup": 1.1,
+                "per_case_speedup": [
+                    {"case_index": index, "speedup": 1.0 + index / 100}
+                    for index in range(10)
+                ],
+            },
+        )
+
+        compact = compact_evaluation(result)
+        self.assertEqual(compact["first_incomplete_or_failed_case"]["case_index"], 1)
+        self.assertEqual(compact["case_result_count"], 2)
+        self.assertEqual(len(compact["performance"]["per_case_speedup"]), 8)
+        self.assertEqual(compact["performance"]["per_case_speedup_omitted"], 2)
+
     def test_host_wrapper_cannot_dereference_npu_pointer_argument(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             task_dir = Path(temporary)

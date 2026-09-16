@@ -41,6 +41,47 @@ class KnowledgeRoutingTrajectoryTests(unittest.TestCase):
     def setUp(self) -> None:
         self.selector = ContextSelector(SkillAdapter())
 
+    def test_shape_regime_and_risk_flags_reuse_deterministic_family_route(self) -> None:
+        shape_regime, risk_flags = self.selector._shape_and_risk(
+            ["broadcast"],
+            "input shapes [2, 127] and [1, 127]; dynamic shape; tail; axis=-1; pybind",
+        )
+
+        self.assertEqual(shape_regime["ranks"], [2])
+        self.assertEqual(shape_regime["relation"], "broadcast")
+        self.assertEqual(shape_regime["axis_position"], "last")
+        self.assertTrue(shape_regime["dynamic"])
+        self.assertEqual(
+            set(risk_flags),
+            {"broadcast", "dynamic_shape", "tail", "host_kernel_coupling"},
+        )
+
+    def test_unverified_structured_pattern_is_not_injected_as_exemplar(self) -> None:
+        bundle = _bundle()
+        bundle.examples = ["unverified tutorial pattern"]
+        request = self.selector.request(
+            audience="generator",
+            workflow_phase="bootstrap",
+            operator="add",
+            soc="test",
+            runtime_version="8.5.2",
+            knowledge_version="8.5.2",
+            current_exists=False,
+            previous=None,
+            evidence="shape [2, 127] broadcast tail",
+        )
+
+        selected, _ = self.selector.select(bundle=bundle, request=request)
+
+        self.assertEqual(selected.design_patterns, [])
+        self.assertTrue(
+            any(
+                item.get("reason")
+                == "unverified_or_shape_incompatible_exemplar"
+                for item in selected.selection_trace
+            )
+        )
+
     @staticmethod
     def _runtime(symbol: str, text: str) -> SimpleNamespace:
         return SimpleNamespace(

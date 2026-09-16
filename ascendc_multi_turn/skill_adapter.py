@@ -34,6 +34,8 @@ class SkillAdapterContext:
     stages: list[str]
     operator: str
     operator_families: list[str]
+    shape_regime: dict[str, Any]
+    risk_flags: list[str]
     soc: str
     runtime_version: str
     knowledge_version: str
@@ -123,6 +125,13 @@ class _KnowledgeModuleDocument:
 
 def _normalized_text(value: str) -> str:
     return re.sub(r"\s+", " ", value.lower())
+
+
+def _knowledge_content_hash(value: str) -> str:
+    normalized = "\n".join(
+        line.rstrip() for line in value.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    ).strip()
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
 
 
 def _heading_title(line: str) -> str | None:
@@ -349,6 +358,12 @@ class SkillAdapter:
         features = [str(item) for item in condition.get("profile_features", ())]
         if features and not set(features).intersection(context.profile_features):
             return False, "profile_feature_mismatch"
+        risks = [str(item) for item in condition.get("risk_flags", ())]
+        if risks and not set(risks).intersection(context.risk_flags):
+            return False, "risk_flag_mismatch"
+        shape_relations = [str(item) for item in condition.get("shape_relations", ())]
+        if shape_relations and context.shape_regime.get("relation") not in shape_relations:
+            return False, "shape_regime_mismatch"
         if condition.get("always"):
             reasons.append("stage_default")
         if condition.get("requires_correct_baseline"):
@@ -366,6 +381,7 @@ class SkillAdapter:
         trace: list[dict[str, Any]] = []
         knowledge_modules: list[SkillKnowledgeModule] = []
         seen_sections: set[tuple[str, str]] = set()
+        seen_content: dict[str, str] = {}
         selected_chars = 0
         audience_budget = self.audience_budgets.get(context.audience, 12000)
         routed_groups = [
@@ -386,6 +402,7 @@ class SkillAdapter:
                     continue
                 excerpts: list[SkillExcerpt] = []
                 selected_reference_ids: list[tuple[str, str]] = []
+                selected_content_hashes: list[tuple[str, str]] = []
                 exclusions = [str(item) for item in skill.get("exclude", ())]
                 knowledge_types = [str(item) for item in skill.get("knowledge_type", ())]
                 for reference in skill.get("references", ()):
@@ -406,7 +423,20 @@ class SkillAdapter:
                     if not excerpt:
                         trace.append({"candidate": reference_id, "decision": "rejected", "reason": "mapped_section_not_found"})
                         continue
+                    content_hash = _knowledge_content_hash(excerpt)
+                    if content_hash in seen_content:
+                        trace.append(
+                            {
+                                "candidate": reference_id,
+                                "decision": "rejected",
+                                "reason": "duplicate_knowledge_content",
+                                "alias_of": seen_content[content_hash],
+                                "content_sha256": content_hash,
+                            }
+                        )
+                        continue
                     seen_sections.add(key)
+                    seen_content[content_hash] = reference_id
                     knowledge_types.extend(document.knowledge_type)
                     exclusions.extend(document.conflicts_or_exclusions)
                     excerpts.append(
@@ -422,6 +452,7 @@ class SkillAdapter:
                         )
                     )
                     selected_reference_ids.append((reference_id, ref_reason))
+                    selected_content_hashes.append((content_hash, reference_id))
                 if not excerpts:
                     trace.append(
                         {
@@ -437,6 +468,9 @@ class SkillAdapter:
                         seen_sections.discard(
                             (excerpt.knowledge_module_id, excerpt.section_id)
                         )
+                    for content_hash, reference_id in selected_content_hashes:
+                        if seen_content.get(content_hash) == reference_id:
+                            seen_content.pop(content_hash, None)
                     trace.append(
                         {
                             "candidate": group_id,

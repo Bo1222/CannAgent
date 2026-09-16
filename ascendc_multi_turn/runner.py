@@ -46,7 +46,7 @@ from .knowledge import (
     save_knowledge_state,
     selection_from_state,
 )
-from .llm import SYSTEM_PROMPT_ID, LLMProvider, system_prompt_for
+from .llm import LLMProvider, system_prompt_for, system_prompt_id_for
 from .logging import TrajectoryLogger
 from .models import EvalResult, FileBundle, LLMCallConfig, LLMResponse, RunConfig
 from .progress import ProgressReporter, token_detail
@@ -236,20 +236,23 @@ class MultiTurnRunner:
             return ""
 
         knowledge = section(
-            ("Exact installed/Verified facts and relevant knowledge modules", "Stage-selected AscendC references"),
-            ("Explicit forbidden patterns", "Reference PyTorch model and benchmark semantics (read-only)", "Output contract"),
+            (
+                "精确 installed/verified 事实和相关知识模块",
+                "按阶段选择的 AscendC 参考",
+            ),
+            ("明确禁止模式", "Reference PyTorch model 与 benchmark 语义（只读）", "输出契约"),
         )
         source = section(
-            ("Current implementation",),
-            ("Previous evaluation", "Latest evaluation evidence"),
+            ("当前实现",),
+            ("上一轮评测", "最新评测证据"),
         )
         evidence = section(
-            ("Previous evaluation", "Latest evaluation evidence"),
-            ("Active plan item", "Stage-selected AscendC references"),
+            ("上一轮评测", "最新评测证据"),
+            ("按阶段选择的 AscendC 参考", "输出契约"),
         )
         repair_state = section(
-            ("Open errors, cleared errors, and relevant failed approaches", "Current trajectory repair state"),
-            ("Must-satisfy semantic and ABI contracts", "Reference PyTorch model and benchmark semantics (read-only)", "Output contract"),
+            ("开放错误、已清除错误和相关失败方案", "当前轨迹修复状态"),
+            ("当前阶段契约", "必须满足的语义和 ABI 契约", "Reference PyTorch model 与 benchmark 语义（只读）", "输出契约"),
         )
 
         def measure(value: str) -> dict[str, int]:
@@ -288,7 +291,7 @@ class MultiTurnRunner:
         system_path.write_text(system_prompt, encoding="utf-8")
         prompt_metadata.update(
             {
-                "system_prompt_id": SYSTEM_PROMPT_ID,
+                "system_prompt_id": system_prompt_id_for(call_type),
                 "system_prompt_sha256": hashlib.sha256(
                     system_prompt.encode("utf-8")
                 ).hexdigest(),
@@ -457,9 +460,9 @@ class MultiTurnRunner:
     def _truncation_retry_prompt(prompt: str) -> str:
         return f"""{prompt}
 
-## Retry after truncated output
-Return exactly one compact JSON object from scratch. Include only the smallest complete
-file delta and no Markdown. The response must fit within the output-token limit.
+## 输出截断后的重试
+从头只返回一个紧凑 JSON 对象，不要使用 Markdown。仅包含最小但完整的文件 delta，
+并确保响应不超过输出 token 上限。
 """
 
     @staticmethod
@@ -641,6 +644,10 @@ file delta and no Markdown. The response must fit within the output-token limit.
             "version": version,
             "mode": mode,
             "origin": origin,
+            "evidence_status": parsed.get("evidence_status", "sufficient"),
+            "observations": parsed.get("observations", []),
+            "ruled_out": parsed.get("ruled_out", []),
+            "unknowns": parsed.get("unknowns", []),
             "diagnosis": parsed.get("diagnosis", ""),
             "items": [{**item, "status": "PENDING", "decision": None} for item in parsed["items"]],
         }
@@ -656,10 +663,18 @@ file delta and no Markdown. The response must fit within the output-token limit.
             "",
             f"Mode: {plan['mode']}",
             f"Base attempt: {RepairStateManager(self.state_dir).accepted_attempt_id or 'none'}",
+            f"Evidence status: {plan.get('evidence_status', 'unknown')}",
             "",
             plan.get("diagnosis", ""),
             "",
         ]
+        if plan.get("unknowns"):
+            lines.extend(["## Unknowns", ""])
+            for item in plan["unknowns"]:
+                lines.append(
+                    f"- {item.get('question')}: 需要 {item.get('required_evidence')}"
+                )
+            lines.append("")
         for item in plan["items"]:
             checked = "x" if item.get("status") == "SETTLED" else " "
             outcome = f" [{item['decision']}]" if item.get("decision") else ""
@@ -717,7 +732,6 @@ file delta and no Markdown. The response must fit within the output-token limit.
             diagnosis_required=diagnosis_required,
             knowledge_context=knowledge_context,
             initial=initial,
-            full_input=self.config.uses_full_selected_input,
             repair_state=(
                 repair_state if mode == "bootstrap" and not initial else None
             ),
@@ -733,6 +747,7 @@ file delta and no Markdown. The response must fit within the output-token limit.
                     min_items=1,
                     max_items=1,
                     require_evidence=diagnosis_required,
+                    allow_insufficient=diagnosis_required,
                 )
                 self.progress.emit(
                     f"{call_type.upper()} v{version} · reused persisted response"
@@ -755,6 +770,7 @@ file delta and no Markdown. The response must fit within the output-token limit.
                 min_items=1,
                 max_items=1,
                 require_evidence=diagnosis_required,
+                allow_insufficient=diagnosis_required,
             )
         (plan_dir / "result.json").write_text(
             json.dumps(parsed, ensure_ascii=False, indent=2), encoding="utf-8"
@@ -769,12 +785,31 @@ file delta and no Markdown. The response must fit within the output-token limit.
                 else "initial_plan" if initial else "plan"
             ),
         )
-        logger.update_workflow(
-            phase="EDIT",
-            plan_version=version,
-            active_plan_item=plan["items"][0]["id"],
-            consecutive_failures=0 if diagnosis_required else logger.data.get("workflow", {}).get("consecutive_failures", 0),
-        )
+        if plan["items"]:
+            logger.update_workflow(
+                phase="EDIT",
+                plan_version=version,
+                active_plan_item=plan["items"][0]["id"],
+                consecutive_failures=(
+                    0
+                    if diagnosis_required
+                    else logger.data.get("workflow", {}).get("consecutive_failures", 0)
+                ),
+            )
+        else:
+            logger.update_pending_phase("DIAGNOSE")
+            logger.update_workflow(
+                phase="DIAGNOSE",
+                plan_version=version,
+                active_plan_item=None,
+                diagnose_pending=True,
+                diagnosis_block={
+                    "evidence_status": plan.get("evidence_status"),
+                    "diagnosis": plan.get("diagnosis"),
+                    "unknowns": plan.get("unknowns", []),
+                    "plan_version": version,
+                },
+            )
         return plan
 
     def _knowledge_context(
@@ -1210,24 +1245,9 @@ file delta and no Markdown. The response must fit within the output-token limit.
             knowledge_context=knowledge_context,
             phase=budget_phase.upper(),
             plan_item=active_item,
-            full_input=self.config.uses_full_selected_input,
             repair_state=repair_state_manager.prompt_summary(previous),
             knowledge_selection=selection,
             protected_regions=protected_regions,
-            compile_repair_active=bool(
-                budget_phase == "bootstrap"
-                and current is not None
-                and current.files
-                and previous is not None
-                and previous.error
-                and (previous.failure_stage or "")
-                in {
-                    "ascendc_build",
-                    "compile",
-                    "api_constraint_validation",
-                    "static_validation",
-                }
-            ),
         )
         (round_dir / "prompt.txt").write_text(prompt, encoding="utf-8")
         response = self._call_llm(
@@ -1515,9 +1535,23 @@ file delta and no Markdown. The response must fit within the output-token limit.
                         final_status = "paused"
                         break
                     workflow = logger.data.setdefault("workflow", {})
-                    workflow["diagnose_pending"] = False
-                    logger.update_workflow(**workflow)
                     active_item = self._active_plan_item(plan)
+                    if (
+                        diagnose_required
+                        and plan.get("evidence_status") == "insufficient"
+                        and active_item is None
+                    ):
+                        logger.update_workflow(
+                            phase="DIAGNOSE",
+                            diagnose_pending=True,
+                            active_plan_item=None,
+                        )
+                        final_status = "blocked"
+                        stop_reason = "diagnosis_evidence_insufficient"
+                        break
+                    workflow["diagnose_pending"] = False
+                    workflow.pop("diagnosis_block", None)
+                    logger.update_workflow(**workflow)
                     logger.update_pending_phase("EDIT")
             if active_item is not None:
                 logger.update_workflow(phase="EDIT", active_plan_item=active_item["id"])
@@ -1928,7 +1962,11 @@ file delta and no Markdown. The response must fit within the output-token limit.
             )
         pending_phase = None
         if final_status == "blocked":
-            pending_phase = "BOOTSTRAP"
+            pending_phase = (
+                "DIAGNOSE"
+                if stop_reason == "diagnosis_evidence_insufficient"
+                else "BOOTSTRAP"
+            )
         elif final_status == "paused":
             pending_phase = logger.pending_state().get("pending_phase")
         phase = "FINISH" if completed else final_status.upper()
@@ -1982,6 +2020,11 @@ file delta and no Markdown. The response must fit within the output-token limit.
             "last_evaluation_failure": last_evaluation_failure,
             "last_orchestration_failure": orchestration_failure,
             "failure": orchestration_failure or last_evaluation_failure,
+            "blocked_detail": (
+                logger.data.get("workflow", {}).get("diagnosis_block")
+                if stop_reason == "diagnosis_evidence_insufficient"
+                else None
+            ),
             "token_usage": totals,
             "token_usage_by_call_type": totals_by_type,
             "stage_normalized_metrics": normalized_metrics,

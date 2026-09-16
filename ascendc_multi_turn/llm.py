@@ -10,17 +10,49 @@ from llm_config import get_env
 
 from .models import LLMCallConfig, LLMResponse
 
-SYSTEM_PROMPT_ID = "ascendc-json-engineer-v1"
-SYSTEM_PROMPT = (
-    "You are an expert AscendC kernel engineer. "
-    "Return exactly one valid JSON object matching the requested schema."
-)
+_SYSTEM_PROMPTS = {
+    "planner": (
+        "ascendc-planner-v2",
+        "你是 AscendC 实现规划器。只能依据给定的 reference、测试用例、当前实现、评测证据和已选知识，"
+        "只返回符合用户消息中 schema 的一个 JSON 对象。只规划一个可验证的下一步，不生成源码，不猜测没有证据支持的事实。",
+    ),
+    "diagnose": (
+        "ascendc-diagnose-v2",
+        "你是 AscendC 失败诊断器。必须区分已观察事实、已排除假设和未知项，结论不得超出可引用证据。"
+        "证据不足时返回零个 items 并明确所需的新证据；证据充分时只返回一个可证伪的 item。"
+        "只返回符合用户消息中 schema 的一个 JSON 对象，不生成源码。",
+    ),
+    "generator": (
+        "ascendc-generator-v2",
+        "你是 AscendC 代码生成与修复执行器。严格执行当前 plan item 和当前阶段契约，只修改完成该假设所必需的文件，"
+        "保留已通过能力和受保护接口。只返回符合用户消息中 file bundle schema 的一个 JSON 对象。",
+    ),
+    "knowledge_router": (
+        "ascendc-knowledge-router-v2",
+        "你是 AscendC 中文知识库路由器。只从给定索引中选择下一轮直接需要的知识，保持 doc_id 原样，"
+        "不得生成代码、改写知识原文或返回文件路径。只返回符合用户消息中 schema 的一个 JSON 对象。",
+    ),
+}
 
 
-def system_prompt_for(_call_type: str) -> str:
-    """Single source of truth for the actual provider system message."""
+def _system_prompt_entry(call_type: str) -> tuple[str, str]:
+    normalized = "generator" if call_type == "generator_retry" else call_type
+    try:
+        return _SYSTEM_PROMPTS[normalized]
+    except KeyError as error:
+        raise ValueError(f"unsupported LLM call type: {call_type}") from error
 
-    return SYSTEM_PROMPT
+
+def system_prompt_id_for(call_type: str) -> str:
+    """Return the persisted identifier for one role-specific system prompt."""
+
+    return _system_prompt_entry(call_type)[0]
+
+
+def system_prompt_for(call_type: str) -> str:
+    """Return the role-specific system message sent to the provider."""
+
+    return _system_prompt_entry(call_type)[1]
 
 
 class LLMProvider(Protocol):
@@ -154,9 +186,23 @@ class MockProvider:
     def generate(self, prompt: str, *, call_config: LLMCallConfig | None = None) -> LLMResponse:
         self.calls += 1
         if call_config and call_config.call_type in {"planner", "diagnose"}:
-            initial = "Return exactly one complete baseline item" in prompt
+            initial = "返回恰好一个完整 baseline item" in prompt
             content = json.dumps(
                 {
+                    "evidence_status": "sufficient",
+                    "observations": (
+                        []
+                        if initial
+                        else [
+                            {
+                                "source": "evaluation",
+                                "line_excerpt": "mock evidence",
+                                "interpretation": "mock evidence supports the next step",
+                            }
+                        ]
+                    ),
+                    "ruled_out": [],
+                    "unknowns": [],
                     "diagnosis": (
                         "mock direct AscendC baseline plan"
                         if initial

@@ -26,9 +26,11 @@ class RepairPolicy:
 
 
 def _stage(previous: EvalResult | None, workflow_phase: str) -> str:
+    failure = (previous.failure_stage or "") if previous else ""
+    if failure == "performance":
+        return "performance_tuning"
     if workflow_phase == "optimization":
         return "optimization"
-    failure = (previous.failure_stage or "") if previous else ""
     if failure in {
         "response_format",
         "bundle_validation",
@@ -114,7 +116,7 @@ def build_repair_policy(
             "<<<",
         )
         protected_ids.extend(("build_and_host_abi", "kernel_launch"))
-    elif stage == "optimization":
+    elif stage in {"performance_tuning", "optimization"}:
         markers = (
             "PYBIND11_MODULE",
             "is_npu(",

@@ -2,6 +2,64 @@
 
 仓库中的代码、配置、测试或文档修改都必须记录在这里。日期使用 `YYYY-MM-DD`，不得记录秘密信息。
 代码标识符、文件路径、命令、模型名、产品名和原始错误信息可以保留原文，其余叙述统一使用中文。
+对应有TODO的修改项的时候使用二级标题作为修改的部分，并且放在文件首，目的是避免日期的累积就遗忘对应的TODO列表。
+
+
+## (✅️)TODO-09：全角色中文 Prompt 控制层与证据闭环（2026-09-16）
+
+### 分析
+
+- 当前核心缺陷不是 Prompt 太短，而是 Planner、DIAGNOSE、Generator、knowledge router 共用同一句 system prompt，
+  导致角色边界只存在于 user prompt；关联 P-21，角色分离的代码问题状态为“已解决”。
+- `repair_policy` 已能区分初始生成、编译修复、运行时修复、正确性修复和优化，但此前只有编译约束完整进入 Generator，
+  其他阶段仍使用泛化的修复或优化指令；阶段约束已接通，尚无真实模型轨迹验证服从效果，问题状态为“部分解决”。
+- DIAGNOSE 此前无论证据是否充分都必须返回一个 item，真实轨迹因此会在只确认 case 启动或进程信号时猜测同步、别名等源码根因；
+  零 item 阻塞已由状态机测试覆盖，但尚无真实轨迹复验，问题状态为“部分解决”。
+- 知识只按 `knowledge_module_id + section_id` 去重，同一正文可通过不同 ID 重复进入 Prompt；正文哈希去重已由回归测试覆盖，
+  但尚未重跑真实 Add 轨迹统计 token 降幅，关联 P-26，问题状态为“部分解决”。
+- `/mnt/workspace/prompt modify.md` 只作为调研输入，本次未修改该文件。Generator 仍返回完整文件 bundle，
+  `analysis` 只说明目标证据、实际改动和保留不变量；diff 继续由 Runner 在候选生成后计算并留档。
+
+### 实施方案与结果
+
+- 为 `planner`、`diagnose`、`generator` 和 `knowledge_router` 建立独立中文 system prompt 与稳定 ID；
+  `generator_retry` 复用 Generator，未知 call type 直接失败。Planner、Generator、知识路由、截断重试和会渲染到 Prompt 的
+  项目 mapping 控制文字均改为中文；JSON key、API 名、源码、诊断、`doc_id` 和知识原文保持不变。
+- 计划响应扩展为 `evidence_status`、`observations`、`ruled_out`、`unknowns`、`diagnosis`、`items`。
+  Planner 必须给出一个 item；DIAGNOSE 证据充分时给出一个 item，证据不足时必须给出非空 `unknowns` 和零 item。
+- DIAGNOSE 零 item 时 Runner 在 Generator 和 evaluator 前进入可恢复 `blocked`，记录
+  `stop_reason=diagnosis_evidence_insufficient`、`pending_phase=DIAGNOSE` 和 `blocked_detail`；不生成候选、
+  不增加候选评测次数，也不消耗 Generator 或候选预算，`--resume` 使用新的 plan version 继续诊断。
+- Generator 根据 `repair_policy` 注入 `bootstrap_generation`、`compile_repair`、`runtime_repair`、
+  `correctness_repair`、`performance_tuning` 或 `optimization` 契约，不再使用泛化的 “Repair or optimize”。
+  紧凑评测增加首个失败或未完成 case、case 数和有界性能字段。
+- 删除两个 builder 中无效的 `full_input` 参数；`parse_plan` 默认改为单 item。输入模式继续只由 selector 和 budget 控制。
+- 知识 section 提取后对规范化正文计算 SHA-256；重复正文只保留首个高优先级来源，其他 ID 以 `alias_of` 写入 selection trace。
+  `bounded` 按完整知识模块原子跳过，`full_selected` 保留完整选择；`rendered_skill_ids` 只记录实际进入 Prompt 的模块。
+- 复用现有 operator-family 路由，确定性增加 `shape_regime` 和 `risk_flags`，没有新增 LLM 调用。
+  当前 structured pattern 缺少硬件验证和 shape 元数据，因此不作为 exemplar 注入。
+
+### 验证
+
+- 全部仓库测试通过：165 项。新增覆盖角色 system prompt、计划 schema 交叉约束、DIAGNOSE 零 item 阻塞及恢复、
+  Generator 六类阶段契约、紧凑 case/性能证据、正文哈希去重、原子预算、实际渲染 ID、确定性 shape/risk
+  路由和未验证 exemplar 拒绝。
+- 修改的 Python 文件通过 `python -m py_compile`；Ruff `F/I` 检查通过；`skill_mapping.yaml` 通过 JSON 解析。
+- 本轮未调用真实 LLM 或 NPU，不能据此宣称首次编译率、完整正确率、token 或 wall time 已改善。
+- `git diff --check` 对本轮文件通过；工作树中用户已有的 `AGENTS.md` 末尾空行仍会被完整工作树检查报告，未擅自覆盖该修改。
+
+### 暂未采纳但正确的后续 TODO
+
+- TODO-14：将现有知识类型和阶段 mapping 迁移为显式 L0～L5 分类；前置条件是迁移不会重复注入或削弱当前确定性路由。
+- TODO-15：评估 2～4 个结构不同的初始 seed 或 population；必须单独定义额外模型成本、候选预算和公平选择规则。
+- TODO-16：把当前 run-local repair experience 扩展为跨任务、经硬件验证的性能经验库，记录适用条件、禁止条件、
+  hardware、CANN version、cases 和超过噪声阈值的性能证据。
+- TODO-17：补充 core utilization、搬运与计算占比、UB 使用和热点等稳定 profiler 信号；在此之前性能 Prompt
+  只能使用实际已有的 latency、operator 和 memory 数据。
+- TODO-18：建设带 operator family、shape regime 和真实硬件验证元数据的 L5 exemplar 集；不得把普通教程、
+  structured pattern 描述或未验证候选升级为 exemplar。
+- 不新增模式识别 LLM：现有规则路由可以直接扩展；不增加冗长通用自检清单，因为其不可验证且会扩大 token；
+  不采用 DSL 加四次 lowering，因为这属于新的生成架构而非当前已证实缺陷的修复。
 
 ## 2026-09-16
 
@@ -13,8 +71,8 @@
   单项假设及验伪条件，同时继续完整保留源码、benchmark 和用例。
 - 关联问题：Prompt 中文化收益未知。验证证据：本轮真实 Add 已在英文 Prompt 下暴露出可定位的 Host 指针非法解引用，
   但未形成中英对照数据。问题状态：暂缓，不能宣称中文或英文更优。
-- TODO-09：做严格配对的中英 Prompt A/B；只翻译自然语言指令和字段说明，API 名、代码、诊断、JSON key、上游原文保持不变。
-  使用相同模型、temperature、知识输入、用例顺序和候选预算，比较首次编译、首次完整正确、总 token、重复错误率和 wall time。
+- 原 TODO-09 曾计划做严格配对的中英 Prompt A/B；该决策已被同日后续的“TODO-09：全角色中文 Prompt 控制层与证据闭环”覆盖，
+  不再执行中英 A/B，也不增加 `en-v2`、`mixed-v2` 或语言选择分支。
 
 ### 本轮实施内容
 
@@ -96,12 +154,14 @@
 
 - TODO-01～TODO-08：继续保留 2026-09-15 已登记的逐文件接受、多计划项、patch/AST、独立 repair 调用、自动换基、
   通用 stride/DataCopy 静态证明、verified skeleton 和跨调用 SHA 占位方案及各自前置条件。
-- TODO-09：执行上述中英 Prompt 配对 A/B；在结果前不全量翻译生产 Prompt。
+- TODO-09（已解决）：取消中英 Prompt 配对 A/B，生产链路统一使用全角色中文控制层；不保留英文或 mixed Prompt 分支。
 - TODO-10：扩展 `InterfaceContract` 到 descriptor 布局、共享 tiling 结构体和 launch body，并为授权变更设计明确迁移流程。
 - TODO-11：为 broadcast/index/DataCopy 建立小型语义计划 IR 与 CPU oracle，先离线验证 offset、stride=0、source span 和 tail。
 - TODO-12：修正编译期 `PARTIAL_KEEP` 的诊断偏序，禁止用一个新的同级根因换掉旧根因后被误判为单调进展。
 - TODO-13：下一次真实实验复验 `reference_passed → candidate_started → candidate_returned` checkpoint、`SIGSEGV` 路由和
   `host_dereferences_device_pointer` 前置拦截；不得把这项复验计作本轮已完成。
+
+
 
 ## 2026-09-15
 

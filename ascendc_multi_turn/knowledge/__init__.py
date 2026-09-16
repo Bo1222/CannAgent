@@ -171,8 +171,8 @@ def select_knowledge_version(runtime_version: str) -> KnowledgeVersion:
         runtime_version,
         selected,
         "same-major-fallback",
-        f"Runtime CANN {runtime_version} has no exact local documentation; using {selected}. "
-        "Compilation and evaluation results take precedence over documentation assumptions.",
+        f"Runtime CANN {runtime_version} 没有完全匹配的本地文档，改用 {selected}。"
+        "编译和评测结果的优先级高于文档假设。",
     )
 
 
@@ -226,25 +226,25 @@ def build_knowledge_prompt(
     current_paths = sorted(current.files) if current else []
     previous = compact_evaluation(previous_result)
     supplements = ", ".join(sorted(SUPPLEMENT_DOCUMENTS))
-    return f"""Select the direct AscendC knowledge required for the next implementation round.
-Return exactly one JSON object with keys: domain, topics, doc_ids, supplements, reason.
-domain must be \"ascendc\". doc_ids must use exact IDs from the index below.
-supplements may only use these file names: {supplements}.
-Choose only directly relevant material; do not return file paths.
+    return f"""选择下一轮实现直接需要的 AscendC 知识。
+只返回一个 JSON 对象，key 必须为 domain、topics、doc_ids、supplements、reason。
+domain 必须是 \"ascendc\"。doc_ids 必须使用下方索引中的准确 ID。
+supplements 只能使用以下文件名：{supplements}。
+只选择直接相关的材料，不要返回文件路径。
 
-Routing mode: {mode}
-Runtime CANN: {version.runtime_version}
-Knowledge CANN: {version.knowledge_version} ({version.status})
-Current source files: {json.dumps(current_paths)}
-Current working document IDs: {json.dumps(working_doc_ids or [])}
-Previous evaluation: {json.dumps(previous, ensure_ascii=False)}
+路由模式：{mode}
+Runtime CANN：{version.runtime_version}
+知识库 CANN：{version.knowledge_version} ({version.status})
+当前源码文件：{json.dumps(current_paths)}
+当前工作文档 ID：{json.dumps(working_doc_ids or [])}
+上一轮评测：{json.dumps(previous, ensure_ascii=False)}
 
-Reference model:
+Reference model：
 ```python
 {reference_code[:16000]}
 ```
 
-Available API index:
+可用 API 索引：
 {compact_index}
 """
 
@@ -341,7 +341,7 @@ def parse_knowledge_selection(
             topics=["deterministic-fallback"],
             api_names=[entry["name"] for entry in selected_entries],
             supplements=[],
-            reason="Router output was invalid or unmatched; selected APIs from task and source text.",
+            reason="知识路由输出无效或未匹配；已根据任务和源码文本确定性选择 API。",
             selected_files=[entry["path"] for entry in selected_entries],
             fallback=True,
             doc_ids=[entry["doc_id"] for entry in selected_entries],
@@ -465,7 +465,7 @@ def selection_from_state(
     version: KnowledgeVersion,
     mode: str,
     active_ids: list[str] | None = None,
-    reason: str = "Reused the task-level knowledge working set.",
+    reason: str = "复用任务级知识工作集。",
 ) -> KnowledgeSelection:
     by_id = {entry["doc_id"]: entry for entry in _index_entries(version)}
     doc_ids = [item for item in (active_ids or state.working_doc_ids) if item in by_id]
@@ -521,20 +521,20 @@ def render_knowledge_with_metadata(
     index_dir = (KNOWLEDGE_ROOT / metadata["index"]).parent.resolve()
     by_id = {entry["doc_id"]: entry for entry in _index_entries(version)}
     chunks = [
-        "# AscendC task knowledge",
-        f"Runtime CANN: {version.runtime_version}",
-        f"Fallback documentation: CANN {version.knowledge_version} ({version.status})",
-        "Priority: compiler diagnostics and installed public headers override fallback documentation.",
+        "# AscendC 任务知识",
+        f"Runtime CANN：{version.runtime_version}",
+        f"Fallback 文档：CANN {version.knowledge_version} ({version.status})",
+        "优先级：compiler diagnostics 和 installed public headers 高于 fallback 文档。",
     ]
     if version.warning:
-        chunks.append(f"WARNING: {version.warning}")
+        chunks.append(f"警告：{version.warning}")
     if conflicts:
-        chunks.append("\n## Runtime/document conflicts\n" + "\n".join(f"- {item}" for item in conflicts))
+        chunks.append("\n## Runtime/文档冲突\n" + "\n".join(f"- {item}" for item in conflicts))
     if runtime_facts:
-        chunks.append("\n## Runtime public-header facts\n" + runtime_facts)
+        chunks.append("\n## Runtime public header 事实\n" + runtime_facts)
     for path in CORE_DOCUMENTS:
         if path.is_file():
-            chunk = f"\n## Core rules: {path.name}\n{path.read_text(encoding='utf-8')}"
+            chunk = f"\n## 核心规则：{path.name}\n{path.read_text(encoding='utf-8')}"
             if len("\n".join([*chunks, chunk])) <= max_chars:
                 chunks.append(chunk)
     rendered: list[str] = []
@@ -555,7 +555,7 @@ def render_knowledge_with_metadata(
     for name in selection.supplements:
         path = SUPPLEMENT_DOCUMENTS.get(name)
         if path and path.is_file():
-            chunk = f"\n## Supplement: {name}\n{path.read_text(encoding='utf-8')[:2500]}"
+            chunk = f"\n## 补充材料：{name}\n{path.read_text(encoding='utf-8')[:2500]}"
             if len("\n".join([*chunks, chunk])) <= max_chars:
                 chunks.append(chunk)
     text = "\n".join(chunks)
