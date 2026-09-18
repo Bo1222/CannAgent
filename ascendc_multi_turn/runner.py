@@ -18,55 +18,46 @@ from .bundle import (
     validate_initial_bundle,
 )
 from .context_selector import ContextSelector
+from .devkit import (
+    ASC_DEVKIT_COMMIT,
+    ASC_DEVKIT_VERSION,
+    resolve_devkit,
+    resolve_runtime_version,
+)
+from .devkit_retrieval import DevkitRetriever, render_evidence
 from .diagnostics import (
     diagnostic_fingerprint,
     evaluation_gates,
     extract_api_symbols,
     observe_evaluation_stages,
-    parse_structured_failure,
+    parse_failure_evidence,
     read_result_log,
 )
 from .evaluator import Evaluator, extract_error_excerpt
+from .frontier import FrontierManager
 from .interface_contract import (
     capture_interface_contract,
     compare_interface_contract,
     load_interface_contract,
     save_interface_contract,
 )
-from .knowledge import (
-    active_doc_ids,
-    apply_selection_to_state,
-    build_knowledge_prompt,
-    candidate_doc_ids,
-    knowledge_limits,
-    load_knowledge_state,
-    parse_knowledge_selection,
-    render_knowledge,
-    resolve_knowledge_version,
-    save_knowledge_state,
-    selection_from_state,
-)
 from .llm import LLMProvider, system_prompt_for, system_prompt_id_for
 from .logging import TrajectoryLogger
 from .models import EvalResult, FileBundle, LLMCallConfig, LLMResponse, RunConfig
 from .progress import ProgressReporter, token_detail
-from .prompts import build_plan_prompt, build_prompt, parse_plan, render_stage_context
+from .prompts import (
+    PLANNING_MODE_BLUEPRINT,
+    PLANNING_MODE_DIAGNOSE,
+    PLANNING_MODE_PLAN,
+    build_plan_prompt,
+    build_prompt,
+    parse_plan,
+    render_stage_context,
+)
 from .repair_policy import build_repair_policy
 from .repair_state import RepairStateManager
 from .runtime_knowledge import collect_runtime_facts
 from .skill_adapter import SkillAdapter
-from .structured_knowledge import (
-    FrontierManager,
-    KnowledgeBuild,
-    KnowledgeBundle,
-    KnowledgeContext,
-    RetrievalTraceEntry,
-    StructuredKnowledgeRouter,
-    build_incident,
-    locate_knowledge_build,
-    persist_incident,
-    render_bundle,
-)
 
 
 class LLMCallFailure(RuntimeError):
@@ -104,16 +95,10 @@ class MultiTurnRunner:
         self.task_dir = Path(config.output_dir).expanduser().resolve()
         self.state_dir = self.task_dir / ".llm_state"
         self.progress = progress or ProgressReporter()
-        self.skill_adapter = (
-            SkillAdapter(
-                full_selected_input=config.uses_full_selected_input,
-            )
-            if config.uses_skills
-            else None
-        )
-        self.context_selector = (
-            ContextSelector(self.skill_adapter) if self.skill_adapter is not None else None
-        )
+        self.skill_adapter = SkillAdapter(full_selected_input=False)
+        self.context_selector = ContextSelector(self.skill_adapter)
+        self.devkit_root: Path | None = None
+        self._reported_model_routes: set[tuple[str, str]] = set()
 
     def _prepare_task(self) -> None:
         source = Path(self.config.op_file).expanduser().resolve()
@@ -317,7 +302,7 @@ class MultiTurnRunner:
                 )
                 for excerpt in knowledge_module.get("excerpts", [])
             )
-            structured_text = json.dumps(
+            evidence_text = json.dumps(
                 {
                     "hard_constraints": selection_payload.get("hard_constraints", []),
                     "api_facts": selection_payload.get("api_facts", []),
@@ -333,12 +318,12 @@ class MultiTurnRunner:
                 "truncated_sections": list(selection_metadata.get("truncated_sections", [])),
                 "selected_skill_ids": list(selection_metadata.get("selected_skill_ids", [])),
                 "rendered_skill_ids": list(selection_metadata.get("rendered_skill_ids", [])),
-                "selected_structured_ids": list(selection_metadata.get("selected_structured_ids", [])),
-                "rendered_structured_ids": list(selection_metadata.get("rendered_structured_ids", [])),
+                "selected_evidence_ids": list(selection_metadata.get("selected_evidence_ids", [])),
+                "rendered_evidence_ids": list(selection_metadata.get("rendered_evidence_ids", [])),
                 "runtime_fact_ids": list(selection_metadata.get("runtime_fact_ids", [])),
                 "rendered_runtime_fact_ids": list(selection_metadata.get("rendered_runtime_fact_ids", [])),
                 "skill_chars": len(skill_text),
-                "structured_chars": len(structured_text),
+                "evidence_chars": len(evidence_text),
                 "runtime_chars": len(str(selection_payload.get("runtime_facts", ""))),
             }
         last_error = ""
@@ -361,33 +346,52 @@ class MultiTurnRunner:
                 if retry < self.config.llm_transient_retries:
                     continue
                 raise LLMCallFailure("llm_transport_failed", last_error) from error
-            logger.save_call(
-                attempt_id,
-                response.to_dict(),
-                call_type=call_type,
-                evaluation_round=evaluation_round,
-                retry=retry,
-                prompt_metadata=prompt_metadata,
-            )
             target = response_path if retry == 0 else response_path.with_name(
                 f"{response_path.stem}_retry_{retry:02d}{response_path.suffix}"
             )
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text(response.content, encoding="utf-8")
+            try:
+                content_path, reasoning_path = logger.persist_response_artifacts(
+                    target,
+                    content=response.content,
+                    reasoning_content=response.reasoning_content,
+                    reasoning_log_mode=self.config.reasoning_log_mode,
+                )
+                logger.save_call(
+                    attempt_id,
+                    response.to_dict(),
+                    call_type=call_type,
+                    evaluation_round=evaluation_round,
+                    retry=retry,
+                    prompt_metadata=prompt_metadata,
+                    response_content_path=content_path,
+                    reasoning_content_path=reasoning_path,
+                )
+            except OSError as error:
+                task.finish(status="failed", detail="reasoning_persistence_failed")
+                raise LLMCallFailure(
+                    "reasoning_persistence_failed",
+                    f"failed to persist LLM response artifacts: {error}",
+                ) from error
+            route = (response.requested_model or "", response.model)
+            if route[0] and route[0] != route[1] and route not in self._reported_model_routes:
+                self._reported_model_routes.add(route)
+                self.progress.emit(
+                    "WARNING: provider model route mismatch: "
+                    f"requested={route[0]}, returned={route[1]}"
+                )
             if response.content.strip():
                 task.finish(status="completed", detail=f"{token_detail(response.usage)}, model={response.model}")
                 return response
             last_error = f"LLM returned no final content (finish_reason={response.finish_reason or 'unknown'})"
             task.finish(status="failed", detail=last_error)
-            if retry >= self.config.llm_transient_retries:
-                code = "llm_output_exhausted" if response.finish_reason == "length" else "llm_empty_content"
-                raise LLMCallFailure(code, last_error)
+            code = "llm_output_exhausted" if response.finish_reason == "length" else "llm_empty_content"
+            raise LLMCallFailure(code, last_error)
         raise LLMCallFailure("llm_call_failed", last_error or "LLM call failed")
 
     def _normalize_evaluation(self, result: EvalResult, round_dir: Path) -> EvalResult:
         if result.error:
-            if result.structured_failure is None:
-                result.structured_failure = parse_structured_failure(
+            if result.failure_evidence is None:
+                result.failure_evidence = parse_failure_evidence(
                     stage=result.failure_stage or "unknown", output=read_result_log(result)
                 ).to_dict()
             return result
@@ -406,7 +410,7 @@ class MultiTurnRunner:
         result.failure_code = code
         result.error_excerpt = message
         result.details_path = str(path.resolve())
-        result.structured_failure = parse_structured_failure(stage=stage, output=message).to_dict()
+        result.failure_evidence = parse_failure_evidence(stage=stage, output=message).to_dict()
         return result
 
     def _report_result(self, number: int, decision: str, result: EvalResult) -> None:
@@ -453,7 +457,7 @@ class MultiTurnRunner:
             "excerpt": excerpt,
             "details_path": evaluation.get("details_path"),
             "kind": evaluation.get("failure_kind", "candidate"),
-            "structured_failure": evaluation.get("structured_failure"),
+            "failure_evidence": evaluation.get("failure_evidence"),
         }
 
     @staticmethod
@@ -527,7 +531,7 @@ class MultiTurnRunner:
             "candidate": candidate_path,
             "plan_item": plan_item,
             "failure_fingerprint": fingerprint,
-            "structured_failure": result.structured_failure,
+            "failure_evidence": result.failure_evidence,
             "frontier": frontier,
             "incident_id": incident_id,
             "confirmed_experience_id": confirmed_experience_id,
@@ -702,6 +706,33 @@ class MultiTurnRunner:
             return None
         return next((item for item in plan.get("items", []) if item.get("status") == "PENDING"), None)
 
+    @staticmethod
+    def _planning_mode(
+        *,
+        diagnose_required: bool,
+        evaluations_completed: int,
+    ) -> str:
+        """Select the planning mode from orchestration counters only.
+
+        The mode decides which output contract, preamble and validation
+        strength a planning call receives. It must never be inferred from
+        whether the working tree or the last evaluation happens to be empty:
+        after repeated bootstrap failures the runner rolls back to an empty
+        base, so those values stay empty even though many rounds have been
+        evaluated. Deriving the contract from them made DIAGNOSE receive the
+        bootstrap blueprint contract while being validated as a diagnosis.
+
+        DIAGNOSE wins over everything: a diagnosis is never a blueprint.
+        The blueprint mode applies only before the first evaluation of the
+        whole run; once any round has been evaluated, planning is evidence-driven.
+        """
+
+        if diagnose_required:
+            return PLANNING_MODE_DIAGNOSE
+        if evaluations_completed == 0:
+            return PLANNING_MODE_BLUEPRINT
+        return PLANNING_MODE_PLAN
+
     def _create_plan(
         self,
         *,
@@ -713,13 +744,15 @@ class MultiTurnRunner:
         attempt_id: int,
         evaluation_round: int,
         mode: str,
-        diagnosis_required: bool,
+        planning_mode: str,
         knowledge_context: str,
         knowledge_selection: Any = None,
         repair_state: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         version = int(logger.data.get("workflow", {}).get("plan_version", 0)) + 1
-        initial = current is None and previous is None
+        # planning_mode 由调用方显式给出；diagnosis_required 由它派生，
+        # 保证「输出契约」与「校验强度」永远来自同一个判断。
+        diagnosis_required = planning_mode == PLANNING_MODE_DIAGNOSE
         call_type = "diagnose" if diagnosis_required else "planner"
         plan_dir = self.state_dir / f"{call_type}_v{version:02d}"
         prompt = build_plan_prompt(
@@ -729,11 +762,12 @@ class MultiTurnRunner:
             result=previous,
             mode=mode,
             history=logger.data.get("rounds", []),
-            diagnosis_required=diagnosis_required,
+            planning_mode=planning_mode,
             knowledge_context=knowledge_context,
-            initial=initial,
             repair_state=(
-                repair_state if mode == "bootstrap" and not initial else None
+                repair_state
+                if mode == "bootstrap" and planning_mode != PLANNING_MODE_BLUEPRINT
+                else None
             ),
         )
         plan_dir.mkdir(parents=True, exist_ok=True)
@@ -779,11 +813,11 @@ class MultiTurnRunner:
             parsed,
             version=version,
             mode=mode,
-            origin=(
-                "diagnose"
-                if diagnosis_required
-                else "initial_plan" if initial else "plan"
-            ),
+            origin={
+                PLANNING_MODE_DIAGNOSE: "diagnose",
+                PLANNING_MODE_BLUEPRINT: "initial_plan",
+                PLANNING_MODE_PLAN: "plan",
+            }[planning_mode],
         )
         if plan["items"]:
             logger.update_workflow(
@@ -837,290 +871,104 @@ class MultiTurnRunner:
         planned_evidence = json.dumps(active_plan or {}, ensure_ascii=False)
         evidence_parts = [reference, cases, source_evidence, failure_evidence, planned_evidence]
         evidence = "\n".join(evidence_parts)
-        if self.config.knowledge_mode == "structured":
-            failure_case_info = (
-                (previous.structured_failure or {}).get("case_info", {})
-                if previous and isinstance(previous.structured_failure, dict)
-                else {}
-            )
-            profile_match = re.search(
-                r"\b(?:active_)?profile\s*[:=]\s*(smoke|shape|dtype|full|benchmark)\b",
-                failure_evidence,
-                re.IGNORECASE,
-            )
-            active_profile = str(
-                (previous.active_profile if previous else None)
-                or failure_case_info.get("profile")
-                or failure_case_info.get("active_profile")
-                or (profile_match.group(1).lower() if profile_match else "")
-            ) or None
-            raw_indices = failure_case_info.get(
-                "profile_case_indices", failure_case_info.get("case_indices", [])
-            )
-            profile_indices = (
-                [int(item) for item in raw_indices]
-                if isinstance(raw_indices, (list, tuple))
-                else []
-            )
-            raw_features = failure_case_info.get(
-                "profile_features", failure_case_info.get("features", [])
-            )
-            profile_features = (
-                [str(item) for item in raw_features]
-                if isinstance(raw_features, (list, tuple))
-                else []
-            )
-            stage_request = (
-                self.context_selector.request(
-                    audience=audience,
-                    workflow_phase=workflow_phase,
-                    operator=Path(self.config.op_file).stem,
-                    soc=self.config.soc_version,
-                    runtime_version=knowledge_version.runtime_version,
-                    knowledge_version=knowledge_version.knowledge_version,
-                    current_exists=bool(current and current.files),
-                    previous=previous,
-                    evidence=evidence,
-                    source_evidence=source_evidence,
-                    planned_evidence=planned_evidence,
-                    active_profile=active_profile,
-                    profile_case_indices=profile_indices,
-                    profile_features=profile_features,
-                )
-                if self.context_selector is not None
-                else None
-            )
-            context = KnowledgeContext(
-                operator=Path(self.config.op_file).stem,
-                phase=(
-                    ",".join(stage_request.stages)
-                    if stage_request is not None
-                    else "diagnose" if previous and previous.error else "plan_generate"
-                ),
-                runtime_version=knowledge_version.runtime_version,
-                knowledge_version=knowledge_version.knowledge_version,
-                soc=self.config.soc_version,
-                source_symbols=extract_api_symbols(evidence),
-                failure=previous.structured_failure if previous and previous.error else None,
-                active_plan=active_plan,
-            )
-            if self.config.uses_structured_prompt:
-                knowledge_build_path = locate_knowledge_build(
-                    Path(self.config.knowledge_store),
-                    knowledge_version.knowledge_version,
-                    self.config.knowledge_build_id,
-                )
-                bundle = StructuredKnowledgeRouter(
-                    KnowledgeBuild(knowledge_build_path)
-                ).route(context)
-            else:
-                bundle = KnowledgeBundle(
-                    context=context,
-                    retrieval_trace=[
-                        RetrievalTraceEntry(
-                            "source_policy",
-                            "structured",
-                            "rejected",
-                            "structured prompt source disabled by knowledge_source=skills",
-                        )
-                    ],
-                )
-            payload = bundle.to_dict()
-            bundle_path = round_dir / (
-                f"knowledge_bundle_{audience}.json"
-                if self.context_selector is not None
-                else "knowledge_bundle.json"
-            )
-            bundle_path.write_text(
-                json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
-            )
-            trace_path = round_dir / (
-                f"retrieval_trace_{audience}.json"
-                if self.context_selector is not None
-                else "retrieval_trace.json"
-            )
-            trace_path.write_text(
-                json.dumps(payload["retrieval_trace"], ensure_ascii=False, indent=2),
-                encoding="utf-8",
-            )
-            selected_result: Any = bundle
-            if self.context_selector is not None and stage_request is not None:
-                runtime_facts: Any = ""
-                if audience == "generator" or any(
-                    stage.endswith("_debug") for stage in stage_request.stages
-                ):
-                    symbols = list(
-                        dict.fromkeys(
-                            [
-                                *stage_request.failure_symbols,
-                                *stage_request.source_symbols,
-                                *stage_request.planned_symbols,
-                            ]
-                        )
-                    ) or extract_api_symbols(evidence)
-                    runtime_facts = collect_runtime_facts(
-                        symbols,
-                        runtime_version=knowledge_version.runtime_version,
-                        cache_path=round_dir
-                        / f"runtime_header_facts_{audience}.json",
-                        max_chars=(
-                            4000
-                        ),
-                        soc_version=self.config.soc_version,
-                        project_root=self.REPO_ROOT,
-                        probe_manifest=self._probe_manifest_path(),
-                        failure_evidence=failure_evidence,
-                    )
-                selected_context, skill_selection = self.context_selector.select(
-                    bundle=bundle,
-                    request=stage_request,
-                    runtime_facts=runtime_facts,
-                )
-                selected_context.task_facts["knowledge_source"] = (
-                    self.config.knowledge_source
-                )
-                if getattr(runtime_facts, "environment_fingerprint", None):
-                    selected_context.task_facts["environment_fingerprint"] = runtime_facts.environment_fingerprint
-                selected_context.budget["max_chars"] = min(
-                    int(selected_context.budget["max_chars"]),
-                    max_knowledge_chars,
-                )
-                rendered = render_stage_context(selected_context)
-                selected_result = selected_context
-                context_payload = selected_context.to_dict()
-                (round_dir / f"{audience}_context.json").write_text(
-                    json.dumps(context_payload, ensure_ascii=False, indent=2),
-                    encoding="utf-8",
-                )
-                (round_dir / f"skill_selection_{audience}.json").write_text(
-                    json.dumps(skill_selection.to_dict(), ensure_ascii=False, indent=2),
-                    encoding="utf-8",
-                )
-                references_name = (
-                    "planner_references.md" if audience == "planner" else "references.md"
-                )
-                (round_dir / references_name).write_text(rendered, encoding="utf-8")
-                # Preserve the established generic artifacts for downstream tools.
-                if audience == "generator":
-                    (round_dir / "knowledge_bundle.json").write_text(
-                        json.dumps(payload, ensure_ascii=False, indent=2),
-                        encoding="utf-8",
-                    )
-                    (round_dir / "retrieval_trace.json").write_text(
-                        json.dumps(payload["retrieval_trace"], ensure_ascii=False, indent=2),
-                        encoding="utf-8",
-                    )
-                    (round_dir / "selected_knowledge.json").write_text(
-                        json.dumps(context_payload, ensure_ascii=False, indent=2),
-                        encoding="utf-8",
-                    )
-            else:
-                rendered = render_bundle(bundle, max_chars=max_knowledge_chars)
-                (round_dir / "references.md").write_text(rendered, encoding="utf-8")
-                (round_dir / "selected_knowledge.json").write_text(
-                    json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
-                )
-            return selected_result, rendered
-        candidates = candidate_doc_ids(
-            evidence,
-            version=knowledge_version,
-            exclude=knowledge_state.working_doc_ids,
-            limit=5,
+        failure_case_info = (
+            (previous.failure_evidence or {}).get("case_info", {})
+            if previous and isinstance(previous.failure_evidence, dict)
+            else {}
         )
-        route_mode = "reuse"
-        route_candidates: list[str] | None = []
-        if not knowledge_state.initialized:
-            route_mode, route_candidates = "initial_full", None
-        elif candidates and candidates[0][1] >= 40:
-            route_mode = "incremental"
-            route_candidates = [doc_id for doc_id, _ in candidates]
-        response = None
-        if route_mode in {"initial_full", "incremental"}:
-            prompt = build_knowledge_prompt(
-                reference_code=reference,
-                current=current,
-                previous_result=previous,
-                version=knowledge_version,
-                mode=route_mode,
-                candidate_doc_ids=route_candidates,
-                working_doc_ids=knowledge_state.working_doc_ids,
-            )
-            (round_dir / "knowledge_prompt.txt").write_text(prompt, encoding="utf-8")
-            response = self._call_llm(
-                prompt=prompt,
-                call_type="knowledge_router",
-                label=f"Evaluation {evaluation_round} · knowledge router ({route_mode})",
-                logger=logger,
-                attempt_id=attempt_id,
-                evaluation_round=evaluation_round,
-                response_path=round_dir / "knowledge_response.txt",
-            )
-            if route_mode == "initial_full":
-                knowledge_state.full_route_count += 1
-            else:
-                knowledge_state.incremental_route_count += 1
-        else:
-            (round_dir / "knowledge_reuse.json").write_text(
-                json.dumps({"mode": route_mode, "working_doc_ids": knowledge_state.working_doc_ids}, indent=2),
-                encoding="utf-8",
-            )
-        if response is not None:
-            selection = parse_knowledge_selection(
-                response.content,
-                version=knowledge_version,
-                max_api_docs=max_api_docs if route_mode == "initial_full" else 2,
-                fallback_text=evidence,
-            )
-            selection.mode = route_mode
-            apply_selection_to_state(
-                knowledge_state,
-                selection,
-                max_docs=max_api_docs,
-                preferred_doc_ids=selection.doc_ids,
-            )
-        else:
-            selection = selection_from_state(knowledge_state, version=knowledge_version, mode=route_mode)
-        active_ids = active_doc_ids(
-            knowledge_state,
-            evidence,
-            version=knowledge_version,
-            preferred_doc_ids=selection.doc_ids,
-            limit=min(5, max_api_docs),
-        )
-        selection = selection_from_state(
-            knowledge_state,
-            version=knowledge_version,
-            mode=route_mode,
-            active_ids=active_ids,
-            reason=selection.reason,
-        )
-        symbols = extract_api_symbols(evidence)
-        facts = collect_runtime_facts(
-            symbols,
+        raw_indices = failure_case_info.get("profile_case_indices", failure_case_info.get("case_indices", []))
+        raw_features = failure_case_info.get("profile_features", failure_case_info.get("features", []))
+        stage_request = self.context_selector.request(
+            audience=audience,
+            workflow_phase=workflow_phase,
+            operator=Path(self.config.op_file).stem,
+            soc=self.config.soc_version,
             runtime_version=knowledge_version.runtime_version,
-            cache_path=round_dir / "runtime_header_facts.json",
-            soc_version=self.config.soc_version,
-            project_root=self.REPO_ROOT,
-            probe_manifest=self._probe_manifest_path(),
-            failure_evidence=failure_evidence,
+            knowledge_version=ASC_DEVKIT_VERSION,
+            current_exists=bool(current and current.files),
+            previous=previous,
+            evidence=evidence,
+            source_evidence=source_evidence,
+            planned_evidence=planned_evidence,
+            active_profile=(previous.active_profile if previous else None),
+            profile_case_indices=[int(item) for item in raw_indices] if isinstance(raw_indices, (list, tuple)) else [],
+            profile_features=[str(item) for item in raw_features] if isinstance(raw_features, (list, tuple)) else [],
         )
-        selection.runtime_fact_symbols = facts.symbols
-        selection.conflicts = facts.conflicts
-        context = render_knowledge(
-            selection,
-            version=knowledge_version,
-            max_chars=max_knowledge_chars,
-            runtime_facts=facts.text,
-            conflicts=facts.conflicts,
+        symbols = list(
+            dict.fromkeys(
+                [
+                    *stage_request.failure_symbols,
+                    *stage_request.source_symbols,
+                    *stage_request.planned_symbols,
+                    *extract_api_symbols(evidence),
+                ]
+            )
         )
-        knowledge_state.known_symbols = list(dict.fromkeys([*knowledge_state.known_symbols, *symbols]))[:128]
-        knowledge_state.last_round = attempt_id
-        save_knowledge_state(knowledge_state_path, knowledge_state)
-        (round_dir / "selected_knowledge.json").write_text(
-            json.dumps(selection.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8"
+        if self.devkit_root is None:
+            self.devkit_root = (
+                Path(self.config.asc_devkit_dir).expanduser().resolve()
+                if self.config.mock and self.config.asc_devkit_dir
+                else self.REPO_ROOT if self.config.mock
+                else resolve_devkit(self.config.asc_devkit_dir or None)
+            )
+        evidence_bundle = DevkitRetriever(self.devkit_root).retrieve(
+            operator=Path(self.config.op_file).stem,
+            symbols=symbols,
+            query_text=evidence,
         )
-        (round_dir / "references.md").write_text(context, encoding="utf-8")
-        return selection, context
+        bundle_payload = evidence_bundle.to_dict()
+        (round_dir / f"devkit_evidence_{audience}.json").write_text(
+            json.dumps(bundle_payload, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+        (round_dir / f"retrieval_trace_{audience}.json").write_text(
+            json.dumps(evidence_bundle.retrieval_trace, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+        runtime_facts: Any = ""
+        if audience == "generator" or any(stage.endswith("_debug") for stage in stage_request.stages):
+            runtime_facts = collect_runtime_facts(
+                symbols,
+                runtime_version=knowledge_version.runtime_version,
+                cache_path=round_dir / f"runtime_header_facts_{audience}.json",
+                max_chars=4000,
+                soc_version=self.config.soc_version,
+                project_root=self.REPO_ROOT,
+                probe_manifest=self._probe_manifest_path(),
+                failure_evidence=failure_evidence,
+            )
+        selected_context, skill_selection = self.context_selector.select(
+            bundle=evidence_bundle,
+            request=stage_request,
+            runtime_facts=runtime_facts,
+        )
+        selected_context.task_facts["knowledge_source"] = "cannbot_skills+asc_devkit_9.1.0"
+        selected_context.budget["max_chars"] = min(int(selected_context.budget["max_chars"]), max_knowledge_chars)
+        rendered = render_stage_context(selected_context)
+        context_payload = selected_context.to_dict()
+        (round_dir / f"{audience}_context.json").write_text(
+            json.dumps(context_payload, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+        (round_dir / f"skill_selection_{audience}.json").write_text(
+            json.dumps(skill_selection.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+        references_name = "planner_references.md" if audience == "planner" else "references.md"
+        knowledge_text = rendered + "\n\n" + render_evidence(
+            evidence_bundle, max_chars=max_knowledge_chars
+        )
+        (round_dir / references_name).write_text(
+            knowledge_text,
+            encoding="utf-8",
+        )
+        if audience == "generator":
+            (round_dir / "knowledge_bundle.json").write_text(
+                json.dumps(bundle_payload, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+            (round_dir / "retrieval_trace.json").write_text(
+                json.dumps(evidence_bundle.retrieval_trace, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+            (round_dir / "selected_knowledge.json").write_text(
+                json.dumps(context_payload, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+        return selected_context, knowledge_text
 
     def _record_orchestration_failure(
         self,
@@ -1174,8 +1022,7 @@ class MultiTurnRunner:
                 base_bundle = self._read_bundle(base_checkpoint)
             candidate = self._read_bundle(checkpoint)
             restore_bundle(self.task_dir, candidate)
-            if self.config.knowledge_mode == "structured":
-                selection, _ = self._knowledge_context(
+            selection, _ = self._knowledge_context(
                     logger=logger,
                     knowledge_state=knowledge_state,
                     knowledge_version=knowledge_version,
@@ -1192,12 +1039,6 @@ class MultiTurnRunner:
                     active_plan=active_item,
                     audience="generator",
                     workflow_phase=budget_phase,
-                )
-            else:
-                selection = selection_from_state(
-                    knowledge_state,
-                    version=knowledge_version,
-                    mode="resume_eval",
                 )
             response = LLMResponse(content="", model="checkpoint", usage={})
             return candidate, base_bundle, selection, response, 1, candidate_path
@@ -1275,6 +1116,11 @@ class MultiTurnRunner:
                 response_path=round_dir / "response_retry_01.txt",
                 knowledge_selection=selection,
             )
+            if response.finish_reason == "length":
+                raise LLMCallFailure(
+                    "llm_output_exhausted",
+                    "LLM truncated both the initial response and the semantic retry",
+                )
         try:
             delta = parse_file_bundle(response.content)
             candidate = FileBundle(files=dict(current.files) if current else {})
@@ -1305,21 +1151,6 @@ class MultiTurnRunner:
         self.progress.emit("Preparing task and resume state")
         self._prepare_task()
         logger = TrajectoryLogger(self.state_dir, self.config.to_dict())
-        recorded_config = logger.data.get("config", {})
-        if self.config.resume and isinstance(recorded_config, dict):
-            recorded_source = str(recorded_config.get("knowledge_source") or "").lower()
-            if not recorded_source:
-                if str(recorded_config.get("knowledge_mode", "structured")).lower() == "document":
-                    recorded_source = "document"
-                elif recorded_config.get("skill_adapter"):
-                    recorded_source = "hybrid"
-                else:
-                    recorded_source = "structured"
-            if recorded_source != self.config.knowledge_source:
-                raise ValueError(
-                    "cannot resume with different knowledge source: "
-                    f"recorded={recorded_source}, current={self.config.knowledge_source}"
-                )
         self._migrate_trajectory(logger)
         logger.mark_running()
         logger.save_invocation(self.config.to_dict())
@@ -1328,8 +1159,7 @@ class MultiTurnRunner:
         self.progress.emit(
             "LLM configuration: "
             f"provider={self.config.provider}, requested_model={self.config.model}, "
-            f"knowledge_source={self.config.knowledge_source}, "
-            f"knowledge_input_mode={self.config.knowledge_input_mode}, "
+            "knowledge_source=cannbot_skills+asc_devkit_9.1.0, "
             f"bootstrap={self.config.max_bootstrap_rounds}, optimization={self.config.max_rounds}, "
             f"total={self.config.max_total_rounds or 'unlimited'}, "
             f"generator={self.config.generator_max_tokens}/{self.config.generator_thinking}/"
@@ -1360,9 +1190,13 @@ class MultiTurnRunner:
                 restore_bundle(self.task_dir, repair_bundle)
         plan = self._load_plan()
 
-        task = self.progress.start("Resolve CANN knowledge")
+        task = self.progress.start("Resolve pinned Asc DevKit knowledge")
         try:
-            knowledge_version = resolve_knowledge_version(self.config)
+            knowledge_version = resolve_runtime_version(self.config.cann_version, mock=self.config.mock)
+            if not self.config.mock:
+                self.devkit_root = resolve_devkit(self.config.asc_devkit_dir or None)
+                if knowledge_version.status != "exact":
+                    raise RuntimeError(knowledge_version.warning)
         except Exception:
             task.finish(status="failed")
             raise
@@ -1374,21 +1208,9 @@ class MultiTurnRunner:
                 f"recorded={recorded_knowledge}, current={knowledge_version.to_dict()}"
             )
         logger.save_knowledge(knowledge_version.to_dict())
-        max_api_docs, max_knowledge_chars = knowledge_limits()
-        historical_selection = next(
-            (
-                item.get("knowledge")
-                for item in reversed(logger.data.get("rounds", []))
-                if isinstance(item, dict) and item.get("knowledge")
-            ),
-            None,
-        )
+        max_api_docs, max_knowledge_chars = 8, 24000
         knowledge_state_path = self.state_dir / "knowledge_state.json"
-        knowledge_state = load_knowledge_state(
-            knowledge_state_path,
-            version=knowledge_version,
-            historical_selection=historical_selection,
-        )
+        knowledge_state = None
 
         preflight = getattr(self.evaluator, "preflight", None)
         if callable(preflight):
@@ -1441,6 +1263,10 @@ class MultiTurnRunner:
             budget_round = (bootstrap_count if budget_phase == "bootstrap" else optimization_count) + 1
             evaluation_round = bootstrap_count + optimization_count + 1
             diagnose_required = bool(workflow.get("diagnose_pending"))
+            planning_mode = self._planning_mode(
+                diagnose_required=diagnose_required,
+                evaluations_completed=evaluations_completed,
+            )
             active_item = self._active_plan_item(plan)
             need_plan = active_item is None or diagnose_required
             if diagnose_required:
@@ -1512,7 +1338,7 @@ class MultiTurnRunner:
                             attempt_id=attempt_id,
                             evaluation_round=evaluation_round,
                             mode=budget_phase,
-                            diagnosis_required=diagnose_required,
+                            planning_mode=planning_mode,
                             knowledge_context=planning_knowledge,
                             knowledge_selection=planning_selection,
                             repair_state=repair_state_manager.prompt_summary(previous),
@@ -1589,9 +1415,8 @@ class MultiTurnRunner:
             except LLMCallFailure as error:
                 path = round_dir / "llm_error.log"
                 self._write_error(path, error)
-                stage = "llm_knowledge_router" if not knowledge_state.initialized else "llm_generator"
                 stop_failure = self._failure_result(
-                    stage=stage,
+                    stage="llm_generator",
                     code=error.code,
                     message=str(error),
                     details_path=path,
@@ -1798,26 +1623,6 @@ class MultiTurnRunner:
                     decision=repair_decision,
                 )
 
-            addressed_failure = (
-                base_result.structured_failure
-                if base_result and base_result.error
-                else None
-            )
-            incident = build_incident(
-                attempt_id=attempt_id,
-                failure=addressed_failure or result.structured_failure,
-                hypothesis=dict(active_item) if active_item else None,
-                before=base_bundle,
-                after=candidate,
-                resolved_fact_ids=self._resolved_fact_ids(selection),
-                result=result,
-                base_attempt_id=attempt_record.base_attempt_id,
-                error_ids_before=attempt_record.error_ids_before,
-                error_ids_after=attempt_record.error_ids_after,
-                cleared_error_ids=attempt_record.cleared_error_ids,
-            )
-            confirmed_experience = persist_incident(self.state_dir, incident)
-
             fingerprint = None
             if result.error:
                 fingerprint = diagnostic_fingerprint(read_result_log(result))
@@ -1846,10 +1651,8 @@ class MultiTurnRunner:
                         "advanced": frontier.advanced,
                         "highest": frontier.highest,
                     },
-                    incident_id=incident.incident_id,
-                    confirmed_experience_id=(
-                        confirmed_experience.experience_id if confirmed_experience else None
-                    ),
+                    incident_id=None,
+                    confirmed_experience_id=None,
                     stage_observation=stage_observation,
                     stage_timings=stage_timings,
                     repair_attempt={
@@ -2029,10 +1832,9 @@ class MultiTurnRunner:
             "token_usage_by_call_type": totals_by_type,
             "stage_normalized_metrics": normalized_metrics,
             "knowledge_source": {
-                "mode": self.config.knowledge_source,
-                "input_mode": self.config.knowledge_input_mode,
-                "structured_prompt_enabled": self.config.uses_structured_prompt,
-                "skills_enabled": self.config.uses_skills,
+                "mode": "cannbot_skills+asc_devkit_9.1.0",
+                "devkit_commit": ASC_DEVKIT_COMMIT,
+                "skills_enabled": True,
             },
             "knowledge": knowledge_version.to_dict(),
             "task_dir": str(self.task_dir),

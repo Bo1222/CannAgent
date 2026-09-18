@@ -13,17 +13,90 @@ from typing import Protocol
 
 from .bundle import capture_bundle, validate_initial_bundle
 from .case_profiles import build_case_profiles
-from .diagnostics import parse_structured_failure
+from .diagnostics import parse_failure_evidence
 from .models import EvalResult
 from .progress import ProgressReporter
 from .source_validation import render_issues, validate_source_tree
-from .structured_knowledge.api_constraint_validator import ApiConstraintValidator
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
 class Evaluator(Protocol):
     def evaluate(self, task_dir: Path, round_dir: Path) -> EvalResult: ...
+
+
+def benchmark_command(
+    *,
+    python: str,
+    task_dir: Path,
+    output_path: Path,
+    warmup: int = 5,
+    repeats: int = 20,
+    profile_top_k: int = 3,
+) -> list[str]:
+    """Build the package-local benchmark command without consulting repository skills."""
+
+    return [
+        python,
+        "-m",
+        "ascendc_multi_turn.benchmark",
+        "--task-dir",
+        str(task_dir),
+        "--warmup",
+        str(warmup),
+        "--repeats",
+        str(repeats),
+        "--profile-top-k",
+        str(profile_top_k),
+        "--output",
+        str(output_path),
+    ]
+
+
+def validate_performance_report(
+    payload: object,
+    *,
+    expected_case_indices: set[int] | None = None,
+) -> float:
+    if not isinstance(payload, dict):
+        raise TypeError("performance report must be a JSON object")
+    if payload.get("schema_version") != 2:
+        raise ValueError(f"unsupported performance schema: {payload.get('schema_version')!r}")
+    if payload.get("status") != "ok":
+        raise ValueError(f"benchmark status is not ok: {payload.get('error') or payload.get('status')}")
+    measurement = payload.get("measurement")
+    if not isinstance(measurement, dict) or measurement.get("method") != "torch.npu.Event":
+        raise ValueError("benchmark did not use torch.npu.Event")
+    cases = payload.get("per_case_speedup")
+    if not isinstance(cases, list) or not cases:
+        raise ValueError("performance report contains no measured cases")
+    indices: set[int] = set()
+    speedups: list[float] = []
+    for item in cases:
+        if not isinstance(item, dict) or not isinstance(item.get("index"), int):
+            raise TypeError("performance case lacks an integer index")
+        index = int(item["index"])
+        if index in indices:
+            raise ValueError(f"duplicate performance case index: {index}")
+        indices.add(index)
+        for field in ("reference_ms", "ascendc_ms", "speedup"):
+            value = item.get(field)
+            if not isinstance(value, (int, float)) or not math.isfinite(float(value)) or value <= 0:
+                raise ValueError(f"case {index} has invalid {field}: {value!r}")
+        speedups.append(float(item["speedup"]))
+    if expected_case_indices is not None and indices != expected_case_indices:
+        raise ValueError(
+            "benchmark case set differs from full correctness: "
+            f"expected={sorted(expected_case_indices)}, measured={sorted(indices)}"
+        )
+    computed = math.exp(math.fsum(math.log(value) for value in speedups) / len(speedups))
+    for field in ("score", "overall_speedup"):
+        value = payload.get(field)
+        if not isinstance(value, (int, float)) or not math.isfinite(float(value)) or value <= 0:
+            raise ValueError(f"performance report has invalid {field}: {value!r}")
+        if not math.isclose(float(value), computed, rel_tol=1e-10, abs_tol=1e-12):
+            raise ValueError(f"performance report {field} does not match per-case geometric mean")
+    return computed
 
 
 def _write_log(path: Path, output: str) -> None:
@@ -149,7 +222,7 @@ def _failure(
     case_results: list[dict] | None = None,
     passed_case_indices: list[int] | None = None,
 ) -> EvalResult:
-    structured = parse_structured_failure(stage=stage, output=output, case_info=case_info)
+    failure_evidence = parse_failure_evidence(stage=stage, output=output, case_info=case_info)
     return EvalResult(
         compiled=compiled,
         correctness=correctness,
@@ -161,7 +234,7 @@ def _failure(
         error_excerpt=extract_error_excerpt(output),
         details_path=str(details_path.resolve()) if details_path is not None else None,
         failure_kind=failure_kind,
-        structured_failure=structured.to_dict(),
+        failure_evidence=failure_evidence.to_dict(),
         active_profile=active_profile,
         passed_profiles=list(passed_profiles or []),
         case_results=list(case_results or []),
@@ -181,13 +254,11 @@ class LocalAscendEvaluator:
         soc_version: str,
         timeout: int = 600,
         progress: ProgressReporter | None = None,
-        api_constraint_validator: ApiConstraintValidator | None = None,
     ):
         self.device = device
         self.soc_version = soc_version
         self.timeout = timeout
         self.progress = progress or ProgressReporter()
-        self.api_constraint_validator = api_constraint_validator
 
     @staticmethod
     def _case_text(task_dir: Path) -> str:
@@ -220,9 +291,7 @@ class LocalAscendEvaluator:
         if shutil.which("cmake") is None:
             failures.append("cmake is not available on PATH")
         for path in (
-            REPO_ROOT / "utils/build_ascendc.py",
             REPO_ROOT / "utils/verification_ascendc.py",
-            REPO_ROOT / "skills/ascendc/ascendc-translator/scripts/validate_ascendc_impl.py",
         ):
             if not path.is_file():
                 failures.append(f"required tool does not exist: {path}")
@@ -259,7 +328,7 @@ class LocalAscendEvaluator:
     def evaluate(self, task_dir: Path, round_dir: Path) -> EvalResult:
         try:
             validate_initial_bundle(capture_bundle(task_dir))
-        except ValueError as error:
+        except (TypeError, ValueError) as error:
             message = str(error)
             bundle_log = round_dir / "bundle_validation.log"
             _write_log(bundle_log, f"{message}\n")
@@ -294,77 +363,27 @@ class LocalAscendEvaluator:
                 compile_output=source_output,
             )
 
-        if self.api_constraint_validator is not None:
-            validation_log = round_dir / "api_constraint_validation.log"
-            task = self.progress.start(f"{round_dir.name} · API constraint validation")
-            resolved_calls, constraint_issues = self.api_constraint_validator.validate_tree(
-                task_dir
-            )
-            validation_output = "\n".join(issue.render() for issue in constraint_issues)
-            _write_log(
-                validation_log,
-                validation_output + ("\n" if validation_output else ""),
-            )
-            (round_dir / "resolved_api_calls.json").write_text(
-                json.dumps([call.to_dict() for call in resolved_calls], ensure_ascii=False, indent=2),
-                encoding="utf-8",
-            )
-            task.finish(
-                status="failed" if constraint_issues else "passed",
-                detail=f"calls={len(resolved_calls)}, issues={len(constraint_issues)}",
-            )
-            if constraint_issues:
-                return _failure(
-                    compiled=False,
-                    correctness=False,
-                    stage="api_constraint_validation",
-                    code="api_constraint_validation_failed",
-                    message="AscendC API constraint validation failed",
-                    output=validation_output,
-                    details_path=validation_log,
-                    compile_output=validation_output,
-                )
-
-        validator = REPO_ROOT / "skills/ascendc/ascendc-translator/scripts/validate_ascendc_impl.py"
-        static_log = round_dir / "static_validation.log"
-        task = self.progress.start(f"{round_dir.name} · static validation")
-        rc, static_output = _run(
-            [
-                python,
-                str(validator),
-                str(task_dir / "model_new_ascendc.py"),
-                "--pybind-file",
-                str(task_dir / "kernel" / "pybind11.cpp"),
-            ],
-            env=env,
-            timeout=min(self.timeout, 120),
-            log_path=static_log,
-        )
-        task.finish(status="passed" if rc == 0 else "failed", detail=f"exit_code={rc}")
-        if rc != 0:
-            static_full_output = _full_log(static_log, static_output)
-            return _failure(
-                compiled=False,
-                correctness=False,
-                stage="static_validation",
-                code="static_validation_failed",
-                message="static validation failed",
-                output=static_full_output,
-                details_path=static_log,
-                compile_output=static_full_output,
-                failure_kind=_return_code_kind(rc),
-            )
-
         build_log = round_dir / "build.log"
         task = self.progress.start(f"{round_dir.name} · AscendC build")
-        rc, build_output = _run(
-            [python, str(REPO_ROOT / "utils/build_ascendc.py"), str(task_dir), "-v", self.soc_version, "--clean"],
+        build_dir = task_dir / "build"
+        configure_rc, configure_output = _run(
+            ["cmake", "-S", str(task_dir), "-B", str(build_dir), f"-DSOC_VERSION={self.soc_version}"],
             env=env,
             timeout=self.timeout,
             log_path=build_log,
         )
+        if configure_rc == 0:
+            rc, build_output = _run(
+                ["cmake", "--build", str(build_dir), "--parallel"],
+                env=env,
+                timeout=self.timeout,
+                log_path=build_log,
+            )
+            build_output = f"{configure_output}\n{build_output}".strip()
+        else:
+            rc, build_output = configure_rc, configure_output
         task.finish(status="passed" if rc == 0 else "failed", detail=f"exit_code={rc}")
-        compile_output = f"{static_output}\n{build_output}".strip()
+        compile_output = build_output.strip()
         if rc != 0:
             build_full_output = _full_log(build_log, build_output)
             return _failure(
@@ -375,7 +394,7 @@ class LocalAscendEvaluator:
                 message="AscendC build failed",
                 output=build_full_output,
                 details_path=build_log,
-                compile_output=f"{static_output}\n{build_full_output}".strip(),
+                compile_output=build_full_output.strip(),
                 failure_kind=_return_code_kind(rc),
             )
 
@@ -488,28 +507,19 @@ class LocalAscendEvaluator:
         performance_log = round_dir / "performance.log"
         task = self.progress.start(f"{round_dir.name} · performance")
         rc, perf_output = _run(
-            [
-                python,
-                str(REPO_ROOT / "skills/ascendc/performance-analyzer/references/performance.py"),
-                "--output_dir",
-                str(task_dir),
-                "--warmup",
-                "10",
-                "--repeats",
-                "50",
-                "--output",
-                str(perf_path),
-            ],
+            benchmark_command(
+                python=python,
+                task_dir=task_dir,
+                output_path=perf_path,
+            ),
             env=env,
             timeout=self.timeout,
             log_path=performance_log,
         )
-        perf_ok = rc == 0 and perf_path.is_file()
-        task.finish(status="passed" if perf_ok else "failed", detail=f"exit_code={rc}")
-        if rc != 0 or not perf_path.is_file():
+        if not perf_path.is_file():
+            task.finish(status="failed", detail=f"exit_code={rc}")
             failure_output = perf_output or "performance.json was not produced"
-            if not perf_path.is_file():
-                _append_log(performance_log, "\nperformance.json was not produced\n")
+            _append_log(performance_log, "\nperformance.json was not produced\n")
             failure_output = _full_log(performance_log, failure_output)
             return _failure(
                 compiled=True,
@@ -527,9 +537,11 @@ class LocalAscendEvaluator:
                 case_results=all_case_results,
                 passed_case_indices=sorted(passed_case_indices),
             )
+        performance: object
         try:
             performance = json.loads(perf_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as error:
+            task.finish(status="failed", detail=f"exit_code={rc}")
             message = f"invalid performance result: {error}"
             _append_log(performance_log, f"\n{message}\n")
             return _failure(
@@ -547,20 +559,21 @@ class LocalAscendEvaluator:
                 case_results=all_case_results,
                 passed_case_indices=sorted(passed_case_indices),
             )
-        speedups = [
-            item.get("speedup")
-            for item in performance.get("per_case_speedup", [])
-            if isinstance(item.get("speedup"), (int, float)) and item.get("speedup") > 0
-        ]
-        if not speedups:
-            message = "performance result contains no positive numeric per-case speedup"
+        try:
+            score = validate_performance_report(
+                performance,
+                expected_case_indices=set(passed_case_indices),
+            )
+        except (TypeError, ValueError) as error:
+            task.finish(status="failed", detail=f"exit_code={rc}")
+            message = f"invalid performance result: {error}"
             _append_log(performance_log, f"\n{message}\n")
             return _failure(
                 compiled=True,
                 correctness=True,
                 stage="performance",
-                code="performance_score_missing",
-                message="performance evaluation produced no valid score",
+                code="performance_result_invalid",
+                message="performance evaluation produced an invalid report",
                 output=message,
                 details_path=performance_log,
                 compile_output=compile_output,
@@ -570,7 +583,26 @@ class LocalAscendEvaluator:
                 case_results=all_case_results,
                 passed_case_indices=sorted(passed_case_indices),
             )
-        score = math.exp(sum(math.log(value) for value in speedups) / len(speedups))
+        assert isinstance(performance, dict)
+        if rc != 0:
+            diagnostics = performance.setdefault("diagnostics", {})
+            if isinstance(diagnostics, dict):
+                diagnostics["benchmark_process_exit_code"] = rc
+                diagnostics["benchmark_process_note"] = (
+                    "timing report was complete; supplementary profiling process did not exit cleanly"
+                )
+            _append_log(
+                performance_log,
+                "\nAccepted complete Event timing report despite supplementary profiler "
+                f"exit_code={rc}.\n",
+            )
+            temporary = perf_path.with_suffix(perf_path.suffix + ".tmp")
+            temporary.write_text(
+                json.dumps(performance, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            temporary.replace(perf_path)
+        task.finish(status="passed", detail=f"exit_code={rc}; score={score:.6g}")
         return EvalResult(
             True,
             True,

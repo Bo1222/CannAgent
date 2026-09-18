@@ -11,8 +11,8 @@ from .diagnostics import (
     extract_symbol_evidence,
 )
 from .models import EvalResult
+from .devkit_retrieval import EvidenceBundle
 from .skill_adapter import SkillAdapter, SkillAdapterContext, SkillAdapterSelection
-from .structured_knowledge.schema import KnowledgeBundle
 
 _COMPILE_STAGES = {
     "bundle_validation",
@@ -27,8 +27,6 @@ _RUNTIME_MARKERS = (
     "acl_error",
     "aicore exception",
     "mte",
-    "507035",
-    "507001",
     "161",
     "361",
     "561",
@@ -38,6 +36,10 @@ _RUNTIME_MARKERS = (
     "sigsegv",
     "terminated by signal",
 )
+# Ascend 设备错误码族（50xxxx / 56xxxx）。逐码枚举会漏：507034（向量核超时 / MTE failure）
+# 就是因为只列了 507035 与 507001 而被误判为非运行时失败，路由到了 host_integration_debug。
+# 与 diagnostics.py 提取 runtime_code 的口径保持一致，按族匹配。
+_DEVICE_ERROR_CODE = re.compile(r"\b(?:50|56)\d{4}\b")
 _HOST_MARKERS = (
     "is_cuda",
     "cuda tensor",
@@ -129,7 +131,7 @@ class SelectedStageContext:
 
 
 class ContextSelector:
-    """Project structured knowledge and CANNBot knowledge modules for one LLM audience."""
+    """Select pinned DevKit evidence and CANNBot practices for one LLM audience."""
 
     def __init__(self, adapter: SkillAdapter):
         self.adapter = adapter
@@ -147,7 +149,7 @@ class ContextSelector:
                 return RoutingDecision("optimization", "correct_baseline_available", None, None, "performance", "direct", failure_ownership="Kernel")
             return RoutingDecision("kernel_design", "initial_or_unresolved_kernel_design", None, None, "kernel_design", "fallback", failure_ownership="Kernel")
         failure_stage = previous.failure_stage or ""
-        structured = previous.structured_failure or {}
+        failure = previous.failure_evidence or {}
         failure_text = " ".join(
             [
                 previous.error,
@@ -155,7 +157,7 @@ class ContextSelector:
                 previous.compile_output if failure_stage in _COMPILE_STAGES else "",
                 previous.verify_output if failure_stage in {"correctness", "runtime", "acl_runtime"} else "",
                 str(previous.failure_code or ""),
-                str(structured),
+                str(failure),
                 evidence if failure_stage in _COMPILE_STAGES else "",
             ]
         ).lower()
@@ -213,9 +215,10 @@ class ContextSelector:
             )
         if failure_stage in {"correctness", "runtime", "acl_runtime"}:
             runtime = bool(
-                structured.get("runtime_code")
-                or structured.get("device_exception")
+                failure.get("runtime_code")
+                or failure.get("device_exception")
                 or any(marker in failure_text for marker in _RUNTIME_MARKERS)
+                or _DEVICE_ERROR_CODE.search(failure_text)
             )
             if runtime:
                 boundary = next(
@@ -225,7 +228,7 @@ class ContextSelector:
                 return RoutingDecision(
                     "runtime_debug", "runtime_or_device_exception_evidence", None,
                     None, "runtime_memory", "direct", "failure_evidence",
-                    boundary or str(structured.get("runtime_code") or "device_exception"),
+                    boundary or str(failure.get("runtime_code") or "device_exception"),
                     "Host/Kernel boundary" if boundary else "Kernel",
                 )
             if any(marker in failure_text for marker in _PRECISION_PRIMARY_MARKERS):
@@ -303,15 +306,15 @@ class ContextSelector:
         profile_features: list[str] | None = None,
         environment_fingerprint: str | None = None,
     ) -> SkillAdapterContext:
-        structured_failure = previous.structured_failure if previous else None
+        failure_evidence = previous.failure_evidence if previous else None
         failure_symbols = (
             [
                 str(item)
-                for item in (structured_failure or {}).get("related_symbols", [])
+                for item in (failure_evidence or {}).get("related_symbols", [])
                 if classify_symbol_domain(str(item))
                 in {"ascendc_api", "host_abi", "launch_abi"}
             ]
-            if isinstance(structured_failure, dict)
+            if isinstance(failure_evidence, dict)
             else []
         )
         failure_evidence = (
@@ -322,7 +325,7 @@ class ContextSelector:
                     previous.compile_output,
                     previous.verify_output,
                     str(previous.failure_code or ""),
-                    str(structured_failure or ""),
+                    str(failure_evidence or ""),
                 ]
             )
             if previous
@@ -492,34 +495,19 @@ class ContextSelector:
         )
 
     @staticmethod
-    def _compact_contract(item: dict[str, Any]) -> dict[str, Any]:
+    def _compact_evidence(item: dict[str, Any]) -> dict[str, Any]:
         return {
             key: item[key]
-            for key in ("contract_id", "subject", "constraint")
-            if key in item
-        }
-
-    @staticmethod
-    def _compact_fact(item: dict[str, Any]) -> dict[str, Any]:
-        return {
-            key: item[key]
-            for key in ("fact_id", "subject", "predicate", "value", "applicability")
-            if key in item
-        }
-
-    @staticmethod
-    def _compact_api_card(item: dict[str, Any]) -> dict[str, Any]:
-        return {
-            key: item[key]
-            for key in ("card_id", "api", "fact_ids", "examples")
-            if key in item
-        }
-
-    @staticmethod
-    def _compact_failure(item: dict[str, Any]) -> dict[str, Any]:
-        return {
-            key: item[key]
-            for key in ("card_id", "signals", "subsystem", "inspection_targets")
+            for key in (
+                "evidence_id",
+                "symbol",
+                "source_kind",
+                "source_path",
+                "version",
+                "commit",
+                "excerpt",
+                "score",
+            )
             if key in item
         }
 
@@ -527,14 +515,14 @@ class ContextSelector:
     def _compact_provenance(item: dict[str, Any]) -> dict[str, Any]:
         return {
             key: item[key]
-            for key in ("document_id", "source_path", "section_id")
+            for key in ("evidence_id", "source_path", "version", "commit")
             if key in item
         }
 
     def select(
         self,
         *,
-        bundle: KnowledgeBundle,
+        bundle: EvidenceBundle,
         request: SkillAdapterContext,
         runtime_facts: Any = "",
     ) -> tuple[SelectedStageContext, SkillAdapterSelection]:
@@ -566,35 +554,20 @@ class ContextSelector:
             symbol_lookup = {item.lower(): item for item in ordered_symbols}
             symbol_rank = {item.lower(): index for index, item in enumerate(ordered_symbols)}
 
-            def item_symbol(item: dict[str, Any]) -> str:
-                return str(
-                    item.get("api")
-                    or item.get("applicability", {}).get("api")
-                    or item.get("subject")
-                    or ""
-                )
-
-            api_cards = list(bundle.api_semantics)
-            facts = list(bundle.relevant_facts)
+            evidence = [item.to_dict() for item in bundle.evidence]
             if debug_stage and ordered_symbols:
-                matched_cards = sorted(
-                    [item for item in api_cards if item_symbol(item).lower() in symbol_lookup],
-                    key=lambda item: symbol_rank[item_symbol(item).lower()],
+                matched_evidence = sorted(
+                    [item for item in evidence if str(item.get("symbol", "")).lower() in symbol_lookup],
+                    key=lambda item: symbol_rank[str(item.get("symbol", "")).lower()],
                 )
-                matched_facts = sorted(
-                    [item for item in facts if item_symbol(item).lower() in symbol_lookup],
-                    key=lambda item: symbol_rank[item_symbol(item).lower()],
-                )
-                fallback_cards = [item for item in api_cards if item not in matched_cards][:2]
-                fallback_facts = [item for item in facts if item not in matched_facts][:2]
-                api_cards = [*matched_cards, *fallback_cards]
-                facts = [*matched_facts, *fallback_facts]
+                fallback_evidence = [item for item in evidence if item not in matched_evidence][:2]
+                evidence = [*matched_evidence, *fallback_evidence]
                 selected_ids = {
-                    str(item.get("card_id") or item.get("fact_id"))
-                    for item in [*api_cards, *facts]
+                    str(item.get("evidence_id"))
+                    for item in evidence
                 }
-                for item in [*bundle.api_semantics, *bundle.relevant_facts]:
-                    item_id = str(item.get("card_id") or item.get("fact_id"))
+                for item in bundle.evidence:
+                    item_id = item.evidence_id
                     if item_id and item_id not in selected_ids:
                         selection_trace.append(
                             {
@@ -605,37 +578,10 @@ class ContextSelector:
                         )
             api_facts.extend(
                 {
-                    "kind": "atomic_fact",
-                    **(dict(item) if full_selected else self._compact_fact(item)),
+                    "kind": "devkit_evidence",
+                    **(dict(item) if full_selected else self._compact_evidence(item)),
                 }
-                for item in facts
-            )
-            api_facts.extend(
-                {
-                    "kind": "api_card",
-                    **(dict(item) if full_selected else self._compact_api_card(item)),
-                }
-                for item in api_cards
-            )
-        failure_guidance = (
-            [
-                dict(item) if full_selected else self._compact_failure(item)
-                for item in bundle.failure_cards
-            ]
-            if debug_stage
-            else []
-        )
-        # Structured pattern descriptions do not carry hardware verification,
-        # operator-family, or shape-regime metadata. They are therefore not
-        # eligible to act as exemplars.
-        patterns: list[str] = []
-        for index, _ in enumerate(bundle.examples):
-            selection_trace.append(
-                {
-                    "candidate": f"structured-example:{index}",
-                    "decision": "rejected",
-                    "reason": "unverified_or_shape_incompatible_exemplar",
-                }
+                for item in evidence
             )
         exclusions = list(
             dict.fromkeys(
@@ -649,17 +595,12 @@ class ContextSelector:
             for item in getattr(runtime_facts, "facts", [])
             if item.get("symbol")
         }
-        structured_symbols = {
-            str(
-                item.get("api")
-                or item.get("applicability", {}).get("api")
-                or item.get("subject")
-                or ""
-            ).lower()
+        devkit_symbols = {
+            str(item.get("symbol") or "").lower()
             for item in api_facts
         }
         for symbol in request.failure_symbols:
-            if symbol.lower() not in runtime_symbol_ids | structured_symbols:
+            if symbol.lower() not in runtime_symbol_ids | devkit_symbols:
                 warning = (
                     f"UNVERIFIED_API: {symbol} — 在 installed declaration 或 compile probe 验证前，"
                     "不得用于 plan.change 或源码"
@@ -669,7 +610,7 @@ class ContextSelector:
                     {
                         "candidate": f"runtime-missing:{symbol}",
                         "decision": "rejected",
-                        "reason": "no installed declaration or selected structured API fact",
+                        "reason": "no installed declaration or selected DevKit evidence",
                     }
                 )
         selected = SelectedStageContext(
@@ -679,10 +620,8 @@ class ContextSelector:
             authority_order=[
                 "current_evaluation",
                 "installed_headers",
-                "official_structured_facts",
-                "project_contracts",
+                "pinned_devkit_9_1_evidence",
                 "cannbot_practices",
-                "confirmed_experience",
                 "examples",
             ],
             task_facts={
@@ -721,20 +660,17 @@ class ContextSelector:
                 },
                 "environment_fingerprint": request.environment_fingerprint,
             },
-            hard_constraints=[
-                dict(item) if full_selected else self._compact_contract(item)
-                for item in bundle.project_contracts
-            ],
+            hard_constraints=[],
             api_facts=api_facts,
-            design_patterns=patterns,
-            failure_guidance=failure_guidance,
+            design_patterns=[],
+            failure_guidance=[],
             skill_knowledge_modules=[item.to_dict() for item in skills.knowledge_modules],
             exclusions=exclusions,
             provenance=[
                 dict(item) if full_selected else self._compact_provenance(item)
-                for item in (
-                    bundle.provenance if full_selected else bundle.provenance[:12]
-                )
+                for item in [evidence.to_dict() for evidence in bundle.evidence][
+                    : None if full_selected else 12
+                ]
             ],
             runtime_facts=(
                 str(getattr(runtime_facts, "text", runtime_facts)) if include_api else ""
@@ -750,9 +686,9 @@ class ContextSelector:
             selection_trace=selection_trace,
             selection_metadata={
                 "selected_skill_ids": [item.skill_id for item in skills.knowledge_modules],
-                "selected_structured_ids": [
-                    str(item.get("fact_id") or item.get("card_id")) for item in api_facts
-                    if item.get("fact_id") or item.get("card_id")
+                "selected_evidence_ids": [
+                    str(item.get("evidence_id")) for item in api_facts
+                    if item.get("evidence_id")
                 ],
                 "runtime_fact_ids": [
                     str(item.get("fact_id"))
@@ -774,7 +710,7 @@ class ContextSelector:
         }
         selected_items: list[dict[str, Any]] = []
         for item in api_facts:
-            identifier = str(item.get("fact_id") or item.get("card_id") or "")
+            identifier = str(item.get("evidence_id") or "")
             symbol = str(
                 item.get("api")
                 or item.get("applicability", {}).get("api")
@@ -785,11 +721,11 @@ class ContextSelector:
             selected_items.append(
                 {
                     "id": identifier,
-                    "source": "structured",
+                    "source": "asc-devkit",
                     "evidence_symbol": symbol or None,
                     "symbol_types": list(evidence_item.get("kinds", [])) or ["fallback"],
                     "confidence_level": 1,
-                    "provenance": "structured_knowledge",
+                    "provenance": "asc-devkit-v9.1.0",
                 }
             )
         for knowledge_module in skills.knowledge_modules:

@@ -2,44 +2,67 @@ from __future__ import annotations
 
 import json
 import re
+import warnings
 from typing import Any
 
+from .bundle import validate_relative_path
+from .devkit import ASC_DEVKIT_COMMIT, ASC_DEVKIT_REF
 from .diagnostics import compact_evaluation
 from .models import EvalResult, FileBundle
 
 OUTPUT_CONTRACT = r"""
 只返回一个 JSON 对象，不要使用 Markdown 代码围栏：
 {
-  "analysis": "目标证据：...；实际改动：...；保留的不变量：...",
+  "analysis": "任务语义、设计依据、验证目标的简短说明",
   "files": [
-    {"path": "model_new_ascendc.py", "content": "修改后文件的完整内容"},
-    {"path": "kernel/pybind11.cpp", "content": "修改后文件的完整内容"},
-    {"path": "kernel/<name>.cpp", "content": "修改后文件的完整内容"}
+    {"path": "model_new_ascendc.py", "content": "完整内容"},
+    {"path": "op_kernel/<op>_tiling.h", "content": "完整内容"},
+    {"path": "op_kernel/<op>_kernel.asc", "content": "完整内容"},
+    {"path": "op_host/<op>.asc", "content": "完整内容"},
+    {"path": "op_host/data_utils.h", "content": "完整内容"},
+    {"path": "op_extension/<op>_torch.cpp", "content": "完整内容"},
+    {"path": "op_extension/register.cpp", "content": "完整内容"},
+    {"path": "op_extension/ops.h", "content": "完整内容"},
+    {"path": "scripts/golden.py", "content": "完整内容"},
+    {"path": "scripts/test_torch.py", "content": "完整内容"},
+    {"path": "CMakeLists.txt", "content": "完整内容"}
   ],
-  "delete": ["kernel/obsolete_file.cpp"]
+  "delete": []
 }
-`files` 中的 `content` 必须是修改后文件的完整内容，不是 diff 或 patch。未出现在 `files`/`delete`
-中的路径保持不变。首轮必须提供自包含的完整实现，包括 model_new_ascendc.py、kernel/pybind11.cpp、
-至少一个非 pybind 的 kernel .cpp 及所有必需头文件。禁止写入构建产物。
-`analysis` 只需简短说明目标证据、实际改动和保留的不变量，不要输出通用自检清单。
+`content` 是完整文件，不是 diff。首轮必须提供完整 CANNBot 直调工程。只允许写入以下路径：
+`model_new_ascendc.py`、`CMakeLists.txt`，以及 `op_kernel/`、`op_host/`、`op_extension/`、`scripts/`
+目录下的源码文件；禁止生成 `kernel/pybind11.cpp`、`*_do` wrapper、构建产物或图片。若活动 plan
+item 的 `target_files` 与上述白名单冲突，以白名单为准，不得创建白名单外的文件，并在 `analysis`
+中说明该冲突。
+""".strip()
+
+RULES = f"""
+你是面向 CANN 9.1.0 的 AscendC 直调算子工程 Agent。你的能力边界是：基于 reference
+语义、测试 case、固定版本 Asc DevKit 官方证据与 CANNBot 工程实践，生成可由项目自身
+CMake 构建并通过 PyTorch dispatcher 调用的完整工程。
+
+每轮严格执行：Analyze → Retrieve → Design → Implement → Static Validate → Build →
+Correctness → Performance；失败时基于当前工具证据进入 Repair，并只保留已验证事实。
+
+- 官方 API/示例/声明/实现证据固定为 Asc DevKit {ASC_DEVKIT_REF} commit
+  {ASC_DEVKIT_COMMIT}；不得把未验证 API 写入源码。
+- 工程使用 ASC CMake、`TORCH_LIBRARY`、PrivateUse1 与 Meta 注册；Python `ModelNew`
+  加载共享库后通过 `torch.ops` 调用。
+- 核心计算必须在 AscendC Kernel 中完成；Python 不得以 torch 计算作为 fallback。
+- 设计必须覆盖 dtype、layout、shape、broadcast、tail、tiling、GM/UB 边界和同步。
+- 优先采用连续、对齐、向量化的数据搬运；所有性能修改都要保持已验证语义。
+- 当前评测证据与已安装 9.1.0 声明的优先级高于示例；示例只用于工程模式参考。
+- Memory 只保存用户目标、环境、已验证事实、验证前沿和最终结论；临时 workaround、
+  猜测和单次失败规则不得提升为长期知识。
 """.strip()
 
 
-RULES = """
-- 使用 AscendC 完整实现 reference 语义；不得用 torch/ATen 执行核心计算。
-- model_new_ascendc.py 可以创建或 reshape tensor 并调用编译扩展，但不得用 torch 算子作为 fallback。
-- pybind11.cpp 只负责校验、输出或 workspace 分配、tiling 参数和 Kernel launch。
-- pybind11.cpp 必须声明并调用 extern "C" *_do Host wrapper；wrapper 与其 __aicore__ Kernel 放在一起，
-  并使用 kernel<<<blockDim, nullptr, stream>>> 启动。本项目禁止包含 acl/acl_rt_launch.h 或使用 ACLRT_LAUNCH_KERNEL。
-- PYBIND11_MODULE 的字面模块名必须与 model_new_ascendc.py 导入的模块一致。
-- 覆盖测试用例中的全部 dtype、shape 和 attribute。
-- 优先使用向量化 AscendC 操作、对齐搬运和有界 UB 用量。
-- 返回前核对每个 API 的 owner（例如 EnQue 属于 TQue 而不是 TPipe）以及本地 helper 的参数数量。
-- 不得虚构 AscendC 字段或 overload；提供 installed runtime header 声明时，其优先级高于示例和其他版本文档。
-""".strip()
-
-
-PLAN_OUTPUT_CONTRACT = r"""
+# Planner 与 DIAGNOSE 共享同一份 schema 正文，只有尾段要求不同。
+# 正文与尾段显式拼接，不用 str.replace() 派生：一旦正文措辞改动，
+# replace 会静默失配并把 Planner 的尾段发给 DIAGNOSE。
+# 每个结构化字段都必须展示元素形状——渲染成裸 `[]` 会让模型不知道该写什么，
+# 实测已因此连续拒绝过 observations 与 unknowns。
+_PLAN_BODY = r"""
 只返回一个 JSON 对象，不要使用 Markdown 代码围栏：
 {
   "evidence_status": "sufficient",
@@ -49,7 +72,9 @@ PLAN_OUTPUT_CONTRACT = r"""
   "ruled_out": [
     {"hypothesis": "已排除假设", "reason": "排除理由", "evidence_refs": [{"source": "evaluation", "line_excerpt": "原始证据摘录"}]}
   ],
-  "unknowns": [],
+  "unknowns": [
+    {"question": "尚不确定的问题", "required_evidence": "需要什么证据才能确定"}
+  ],
   "diagnosis": "基于证据说明当前瓶颈或失败",
   "items": [
     {
@@ -58,7 +83,7 @@ PLAN_OUTPUT_CONTRACT = r"""
       "hypothesis": "一个可验证假设",
       "change": "一项具体源码修改",
       "expected_signal": "能够验证该假设的评测结果",
-      "target_files": ["kernel/<name>.cpp"],
+      "target_files": ["model_new_ascendc.py", "op_kernel/<op>_kernel.asc", "op_host/<op>.asc", "op_extension/<op>_torch.cpp", "op_extension/register.cpp", "CMakeLists.txt"],
       "edit_scope": "文件或区域",
       "allow_interface_change": false,
       "evidence_refs": [{"source": "evaluation", "line_excerpt": "准确证据摘录"}],
@@ -67,27 +92,44 @@ PLAN_OUTPUT_CONTRACT = r"""
     }
   ]
 }
-普通 Planner 必须返回 `evidence_status="sufficient"` 和恰好一个基于当前 accepted implementation
-及证据的 item。不要在此响应中返回源码文件。
+`observations`、`ruled_out`、`unknowns` 和 `items[].evidence_refs` 的元素必须是对象，
+键名与上面完全一致；不得写成字符串数组，缺键或空字符串都会被判定为无效响应。
+没有对应内容时这些数组可以留空 `[]`，但一旦填写必须符合上述对象形状。
 """.strip()
 
 
-DIAGNOSE_OUTPUT_CONTRACT = PLAN_OUTPUT_CONTRACT.replace(
-    "普通 Planner 必须返回 `evidence_status=\"sufficient\"` 和恰好一个基于当前 accepted implementation\n"
-    "及证据的 item。不要在此响应中返回源码文件。",
-    "DIAGNOSE 证据充分时必须返回 `evidence_status=\"sufficient\"` 和恰好一个 item；"
-    "证据不足时必须返回 `evidence_status=\"insufficient\"`、`items=[]`，并在 `unknowns` 中说明缺少什么证据。"
-    "不得用猜测填补未知项。不要在此响应中返回源码文件。",
-)
+PLAN_OUTPUT_CONTRACT = _PLAN_BODY + """
+普通 Planner 必须返回 `evidence_status="sufficient"` 和恰好一个基于当前 accepted implementation
+及证据的 item。不要在此响应中返回源码文件。
+"""
+
+
+DIAGNOSE_OUTPUT_CONTRACT = _PLAN_BODY + """
+`evidence_status` 描述的是**本轮能否在不猜测的前提下给出一个可执行的修复项**，
+而不是你对失败原因有多确定。诊断已经很清楚但缺少必要证据、无法给出可靠修复项时，属于 insufficient。
+- 能给出一个具体、可执行的修复项 → `evidence_status="sufficient"`，并给出**恰好一个** item。
+- 不能给出修复项 → `evidence_status="insufficient"`、`items=[]`，并在 `unknowns` 中逐条写明
+  缺少什么证据、如何获得。这是正确输出，不是失败；此时给出 item 反而违反“不得用猜测填补未知项”。
+给出 item 时，该 item 还有两项强制要求（缺失即判定为无效响应，整轮终止）：
+- `items[].evidence_refs` 必须**非空**，且每条的 `line_excerpt` 必须是对当前评测证据的**原文摘录**；
+- `items[].falsifies` 必须**非空**，至少写明一个被当前证据否定的历史假设或方案 ID。
+不要在此响应中返回源码文件。
+"""
 
 
 INITIAL_PLAN_OUTPUT_CONTRACT = r"""
 只返回一个 JSON 对象，不要使用 Markdown 代码围栏：
 {
   "evidence_status": "sufficient",
-  "observations": [],
-  "ruled_out": [],
-  "unknowns": [],
+  "observations": [
+    {"source": "reference", "line_excerpt": "原始材料摘录", "interpretation": "该摘录直接支持的事实"}
+  ],
+  "ruled_out": [
+    {"hypothesis": "已排除的假设", "reason": "排除理由", "evidence_refs": [{"source": "contract", "line_excerpt": "依据摘录"}]}
+  ],
+  "unknowns": [
+    {"question": "尚不确定的问题", "required_evidence": "需要什么证据才能确定"}
+  ],
   "diagnosis": "直接概括 reference 语义和实现约束",
   "items": [
     {
@@ -96,15 +138,19 @@ INITIAL_PLAN_OUTPUT_CONTRACT = r"""
       "hypothesis": "一个可验证的端到端 AscendC 实现假设",
       "change": "覆盖算法、block/tiling、内存和数据搬运、dtype/shape/tail、Host ABI 及源码布局的完整蓝图",
       "expected_signal": "静态校验、编译、全部正确性用例和有效 benchmark score 均成功",
-      "target_files": ["model_new_ascendc.py", "kernel/pybind11.cpp", "kernel/<name>.cpp"],
+      "target_files": ["model_new_ascendc.py", "op_kernel/<op>_kernel.asc", "op_host/<op>.asc", "op_extension/<op>_torch.cpp", "op_extension/register.cpp", "CMakeLists.txt"],
       "edit_scope": "file",
       "allow_interface_change": true,
-      "evidence_refs": [],
+      "evidence_refs": [{"source": "reference", "line_excerpt": "依据摘录"}],
       "falsifies": [],
       "order": 1
     }
   ]
 }
+`observations`、`ruled_out`、`unknowns` 和 `items[].evidence_refs` 的元素必须是对象，
+键名与上面完全一致；不得写成字符串数组，缺键或空字符串都会被判定为无效响应。
+`items[].falsifies` 是**字符串数组**；bootstrap 阶段没有已否定方案时保持 `[]`。
+bootstrap 阶段尚无评测证据时，这些数组可以留空 `[]`，但一旦填写必须符合上述对象形状。
 返回恰好一个完整 baseline item，不要在此响应中返回源码文件。
 不得使用或建议 TileLang、其他 DSL、中间实现或 source-to-source conversion。
 """.strip()
@@ -123,7 +169,10 @@ COMPILATION_REPAIR_CONTRACT = """
 STAGE_CONTRACTS = {
     "bootstrap_generation": """
 - 生成覆盖 reference 和全部测试用例约束的完整端到端实现。
-- 明确 block/tiling、数据搬运、dtype、shape、tail、Host ABI 和文件布局，不得只生成局部脚手架。
+- 明确 tiling、数据搬运、dtype、layout、shape、tail、Host/Kernel 边界和完整目录布局。
+- 使用 CANNBot 直调工程模式：项目 CMake 编译 ASC Kernel 与 PyTorch 扩展，
+  `TORCH_LIBRARY` 同时注册 PrivateUse1 和 Meta，`ModelNew` 通过 `torch.ops` 调用。
+- 禁止生成 `kernel/pybind11.cpp`、`PYBIND11_MODULE` 或 `*_do` 历史 ABI。
 """.strip(),
     "compile_repair": COMPILATION_REPAIR_CONTRACT,
     "runtime_repair": """
@@ -364,10 +413,10 @@ def render_stage_context(selection: Any) -> str:
     metadata["rendered_skill_ids"] = rendered_skill_ids
     metadata["rendered_knowledge_module_sections"] = rendered_knowledge_sections
     if full_selected:
-        metadata["rendered_structured_ids"] = [
-            str(item.get("fact_id") or item.get("card_id"))
+        metadata["rendered_evidence_ids"] = [
+            str(item.get("evidence_id"))
             for item in payload.get("api_facts", [])
-            if item.get("fact_id") or item.get("card_id")
+            if item.get("evidence_id")
         ]
         metadata["rendered_runtime_fact_ids"] = list(
             metadata.get("runtime_fact_ids", [])
@@ -518,6 +567,14 @@ def build_prompt(
 """
 
 
+# 规划模式由调用方显式给出，不再从工作区或历史的空/非空状态推断。
+# 三种模式与输出契约一一对应，避免同一份 planning 请求同时满足两类互斥要求。
+PLANNING_MODE_BLUEPRINT = "bootstrap_blueprint"
+PLANNING_MODE_PLAN = "plan"
+PLANNING_MODE_DIAGNOSE = "diagnose"
+PLANNING_MODES = (PLANNING_MODE_BLUEPRINT, PLANNING_MODE_PLAN, PLANNING_MODE_DIAGNOSE)
+
+
 def build_plan_prompt(
     *,
     reference_code: str,
@@ -526,11 +583,12 @@ def build_plan_prompt(
     result: EvalResult | None,
     mode: str,
     history: list[dict],
-    diagnosis_required: bool = False,
+    planning_mode: str = PLANNING_MODE_PLAN,
     knowledge_context: str = "",
-    initial: bool = False,
     repair_state: dict[str, Any] | None = None,
 ) -> str:
+    if planning_mode not in PLANNING_MODES:
+        raise ValueError(f"unsupported planning mode: {planning_mode}")
     feedback = (
         json.dumps(
             compact_evaluation(result),
@@ -544,6 +602,14 @@ def build_plan_prompt(
     for record in history[-8:]:
         repair = record.get("repair_attempt", {}) if isinstance(record, dict) else {}
         item = record.get("plan_item", {}) if isinstance(record, dict) else {}
+        evaluation = record.get("evaluation", {}) if isinstance(record, dict) else {}
+        direct_evidence = {
+            "failure_stage": evaluation.get("failure_stage"),
+            "failure_code": evaluation.get("failure_code"),
+            "error_excerpt": str(evaluation.get("error_excerpt") or evaluation.get("error") or "")[:2000],
+            "details_path": evaluation.get("details_path"),
+            "candidate": record.get("candidate") if isinstance(record, dict) else None,
+        }
         ledger_lines.append(
             " | ".join(
                 (
@@ -553,11 +619,12 @@ def build_plan_prompt(
                     f"cleared={repair.get('cleared_error_ids', [])}",
                     f"new={repair.get('new_error_ids', [])}",
                     f"progress={repair.get('progress', {})}",
+                    f"evidence={json.dumps(direct_evidence, ensure_ascii=False)}",
                 )
             )
         )
     ledger = "\n".join(ledger_lines) or "（没有已完成 attempt）"
-    if initial:
+    if planning_mode == PLANNING_MODE_BLUEPRINT:
         purpose = (
             "在生成任何源码前，用 AscendC 术语给出一个完整实现蓝图。"
         )
@@ -566,22 +633,29 @@ def build_plan_prompt(
             "只能依据 reference 语义、测试用例、CANN 约束和 AscendC 执行模型推理。"
         )
         output_contract = INITIAL_PLAN_OUTPUT_CONTRACT
-    else:
+    elif planning_mode == PLANNING_MODE_DIAGNOSE:
         purpose = (
             "诊断上一方案重复失败的原因；只有证据充分时才给出实质不同的下一方案。"
-            if diagnosis_required
-            else "创建下一项证据驱动的实施计划。"
         )
         execution_rules = (
             "针对当前 accepted implementation 返回一个纵向完整的下一步。一个主假设需要时可以修改多个文件，\n"
-            "但不得换名重复失败方案。DIAGNOSE 证据不足时返回零 item，不得猜测源码根因。"
+            "但不得换名重复失败方案。优先使用最新评测证据和 Attempt 记录中的 evidence 原文；"
+            "错误 ID/hash 只用于稳定关联，不能替代原始错误。"
+            "DIAGNOSE 证据不足时返回零 item，不得猜测源码根因。"
         )
-        output_contract = (
-            DIAGNOSE_OUTPUT_CONTRACT if diagnosis_required else PLAN_OUTPUT_CONTRACT
+        output_contract = DIAGNOSE_OUTPUT_CONTRACT
+    else:
+        purpose = "创建下一项证据驱动的实施计划。"
+        execution_rules = (
+            "针对当前 accepted implementation 返回一个纵向完整的下一步。一个主假设需要时可以修改多个文件，\n"
+            "但不得换名重复失败方案。"
         )
+        output_contract = PLAN_OUTPUT_CONTRACT
     repair_section = (
         f"## 当前轨迹修复状态\n{render_repair_state(repair_state)}\n\n"
-        if repair_state and mode == "bootstrap" and not initial
+        if repair_state
+        and mode == "bootstrap"
+        and planning_mode != PLANNING_MODE_BLUEPRINT
         else ""
     )
     return f"""# AscendC {mode} 规划
@@ -592,9 +666,9 @@ def build_plan_prompt(
 ## 强制规则
 {RULES}
 
-项目的 Host launch ABI 固定：pybind 声明并调用 extern "C" *_do wrapper；每个 wrapper 与其
-__aicore__ Kernel 放在一起，并使用 kernel<<<blockDim, nullptr, stream>>>。
-不支持 acl/acl_rt_launch.h 和 ACLRT_LAUNCH_KERNEL。
+项目边界固定为 CANNBot 直调工程：ASC CMake 构建 Kernel 与扩展，PyTorch dispatcher
+注册 PrivateUse1 和 Meta，Python `ModelNew` 加载共享库并通过 `torch.ops` 调用。
+禁止规划 pybind 模块、`*_do` wrapper 或旧 `kernel/` 目录布局。
 
 ## Reference PyTorch model（只读）
 ```python
@@ -623,6 +697,28 @@ __aicore__ Kernel 放在一起，并使用 kernel<<<blockDim, nullptr, stream>>>
 {repair_section}## 输出契约
 {output_contract}
 """
+
+
+def _sanitize_target_files(target_files: list[str]) -> tuple[list[str], list[str]]:
+    """Split planner-suggested target paths into accepted and rejected ones.
+
+    A planner may reference legacy layouts (``kernel/``, ``python/``) or invent
+    names such as ``model_new.py``. The bundle whitelist rejects those paths
+    after generation, which fails the whole response; dropping them here keeps
+    the illegal instruction out of the generator prompt in the first place.
+    """
+
+    accepted: list[str] = []
+    rejected: list[str] = []
+    for path in target_files:
+        stripped = path.strip()
+        if not stripped:
+            continue
+        try:
+            accepted.append(validate_relative_path(stripped))
+        except ValueError:
+            rejected.append(stripped)
+    return accepted, rejected
 
 
 def parse_plan(
@@ -680,6 +776,18 @@ def parse_plan(
         for item in unknowns
     ):
         raise ValueError("planning response unknowns must contain complete unknown objects")
+    # A DIAGNOSE that returns zero items while listing the evidence it is
+    # missing is operatively "insufficient" whatever label it picked. Re-label
+    # it instead of discarding a correct diagnosis over the enum value: the
+    # runner then records a resumable `blocked` rather than a hard `paused`.
+    if (
+        allow_insufficient
+        and evidence_status == "sufficient"
+        and not payload["items"]
+        and unknowns
+    ):
+        evidence_status = "insufficient"
+        payload["evidence_status"] = evidence_status
     if evidence_status == "insufficient":
         if not allow_insufficient:
             raise ValueError("only DIAGNOSE may return insufficient evidence")
@@ -714,6 +822,13 @@ def parse_plan(
         falsifies = item.get("falsifies", [])
         if not isinstance(target_files, list) or not all(isinstance(path, str) for path in target_files):
             raise ValueError(f"plan item {index} target_files must be a string list")
+        sanitized_targets, rejected_targets = _sanitize_target_files(target_files)
+        if rejected_targets:
+            warnings.warn(
+                f"plan item {index} target_files outside the CANNBot source whitelist "
+                f"were dropped: {rejected_targets}",
+                stacklevel=2,
+            )
         if not isinstance(evidence_refs, list) or not all(isinstance(ref, dict) for ref in evidence_refs):
             raise ValueError(f"plan item {index} evidence_refs must be an object list")
         if not isinstance(falsifies, list) or not all(isinstance(value, str) for value in falsifies):
@@ -730,7 +845,7 @@ def parse_plan(
                 **{key: str(item[key]).strip() for key in required if key != "change"},
                 "change": change,
                 "expected_signal": expected_signal,
-                "target_files": [path.strip() for path in target_files if path.strip()],
+                "target_files": sanitized_targets,
                 "edit_scope": str(item.get("edit_scope", "file")).strip() or "file",
                 "allow_interface_change": bool(
                     item.get("allow_interface_change", item.get("allow_abi_change", False))

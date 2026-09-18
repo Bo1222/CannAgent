@@ -228,6 +228,19 @@ def _contains_int8_tensor(value):
     return False
 
 
+def _linear_index_to_coord(linear_index: int, shape) -> tuple:
+    """把扁平线性下标还原成多维坐标。"""
+    if not shape:
+        return ()
+    rem = linear_index
+    coord = [0] * len(shape)
+    for dim in range(len(shape) - 1, -1, -1):
+        size = shape[dim]
+        coord[dim] = rem % size
+        rem //= size
+    return tuple(coord)
+
+
 def _tensor_diff_summary(lhs: torch.Tensor, rhs: torch.Tensor):
     if lhs.shape != rhs.shape:
         return f"shape mismatch: ref={tuple(lhs.shape)}, cand={tuple(rhs.shape)}"
@@ -264,12 +277,29 @@ def _tensor_diff_summary(lhs: torch.Tensor, rhs: torch.Tensor):
         max_abs = diff.max().item() if diff.numel() else 0.0
         mean_abs = diff.mean().item() if diff.numel() else 0.0
         passed, mere, mare, threshold, mare_threshold = _check_precision_mere_mare(rhs, lhs)
+        # 定位信息：整数路径一直报告 first_mismatch，浮点路径此前只有聚合统计，
+        # 模型看得出“错了”但看不出“错在哪”，无法区分整体偏移、尾部残留还是某个维度错位。
+        # 这里用与 MERE 相同的逐元素相对误差判据补一个有界样本。
+        locate = ""
+        if diff.numel() and threshold > 0:
+            rel = diff / (lhs_fp.abs() + 1e-12)
+            element_bad = rel > threshold
+            bad_count = int(element_bad.sum().item())
+            if bad_count:
+                first_linear = int(torch.nonzero(element_bad.reshape(-1), as_tuple=False)[0].item())
+                first_index = _linear_index_to_coord(first_linear, tuple(lhs.shape))
+                locate = (
+                    f", rel_mismatch_ratio={bad_count / total:.4g}, "
+                    f"first_mismatch(index={first_index}, "
+                    f"ref={lhs[first_index].item():.6g}, cand={rhs[first_index].item():.6g})"
+                )
         return (
             f"dtype(ref={lhs.dtype}, cand={rhs.dtype}), "
             f"max_abs_diff={max_abs:.6g}, mean_abs_diff={mean_abs:.6g}, "
             f"MERE={mere:.6g}, MARE={mare:.6g}, "
             f"threshold={threshold:.6g}, mare_threshold={mare_threshold:.6g}, "
             f"passed={passed}"
+            f"{locate}"
         )
 
     # 整数类型：回退到元素级对比
@@ -507,7 +537,7 @@ def _run_verification(
     task_dir = _resolve_task_dir(op)
     ref_path = task_dir / "model.py"
     cand_path = task_dir / "model_new_ascendc.py"
-    kernel_build_dir = task_dir / "kernel" / "build"
+    kernel_build_dir = task_dir / "build"
     report["task_dir"] = str(task_dir)
     report["reference"] = str(ref_path)
     report["candidate"] = str(cand_path)
@@ -521,7 +551,7 @@ def _run_verification(
         report["error"] = f"missing candidate model: {cand_path}"
         _persist_report(report, report_path)
         return report
-    # kernel/build is optional: model_new_ascendc.py may manage its own sys.path.
+    # build is optional: model_new_ascendc.py may load the shared library by path.
     inserted_paths = []
     paths_to_add = [str(WORKDIR)]
     if kernel_build_dir.is_dir():

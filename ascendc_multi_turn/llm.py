@@ -11,6 +11,11 @@ from llm_config import get_env
 from .models import LLMCallConfig, LLMResponse
 
 _SYSTEM_PROMPTS = {
+    "diagnostic": (
+        "api-diagnostic-v1",
+        "你正在执行 API 连通性与响应格式诊断。只返回用户消息要求的 JSON 对象，不生成源码，"
+        "不使用 Markdown，不增加未要求的字段。",
+    ),
     "planner": (
         "ascendc-planner-v2",
         "你是 AscendC 实现规划器。只能依据给定的 reference、测试用例、当前实现、评测证据和已选知识，"
@@ -76,12 +81,29 @@ class OpenAICompatibleProvider:
         if not api_key:
             raise ValueError("LLM API key is empty")
         self.model = model
-        self.url = base_url.rstrip("/") + "/chat/completions"
+        self.base_url = base_url.rstrip("/")
+        self.url = self.base_url + "/chat/completions"
         self.api_key = api_key
         self.temperature = temperature
         self.max_tokens = max_tokens
         self.timeout = timeout
         self.provider = provider
+
+    def list_models(self) -> dict:
+        request = urllib.request.Request(
+            self.base_url + "/models",
+            headers={"Authorization": f"Bearer {self.api_key}"},
+            method="GET",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=self.timeout) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as error:
+            detail = error.read().decode("utf-8", errors="replace")
+            raise RuntimeError(f"LLM API HTTP {error.code}: {detail[:2000]}") from error
+        if not isinstance(payload, dict):
+            raise TypeError("invalid model catalog response")
+        return payload
 
     @classmethod
     def from_env(cls, config):
@@ -223,7 +245,7 @@ class MockProvider:
                                 if initial
                                 else "higher valid score"
                             ),
-                            "target_files": ["kernel/mock.cpp"],
+                            "target_files": ["op_kernel/mock_kernel.asc", "op_extension/mock_torch.cpp"],
                             "edit_scope": "file",
                             "allow_interface_change": initial,
                             "evidence_refs": (
@@ -256,27 +278,29 @@ class MockProvider:
                     "reasoning_effort_requested": call_config.reasoning_effort,
                 },
             )
-        module = "_mock_ascendc_ext"
         payload = {
             "analysis": f"mock generation round {self.calls}",
             "files": [
                 {
                     "path": "model_new_ascendc.py",
                     "content": (
-                        "import torch\nimport torch.nn as nn\n\n"
+                        "import pathlib\nimport torch\nimport torch.nn as nn\n\n"
+                        "torch.ops.load_library(str(pathlib.Path(__file__).parent / 'build/libmock_ascendc.so'))\n\n"
                         "class ModelNew(nn.Module):\n"
                         "    def forward(self, x, *args):\n"
-                        "        return x\n"
+                        "        return torch.ops.cannagent.mock(x)\n"
                     ),
                 },
-                {
-                    "path": "kernel/pybind11.cpp",
-                    "content": f"#include <pybind11/pybind11.h>\nPYBIND11_MODULE({module}, m) {{}}\n",
-                },
-                {
-                    "path": "kernel/mock.cpp",
-                    "content": f"// mock AscendC source, round {self.calls}\n",
-                },
+                {"path": "op_kernel/mock_tiling.h", "content": "#pragma once\nstruct MockTiling {};\n"},
+                {"path": "op_kernel/mock_kernel.asc", "content": f"// mock AscendC kernel round {self.calls}\n"},
+                {"path": "op_host/mock.asc", "content": "// mock host launch\n"},
+                {"path": "op_host/data_utils.h", "content": "#pragma once\n"},
+                {"path": "op_extension/mock_torch.cpp", "content": "// mock torch implementation\n"},
+                {"path": "op_extension/ops.h", "content": "#pragma once\n"},
+                {"path": "op_extension/register.cpp", "content": "TORCH_LIBRARY(cannagent, m) {}\n// PrivateUse1\n// Meta\n"},
+                {"path": "scripts/golden.py", "content": "# golden fixture\n"},
+                {"path": "scripts/test_torch.py", "content": "# torch fixture\n"},
+                {"path": "CMakeLists.txt", "content": "cmake_minimum_required(VERSION 3.16)\nproject(mock LANGUAGES ASC CXX)\nfind_package(ASC REQUIRED)\nadd_library(mock_ascendc SHARED op_kernel/mock_kernel.asc op_host/mock.asc op_extension/mock_torch.cpp op_extension/register.cpp)\n"},
             ],
             "delete": [],
         }

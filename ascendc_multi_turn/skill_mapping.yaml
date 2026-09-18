@@ -12,23 +12,7 @@
     "flashattention": ["flashattention", "flash_attention", "attention", "gqa", "mha", "mla"],
     "simt": ["simt", "thread", "warp", "discrete", "scatter", "gather"]
   },
-  "standing_contracts": {"skills": [
-    {
-      "id": "standing_operator_semantics",
-      "role": "foundation",
-      "purpose": "在活动 debug 路由变化时持续提供算子索引契约。",
-      "expected_artifact": "保留已证明算子语义的修复。",
-      "when": {"always": true},
-      "provide": ["算子语义不变量"],
-      "exclude": ["无关算子族"],
-      "references": [
-        {"knowledge_module_id": "cannagent.operator-invariants", "section_id": "gelu", "operators": ["gelu"], "headings": ["GELU semantic invariants"]},
-        {"knowledge_module_id": "cannagent.operator-invariants", "section_id": "layernorm", "operators": ["layernorm", "layer_norm"], "headings": ["LayerNorm semantic invariants"]},
-        {"knowledge_module_id": "cannagent.operator-invariants", "section_id": "permute", "operators": ["permute"], "headings": ["Permute semantic invariants"]},
-        {"knowledge_module_id": "cannagent.broadcast-semantics", "section_id": "standing-broadcast", "operator_families": ["broadcast"]}
-      ]
-    }
-  ]},
+  "standing_contracts": {"skills": []},
   "stages": {
     "operator_analysis": {"skills": [
       {
@@ -53,10 +37,9 @@
         "provide": ["算子", "活动 profile", "用例特征", "正确性证据"],
         "exclude": ["未验证 API signature", "无关算子族"],
         "references": [
-          {"knowledge_module_id": "cannagent.operator-invariants", "section_id": "gelu", "operators": ["gelu"], "headings": ["GELU semantic invariants"]},
-          {"knowledge_module_id": "cannagent.operator-invariants", "section_id": "layernorm", "operators": ["layernorm", "layer_norm"], "headings": ["LayerNorm semantic invariants"]},
-          {"knowledge_module_id": "cannagent.operator-invariants", "section_id": "permute", "operators": ["permute"], "headings": ["Permute semantic invariants"]},
-          {"knowledge_module_id": "cannagent.broadcast-semantics", "section_id": "all", "operator_families": ["broadcast"]}
+          {"knowledge_module_id": "cannbot.ascendc-api-best-practices.references.api-precision", "section_id": "precision", "headings": ["精度原则"]},
+          {"knowledge_module_id": "cannbot.ascendc-tiling-design.references.elewise.patterns", "section_id": "elementwise-pattern", "operator_families": ["elementwise"]},
+          {"knowledge_module_id": "cannbot.ascendc-tiling-design.references.reduction.patterns", "section_id": "reduction-pattern", "operator_families": ["reduction"]}
         ]
       },
       {
@@ -116,16 +99,13 @@
     "code_generation": {"skills": [
       {
         "id": "initial_direct_launch",
-        "purpose": "约束初始 CannAgent pybind/wrapper/Kernel launch 结构。",
-        "expected_artifact": "一致的 NPU pybind、*_do wrapper、Kernel entry、descriptor 和 stream 边界。",
+        "purpose": "约束初始 CANNBot ASC/C++ CMake 与 PyTorch dispatcher 工程结构。",
+        "expected_artifact": "完整的 op_kernel/op_host/op_extension 工程、PrivateUse1/Meta 注册和 torch.ops 调用。",
         "when": {"always": true},
-        "provide": ["项目 Host ABI", "模块名", "I/O signature"],
-        "exclude": ["registry launch", "CMake/run/test 脚手架", "stream(true)", "stream(false)", "未验证 include"],
+        "provide": ["工程目录契约", "dispatcher namespace", "I/O signature"],
+        "exclude": ["kernel/pybind11.cpp", "*_do ABI", "未验证 include"],
         "references": [
-          {"knowledge_module_id": "cannagent.host-abi", "section_id": "all"},
-          {"knowledge_module_id": "cannagent.direct-launch-abi", "section_id": "all"},
           {"knowledge_module_id": "cannbot.ascendc-direct-invoke-template.references.kernel_launch_details", "section_id": "dataflow", "headings": ["内存层次与数据流", "同步机制", "如何处理不对齐的数据？"]},
-          {"knowledge_module_id": "cannbot.ascendc-registry-invoke-to-direct-invoke.references.custom-op-to-kernel-launch-checklist", "section_id": "launch-abi", "headings": ["14. Host launch ABI 一致性"]},
           {"knowledge_module_id": "cannbot.torch-ascendc-op-extension.routes.direct-invoke", "section_id": "architecture", "headings": ["架构原理"]}
         ]
       }
@@ -133,19 +113,12 @@
     "host_integration_debug": {"skills": [
       {
         "id": "host_integration_debug",
-        "purpose": "只修复 Host C++、pybind、include、NPU tensor、stream、wrapper 或 launch 边界失败。",
-        "expected_artifact": "保留 Kernel 数学语义的一项最小 Host/边界修复。",
+        "purpose": "只修复 Host ASC/C++、dispatcher 注册、include、NPU tensor 或 launch 边界失败。",
+        "expected_artifact": "保留 Kernel 数学语义和公开 torch.ops schema 的最小 Host/边界修复。",
         "when": {"always": true},
-        "provide": ["诊断源码文件", "symbol domain", "wrapper/Kernel 参数"],
+        "provide": ["诊断源码文件", "symbol domain", "dispatcher/Kernel 参数"],
         "exclude": ["Kernel 数学修改", "无关 API 教程", "未验证 stream 形式"],
         "references": [
-          {"knowledge_module_id": "cannagent.host-abi", "section_id": "all"},
-          {"knowledge_module_id": "cannagent.host-cpp-contract", "section_id": "all", "when_domains": ["host_abi"]},
-          {"knowledge_module_id": "cannagent.compiler-constraints", "section_id": "ownership", "headings": ["Compile ownership constraints"]},
-          {"knowledge_module_id": "cannagent.direct-launch-abi", "section_id": "all", "when_domains": ["launch_abi"]},
-          {"knowledge_module_id": "cannbot.ascendc-registry-invoke-to-direct-invoke.references.custom-op-to-kernel-launch-checklist", "section_id": "entry-signature", "when_domains": ["launch_abi"], "headings": ["9. 入口文件检查", "14. Host launch ABI 一致性"]},
-          {"knowledge_module_id": "cannbot.ascendc-registry-invoke-to-direct-invoke.SKILL", "section_id": "entry-and-dual-pass", "when_domains": ["launch_abi"], "headings": ["Step 5: 入口改造（原则 3 第 1 项）", "Step 8: `-xasc` host/device 双 pass 编译兼容（有条件触发）", "常见坑"]},
-          {"knowledge_module_id": "cannbot.ascendc-registry-invoke-to-direct-invoke.references.host-driver-template", "section_id": "gm-notes", "when_domains": ["launch_abi"], "headings": ["注意事项"]},
           {"knowledge_module_id": "cannbot.torch-ascendc-op-extension.references.direct-invoke.troubleshooting", "section_id": "host-troubleshooting", "when_domains": ["host_abi"], "headings": ["编译期", "链接期", "运行期"]}
         ]
       }
@@ -159,8 +132,6 @@
         "provide": ["compiler diagnostic", "诊断源码", "准确 symbol", "installed declaration"],
         "exclude": ["性能建议", "精度教程", "Host 脚手架", "无关 API"],
         "references": [
-          {"knowledge_module_id": "cannagent.compiler-constraints", "section_id": "all"},
-          {"knowledge_module_id": "cannagent.direct-launch-abi", "section_id": "gm-boundary", "when_domains": ["launch_abi"], "headings": ["Host, GM, and descriptor boundary"]},
           {"knowledge_module_id": "cannbot.ascendc-api-best-practices.references.api-datacopy", "section_id": "compile", "when_any": ["datacopy", "datacopypad", "blocklen", "padding"], "headings": ["选择规则", "DataCopyPad 参数选择：统一使用 Ext 版本", "常见错误与调试"]},
           {"knowledge_module_id": "cannbot.ascendc-api-best-practices.references.api-buffer", "section_id": "compile", "when_any": ["tque", "tbuf", "tpipe", "alloctensor", "freetensor", "initbuffer"], "headings": ["TQue 详解", "TBuf 详解"]},
           {"knowledge_module_id": "cannbot.ascendc-api-best-practices.references.api-pipeline", "section_id": "compile", "when_any": ["enque", "deque", "setflag", "waitflag", "pipebarrier"], "headings": ["解决方案", "常见误区"]},
@@ -181,8 +152,6 @@
         "provide": ["runtime code", "failing case", "launch 参数", "copy span"],
         "exclude": ["性能建议", "盲目 cast", "工作流命令"],
         "references": [
-          {"knowledge_module_id": "cannagent.kernel-memory-contract", "section_id": "all"},
-          {"knowledge_module_id": "cannagent.direct-launch-abi", "section_id": "descriptor-boundary", "headings": ["Host, GM, and descriptor boundary"]},
           {"knowledge_module_id": "cannbot.ascendc-runtime-debug.references.debug_workflow", "section_id": "507035", "headings": ["快速决策树", "507035 向量核异常"]},
           {"knowledge_module_id": "cannbot.ascendc-runtime-debug.references.error_codes", "section_id": "runtime-codes", "headings": ["NPU 运行时错误码（5xxxxx）", "错误码分类速查"]},
           {"knowledge_module_id": "cannbot.ascendc-runtime-debug.references.kernel_binary_debug", "section_id": "binary", "when_any": ["kernel not found", "binary", "opparasize", "cache"]},

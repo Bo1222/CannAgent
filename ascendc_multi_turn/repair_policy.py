@@ -6,7 +6,10 @@ from dataclasses import asdict, dataclass, field
 from .diagnostics import diagnostics_for_result
 from .models import EvalResult, FileBundle
 
-_PATH = re.compile(r"(?:model_new_ascendc\.py|kernel/[A-Za-z0-9_./-]+\.(?:cpp|cc|cxx|h|hpp))")
+_PATH = re.compile(
+    r"(?:model_new_ascendc\.py|CMakeLists\.txt|"
+    r"(?:op_kernel|op_host|op_extension|scripts)/[A-Za-z0-9_./-]+\.(?:asc|cpp|cc|cxx|h|hpp|py))"
+)
 
 
 @dataclass(frozen=True)
@@ -44,8 +47,8 @@ def _stage(previous: EvalResult | None, workflow_phase: str) -> str:
     if failure in {"runtime", "acl_runtime"}:
         return "runtime_repair"
     if failure == "correctness":
-        structured = previous.structured_failure or {}
-        if structured.get("runtime_code") or structured.get("device_exception"):
+        evidence = previous.failure_evidence or {}
+        if evidence.get("runtime_code") or evidence.get("device_exception"):
             return "runtime_repair"
         return "correctness_repair"
     return "bootstrap_generation"
@@ -89,8 +92,8 @@ def build_repair_policy(
             sorted(
                 path
                 for path in current.files
-                if path.startswith("kernel/")
-                and (stage != "optimization" or path != "model_new_ascendc.py")
+                if path.startswith(("op_kernel/", "op_host/", "op_extension/", "scripts/"))
+                or path in {"model_new_ascendc.py", "CMakeLists.txt"}
             )
         )
 
@@ -99,9 +102,9 @@ def build_repair_policy(
     if stage == "runtime_repair":
         markers = (
             "#include",
-            "PYBIND11_MODULE",
-            "is_npu(",
-            "getCurrentNPUStream",
+            "TORCH_LIBRARY",
+            "PrivateUse1",
+            "Meta",
             "Cast(",
             "Muls(",
             "Add(",
@@ -110,17 +113,18 @@ def build_repair_policy(
     elif stage == "correctness_repair":
         markers = (
             "#include",
-            "PYBIND11_MODULE",
-            "is_npu(",
-            "getCurrentNPUStream",
-            "<<<",
+            "TORCH_LIBRARY",
+            "PrivateUse1",
+            "Meta",
+            "torch.ops",
         )
         protected_ids.extend(("build_and_host_abi", "kernel_launch"))
     elif stage in {"performance_tuning", "optimization"}:
         markers = (
-            "PYBIND11_MODULE",
-            "is_npu(",
-            "getCurrentNPUStream",
+            "TORCH_LIBRARY",
+            "PrivateUse1",
+            "Meta",
+            "torch.ops",
         )
         protected_ids.extend(("public_interface", "host_abi"))
     else:

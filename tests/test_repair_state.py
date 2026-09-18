@@ -7,6 +7,7 @@ from pathlib import Path
 
 from ascendc_multi_turn.diagnostics import extract_diagnostic_records
 from ascendc_multi_turn.models import EvalResult, FileBundle
+from ascendc_multi_turn.prompts import PLANNING_MODE_DIAGNOSE, build_plan_prompt
 from ascendc_multi_turn.repair_state import RepairStateManager
 
 
@@ -75,7 +76,7 @@ class RepairStateTests(unittest.TestCase):
         self.assertEqual(first.symbol, "Muls")
         self.assertEqual(first.category, "kernel_api_overload")
 
-    def test_initial_source_validation_failure_is_not_a_repair_base(self) -> None:
+    def test_initial_source_validation_failure_becomes_a_repair_base(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             manager = RepairStateManager(Path(temporary))
             result = EvalResult(
@@ -85,8 +86,75 @@ class RepairStateTests(unittest.TestCase):
                 failure_stage="ascendc_source_validation",
             )
             decision = manager.decide(None, result)
-            self.assertEqual(decision.outcome, "INITIAL_REJECT")
-            self.assertFalse(decision.accept_candidate)
+            self.assertEqual(decision.outcome, "INITIAL_KEEP")
+            self.assertTrue(decision.accept_candidate)
+
+    def test_source_validation_rules_are_distinct_and_partial_fix_is_kept(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            manager = RepairStateManager(root)
+            before = _failure(
+                root,
+                "source1.log",
+                [
+                    "CMakeLists.txt:1: error[missing_asc_package]: project CMake must contain find_package(ASC",
+                    "CMakeLists.txt:1: error[missing_asc_language]: project CMake must contain LANGUAGES ASC",
+                ],
+            )
+            before.failure_stage = "ascendc_source_validation"
+            after = _failure(
+                root,
+                "source2.log",
+                [
+                    "CMakeLists.txt:1: error[missing_asc_language]: project CMake must contain LANGUAGES ASC",
+                ],
+            )
+            after.failure_stage = "ascendc_source_validation"
+            records = extract_diagnostic_records(
+                stage=before.failure_stage,
+                output=before.error_excerpt,
+            )
+            self.assertEqual(
+                [item.category for item in records],
+                ["missing_asc_package", "missing_asc_language"],
+            )
+            self.assertEqual([item.source_file for item in records], ["CMakeLists.txt"] * 2)
+            decision = manager.decide(before, after)
+            self.assertEqual(decision.outcome, "PARTIAL_KEEP")
+            self.assertTrue(decision.accept_candidate)
+            self.assertEqual(len(decision.delta["cleared"]), 1)
+
+    def test_diagnose_prompt_projects_raw_attempt_evidence(self) -> None:
+        error = (
+            "CMakeLists.txt:1: error[missing_asc_language]: "
+            "project CMake must contain LANGUAGES ASC"
+        )
+        prompt = build_plan_prompt(
+            reference_code="return x + y",
+            cases_text="{}",
+            current=None,
+            result=None,
+            mode="bootstrap",
+            history=[
+                {
+                    "attempt_id": 3,
+                    "candidate": "round_03/candidate.json",
+                    "evaluation": {
+                        "failure_stage": "ascendc_source_validation",
+                        "failure_code": "ascendc_source_validation_failed",
+                        "error_excerpt": error,
+                    },
+                    "repair_attempt": {
+                        "new_error_ids": ["missing_asc_language:unknown:abc"],
+                    },
+                    "plan_item": {"hypothesis": "build a project"},
+                }
+            ],
+            planning_mode=PLANNING_MODE_DIAGNOSE,
+        )
+        self.assertIn(error, prompt)
+        self.assertIn('"candidate": "round_03/candidate.json"', prompt)
+        self.assertIn("错误 ID/hash 只用于稳定关联", prompt)
 
     def test_partial_compile_fix_becomes_base_and_regression_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

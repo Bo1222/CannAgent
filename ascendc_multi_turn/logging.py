@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from datetime import datetime, timezone
@@ -58,6 +59,51 @@ class TrajectoryLogger:
         temporary.write_text(json.dumps(self.data, ensure_ascii=False, indent=2), encoding="utf-8")
         os.replace(temporary, self.log_path)
 
+    @staticmethod
+    def _write_private_text(path: Path, text: str) -> None:
+        """Atomically persist one model artifact with owner-only permissions."""
+
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_name(path.name + ".tmp")
+        temporary.write_text(text, encoding="utf-8")
+        temporary.chmod(0o600)
+        os.replace(temporary, path)
+        path.chmod(0o600)
+
+    @staticmethod
+    def _reasoning_path(response_path: Path) -> Path:
+        name = response_path.name
+        if name.startswith("response"):
+            name = "reasoning" + name[len("response") :]
+        else:
+            name = f"{response_path.stem}_reasoning{response_path.suffix}"
+        return response_path.with_name(name)
+
+    def persist_response_artifacts(
+        self,
+        response_path: Path,
+        *,
+        content: str,
+        reasoning_content: str,
+        reasoning_log_mode: str,
+    ) -> tuple[Path, Path | None]:
+        """Persist final content and, in full mode, the raw reasoning text."""
+
+        self._write_private_text(response_path, content)
+        reasoning_path = None
+        if reasoning_log_mode == "full" and reasoning_content:
+            reasoning_path = self._reasoning_path(response_path)
+            self._write_private_text(reasoning_path, reasoning_content)
+        return response_path, reasoning_path
+
+    def _artifact_reference(self, path: Path | None) -> str | None:
+        if path is None:
+            return None
+        try:
+            return path.resolve().relative_to(self.state_dir.resolve()).as_posix()
+        except ValueError:
+            return str(path.resolve())
+
     def save_call(
         self,
         round_num: int,
@@ -67,6 +113,8 @@ class TrajectoryLogger:
         evaluation_round: int | None = None,
         retry: int = 0,
         prompt_metadata: dict[str, Any] | None = None,
+        response_content_path: Path | None = None,
+        reasoning_content_path: Path | None = None,
     ) -> None:
         # Raw model output is stored once in round_N/response.txt.  Keep this
         # append-only file compact so it can be aggregated across many ops.
@@ -83,12 +131,18 @@ class TrajectoryLogger:
             },
             "prompt_metadata": prompt_metadata or {},
         }
+        record["response_content_path"] = self._artifact_reference(response_content_path)
+        record["reasoning_content_path"] = self._artifact_reference(reasoning_content_path)
+        requested_model = response.get("requested_model")
+        returned_model = response.get("model")
+        record["model_route_mismatch"] = bool(
+            requested_model and returned_model and requested_model != returned_model
+        )
         reasoning = response.get("reasoning_content")
         if isinstance(reasoning, str):
-            import hashlib
-
             record["reasoning_content_present"] = bool(reasoning)
             record["reasoning_content_chars"] = len(reasoning)
+            record["reasoning_content_bytes"] = len(reasoning.encode("utf-8"))
             record["reasoning_content_sha256"] = (
                 hashlib.sha256(reasoning.encode("utf-8")).hexdigest() if reasoning else None
             )

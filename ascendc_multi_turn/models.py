@@ -1,12 +1,9 @@
 from __future__ import annotations
 
-import os
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
 from llm_config import get_env
-
-from .knowledge_paths import DEFAULT_KNOWLEDGE_STORE
 
 
 @dataclass
@@ -50,7 +47,7 @@ class EvalResult:
     error_excerpt: str = ""
     details_path: str | None = None
     failure_kind: str = "candidate"
-    structured_failure: dict[str, Any] | None = None
+    failure_evidence: dict[str, Any] | None = None
     active_profile: str | None = None
     passed_profiles: list[str] = field(default_factory=list)
     case_results: list[dict[str, Any]] = field(default_factory=list)
@@ -114,7 +111,7 @@ class RunConfig:
     planner_max_tokens: int | None = None
     repair_max_tokens: int | None = None
     router_thinking: str = field(default_factory=lambda: get_env("ASCENDC_ROUTER_THINKING", "disabled"))
-    generator_thinking: str = field(default_factory=lambda: get_env("ASCENDC_GENERATOR_THINKING", "enabled"))
+    generator_thinking: str = field(default_factory=lambda: get_env("ASCENDC_GENERATOR_THINKING", "disabled"))
     planner_thinking: str = field(default_factory=lambda: get_env("ASCENDC_PLANNER_THINKING", "disabled"))
     repair_thinking: str = field(default_factory=lambda: get_env("ASCENDC_REPAIR_THINKING", "enabled"))
     generator_reasoning_effort: str = field(
@@ -132,28 +129,14 @@ class RunConfig:
     # Kept at the end of the public init fields so existing positional
     # RunConfig callers retain their argument order.
     max_total_rounds: int | None = None
-    knowledge_mode: str = "structured"
-    knowledge_store: str = field(default_factory=lambda: str(DEFAULT_KNOWLEDGE_STORE))
-    knowledge_build_id: str | None = None
-    skill_adapter: bool = False
-    cannbot_skills_root: str = ""
-    skill_mapping: str = ""
-    knowledge_source: str = ""
-    knowledge_input_mode: str = "bounded"
+    asc_devkit_dir: str = ""
+    reasoning_log_mode: str = field(
+        default_factory=lambda: get_env("ASCENDC_REASONING_LOG_MODE", "full")
+    )
     blanket_max_tokens_override_active: bool = field(default=False, init=False)
     deprecated_repair_options_active: bool = field(default=False, init=False)
 
     def __post_init__(self) -> None:
-        if (
-            self.cannbot_skills_root.strip()
-            or self.skill_mapping.strip()
-            or os.environ.get("CANNBOT_SKILLS_ROOT", "").strip()
-        ):
-            raise ValueError(
-                "External CANNBot skill paths are no longer supported. Remove "
-                "--cannbot-skills-root/--skill-mapping and CANNBOT_SKILLS_ROOT; "
-                "CannAgent now uses its validated embedded CANNBot knowledge base."
-            )
         self.provider = self.provider.lower()
         if self.provider not in {"deepseek", "openai"}:
             raise ValueError("provider must be 'deepseek' or 'openai'")
@@ -163,48 +146,11 @@ class RunConfig:
             raise ValueError("max_bootstrap_rounds must be at least 1")
         if self.max_total_rounds is not None and self.max_total_rounds < 1:
             raise ValueError("max_total_rounds must be at least 1")
-        self.knowledge_mode = self.knowledge_mode.lower()
-        if self.knowledge_mode not in {"document", "structured"}:
-            raise ValueError("knowledge_mode must be 'document' or 'structured'")
-        requested_source = self.knowledge_source.strip().lower()
-        valid_sources = {"document", "structured", "skills", "hybrid"}
-        if requested_source and requested_source not in valid_sources:
-            raise ValueError(
-                "knowledge_source must be 'structured', 'skills', or 'hybrid'"
-            )
-        if self.knowledge_mode == "document":
-            if requested_source and requested_source != "document":
-                raise ValueError(
-                    "knowledge_source skills/structured/hybrid requires structured knowledge mode"
-                )
-            if self.skill_adapter:
-                raise ValueError("skill_adapter requires structured knowledge mode")
-            self.knowledge_source = "document"
-        else:
-            if requested_source == "document":
-                raise ValueError(
-                    "knowledge_source=document requires knowledge_mode=document"
-                )
-            if self.skill_adapter and requested_source not in {"", "hybrid"}:
-                raise ValueError(
-                    "--skill-adapter is a legacy alias for knowledge_source=hybrid"
-                )
-            self.knowledge_source = requested_source or (
-                "hybrid" if self.skill_adapter else "structured"
-            )
-            self.skill_adapter = self.knowledge_source in {"skills", "hybrid"}
-        if self.knowledge_mode == "structured" and not self.knowledge_store:
-            raise ValueError("knowledge_store is required in structured knowledge mode")
-        self.knowledge_input_mode = self.knowledge_input_mode.strip().lower().replace("-", "_")
-        if self.knowledge_input_mode not in {"bounded", "full_selected"}:
-            raise ValueError(
-                "knowledge_input_mode must be 'bounded' or 'full_selected'"
-            )
         prefix = "DEEPSEEK" if self.provider == "deepseek" else "OPENAI"
         if not self.model:
             self.model = get_env(
                 f"{prefix}_MODEL",
-                "deepseek-v4-flash" if prefix == "DEEPSEEK" else "gpt-4.1",
+                "deepseek-flash" if prefix == "DEEPSEEK" else "gpt-4.1",
             )
         if not self.base_url:
             self.base_url = get_env(
@@ -255,6 +201,9 @@ class RunConfig:
         )
         if self.llm_transient_retries < 0:
             raise ValueError("llm_transient_retries must be non-negative")
+        self.reasoning_log_mode = self.reasoning_log_mode.lower()
+        if self.reasoning_log_mode not in {"full", "metadata"}:
+            raise ValueError("reasoning_log_mode must be full or metadata")
         for name in ("router_thinking", "generator_thinking", "planner_thinking", "repair_thinking"):
             value = getattr(self, name).lower()
             if value not in {"enabled", "disabled"}:
@@ -288,16 +237,8 @@ class RunConfig:
         )
 
     @property
-    def uses_structured_prompt(self) -> bool:
-        return self.knowledge_source in {"structured", "hybrid"}
-
-    @property
-    def uses_full_selected_input(self) -> bool:
-        return self.knowledge_input_mode == "full_selected"
-
-    @property
     def uses_skills(self) -> bool:
-        return self.knowledge_source in {"skills", "hybrid"}
+        return True
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

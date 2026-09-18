@@ -154,9 +154,9 @@ flowchart TD
 - **直接规划**：首个候选生成前先创建一个完整 AscendC baseline 计划，覆盖算法、tiling、内存搬运、dtype/尾块和 Host ABI；不使用 TileLang、DSL 中间实现或源码转换。后续计划再依据真实评测证据生成 3–5 个独立实验项。
 - **每轮输入**：`prompts.py` 把 `reference_code + cases + current(FileBundle) + previous_result(EvalResult)` 组装进 prompt；同一轮 PLAN 和 generator 复用已选择的 AscendC 知识。
 - **SETTLE**：基线前失败为 FAIL；基线后更快为 KEEP、有效但不快为 DISCARD、无效为 FAIL。连续三次 FAIL 进入 DIAGNOSE。
-- **文件协议与安全**：`bundle.py` —— 模型只能返回 `model_new_ascendc.py` 和 `kernel/` 下的源码（`validate_relative_path` 阻止绝对路径 / `..` 穿越 / build 文件），`validate_initial_bundle` 强制首轮必须包含完整 wrapper + pybind + kernel cpp。
-- **评测反馈**：先校验 pybind 声明/调用 `*_do`、kernel 源定义 wrapper 并使用 `kernel<<<...>>>`，再执行 wrapper 检查、编译、正确性和性能评测；几何平均 speedup 作为分数。
-- **知识控制**：默认读取预先验证的结构化知识，按 API 精确符号、适用上下文和结构化失败生成每轮 `KnowledgeBundle`，不调用 LLM 选择原始文档。`--knowledge-mode document` 仅保留为直接文档检索路径。完整运行方法见 [AscendC 多轮算子生成与优化](ascendc_multi_turn/README.md)，知识安装和数据流见 [AscendC Structured Knowledge Build and Runtime Use](docs/structured-ascendc-knowledge.md)。
+- **文件协议与安全**：`bundle.py` —— 模型只能返回 `model_new_ascendc.py`、项目 CMake 和 `op_kernel/`、`op_host/`、`op_extension/`、`scripts/` 下的源码（`validate_relative_path` 阻止绝对路径、`..` 穿越和 build 文件），`validate_initial_bundle` 强制首轮包含完整 CANNBot 直调工程并拒绝旧 PyBind ABI。
+- **评测反馈**：先校验 CANNBot 工程目录、ASC CMake、PyTorch dispatcher、PrivateUse1/Meta 和 `ModelNew → torch.ops`，再执行项目构建、正确性 profile 和包内独立 benchmark；正式时延由 `torch.npu.Event` 测量，几何平均 speedup 作为分数，仓库级 `skills/` 不参与该执行链。
+- **知识控制**：只使用固定提交的 CANNBot 文本技能与 Asc DevKit 9.1.0 离线检索，按 `docs/api → examples → include → impl` 注入带版本、commit 和路径的文本证据；不存在旧结构化知识或模式回退。完整运行方法见 [AscendC 多轮算子生成与优化](ascendc_multi_turn/README.md)，架构方案见 [9.1.0 执行方案](docs/ascendc-agent-architecture-plan.md)。
 - **状态保存**：phase、plan、双预算、pending checkpoint、baseline 和 best 均持久化；EVAL 环境失败后 resume 直接重评候选，不重复调用模型。
 - **终止与退出**：无基线且 bootstrap 用尽为 `blocked`，不创建 DONE；完成全部性能轮才为 `completed`。
 
@@ -308,26 +308,38 @@ python -m ascendc_multi_turn \
   --op-file benchmarks/NPUKernelBench/level1/1_GELU.py \
   --output-dir outputs/1_GELU \
   --provider deepseek \
-  --model deepseek-v4-flash \
+  --model deepseek-flash \
   --base-url https://api.deepseek.com \
   --max-bootstrap-rounds 8 --max-rounds 5 --max-total-rounds 5 \
   --soc-version Ascend910B3 --device 0
 ```
 
 使用 OpenAI/GPT 测试时，在 `.env` 填写 `OPENAI_API_KEY`、`OPENAI_MODEL`、
-`OPENAI_BASE_URL`，并改用 `--provider openai`。直接流程会选择与 CANN 版本匹配的
-预编译的结构化 AscendC 知识；首轮先生成直接 AscendC 实现计划，再执行代码生成和评测，不加载
-TileLang 转译指南。
+`OPENAI_BASE_URL`，并改用 `--provider openai`。直调流程使用固定的 CANNBot 文本技能和
+Asc DevKit 9.1.0 离线证据；首轮先生成完整工程蓝图，再执行代码生成和评测。
 命令默认在 stderr 显示当前轮次、各阶段和每 15 秒心跳，stdout 只保留最终
 JSON；需要静默运行时增加 `--quiet`。每轮完整的静态检查、编译、正确性与性能
 输出保存在 `.llm_state/round_NN/*.log`，最终 JSON 的 `failure.details_path` 会指向
 失败阶段日志。
 
-DeepSeek V4 的 `document` 模式路由使用 4096 token 且关闭 thinking；默认 `structured` 模式不调用路由模型。代码生成使用 65536 token、
-`high` thinking；结构化 PLAN/DIAGNOSE 独立使用 8192 token 且默认关闭 thinking，避免
-短计划继承代码生成预算。旧 `--repair-*` 参数暂时接受但已弃用，不再触发额外 repair
-调用。终端和 `calls.jsonl` 会记录模型、thinking、reasoning token 和结束原因。
+代码生成使用 65536 token 且默认关闭 thinking；PLAN/DIAGNOSE 独立使用 8192 token 并默认关闭
+thinking，避免推理耗尽完整代码的输出预算。可用 `--generator-thinking enabled` 显式开启生成器思考。
+旧 `--repair-*` 参数暂时接受但已弃用，不再触发额外 repair 调用。默认
+`--reasoning-log full` 会把 API 返回的原始 reasoning 以权限 `0600` 保存到对应轮次目录，
+`calls.jsonl` 只记录路径、长度与哈希；使用 `--reasoning-log metadata` 可仅保留元数据。
 API、知识选择或本地环境失败会停在当前 checkpoint，`--resume` 不会浪费候选轮。
+
+诊断 DeepSeek 模型路由、thinking 行为和真实 Generator Prompt：
+
+```bash
+python -m ascendc_multi_turn.llm_diagnostic \
+  --prompt-file /path/to/.llm_state/round_01/prompt.txt \
+  --output-dir outputs/deepseek_diagnostic \
+  --model deepseek-flash
+```
+
+诊断会查询 `/models`，执行小型 thinking 开关对照，并分别用有界思考和非思考模式重放真实 Prompt；
+不会应用或构建生成的候选。reasoning 可能包含源码或 Prompt 摘录，属于本地敏感审计产物，不得提交。
 
 无 NPU 验证编排：
 ```bash

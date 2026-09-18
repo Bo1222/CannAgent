@@ -9,8 +9,7 @@ from typing import Any
 
 from .diagnostics import diagnostic_delta, diagnostics_for_result, evaluation_gates
 from .models import EvalResult, FileBundle
-from .structured_knowledge.experience import bundle_diff
-from .structured_knowledge.schema import AttemptRecord, DiagnosticRecord
+from .state_schema import AttemptRecord, DiagnosticRecord, bundle_diff
 
 _VALIDATION_STAGES = {
     "response_format",
@@ -21,6 +20,7 @@ _VALIDATION_STAGES = {
     "interface_contract_validation",
 }
 _COMPILE_STAGES = {"ascendc_build", "compile"}
+_REPAIRABLE_DIAGNOSTIC_STAGES = _VALIDATION_STAGES | _COMPILE_STAGES
 
 
 def _stage_rank(result: EvalResult | None) -> int:
@@ -160,15 +160,17 @@ class RepairStateManager:
             "case_progress": after_cases > before_cases,
         }
         if base_result is None:
-            if _stage_rank(result) >= 1:
+            # A source-validatable candidate is already a materially better
+            # repair base than an empty project.  Keep it so the next attempt
+            # can fix concrete validator findings instead of regenerating the
+            # entire project from scratch.
+            if _stage_rank(result) >= 0:
                 outcome, accept = "INITIAL_KEEP", True
             else:
                 outcome, accept = "INITIAL_REJECT", False
         elif _stage_rank(result) > _stage_rank(base_result):
             outcome, accept = "FRONTIER_ADVANCED", True
-        elif _stage_rank(result) < _stage_rank(base_result):
-            outcome, accept = "REGRESSION", False
-        elif delta["reintroduced"]:
+        elif _stage_rank(result) < _stage_rank(base_result) or delta["reintroduced"]:
             outcome, accept = "REGRESSION", False
         elif result.compiled and (
             delta["cleared"]
@@ -176,7 +178,7 @@ class RepairStateManager:
             or progress["case_progress"]
         ):
             outcome, accept = "PARTIAL_KEEP", True
-        elif (base_result.failure_stage or "") in _COMPILE_STAGES:
+        elif (base_result.failure_stage or "") in _REPAIRABLE_DIAGNOSTIC_STAGES:
             direct_before = [item for item in before if item.category != "stage_error"]
             direct_after = [item for item in after if item.category != "stage_error"]
             if direct_before and direct_after and delta["cleared"]:
@@ -226,10 +228,10 @@ class RepairStateManager:
         metadata = payload.get("selection_metadata", {})
         task = payload.get("task_facts", {})
         skill_ids = list(metadata.get("selected_skill_ids", []))
-        fact_ids = list(
+        evidence_ids = list(
             dict.fromkeys(
                 [
-                    *metadata.get("selected_structured_ids", []),
+                    *metadata.get("selected_evidence_ids", []),
                     *metadata.get("runtime_fact_ids", []),
                 ]
             )
@@ -244,7 +246,7 @@ class RepairStateManager:
                 "debug_category",
             )
         }
-        return skill_ids, fact_ids, route
+        return skill_ids, evidence_ids, route
 
     def build_attempt(
         self,
@@ -270,7 +272,7 @@ class RepairStateManager:
             for name in set(old_files) | set(candidate.files)
             if old_files.get(name) != candidate.files.get(name)
         )
-        skill_ids, fact_ids, route = self._selection_ids(selection)
+        skill_ids, evidence_ids, route = self._selection_ids(selection)
         return AttemptRecord(
             attempt_id=attempt_id,
             evaluation_round=evaluation_round,
@@ -287,7 +289,7 @@ class RepairStateManager:
             touched_files=touched,
             diff_sha256=hashlib.sha256(diff.encode("utf-8")).hexdigest(),
             selected_skill_ids=skill_ids,
-            selected_fact_ids=fact_ids,
+            selected_evidence_ids=evidence_ids,
             route=route,
             outcome=outcome_override or decision.outcome,
             frontier_before=frontier_before,

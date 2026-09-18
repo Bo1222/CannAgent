@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "upstream": "CANNBot",
+  "upstream_commit": "a08c49706e35a400d7c77e0875bc7c72a3a79012",
+  "policy": "Only the listed text skills and curated Markdown references are prompt knowledge. Images and generated structured cards are excluded.",
+  "skills": [
+    {"id": "ascendc-api-best-practices", "path": "skills/ascendc-api-best-practices/SKILL.md", "sha256": "83ee46ed40c6662ea46f6c3ade21daef14c751191d25407c7c60d0f19398cfc8"},
+    {"id": "ascendc-code-review", "path": "skills/ascendc-code-review/SKILL.md", "sha256": "acff9dc48fc17cfb3c9678a06026b422bf23b3c01d61ffc45a44c8e8eebe1317"},
+    {"id": "ascendc-direct-invoke-template", "path": "skills/ascendc-direct-invoke-template/SKILL.md", "sha256": "65f8c98c5590b06dd448a2977b8ba5e871b6666614e907d1e803cca298fadb99"},
+    {"id": "ascendc-docs-search", "path": "skills/ascendc-docs-search/SKILL.md", "sha256": "a7b0312c7d1b5d4aea3a2402bda4a3054e50c4317b1e130ecb965698af133d7e", "adaptation": "CANN 9.1.0 docs/api layout and GitCode-pinned DevKit commit"},
+    {"id": "ascendc-env-check", "path": "skills/ascendc-env-check/SKILL.md", "sha256": "0407395e412da16dddd44f8192be5e8aeb48b8202cf35c77d667a7965029f144"},
+    {"id": "ascendc-performance-best-practices", "path": "skills/ascendc-performance-best-practices/SKILL.md", "sha256": "3ad61814ba40b5a6fcca7798fe61a0ea71e568bf26cb109240bc6b554612cf6b"},
+    {"id": "ascendc-precision-debug", "path": "skills/ascendc-precision-debug/SKILL.md", "sha256": "e62456bd7dabd8369a8ed5dba04032f4ca337b15fdf31da65c5f97162ebf1b44"},
+    {"id": "ascendc-runtime-debug", "path": "skills/ascendc-runtime-debug/SKILL.md", "sha256": "cd767a887110cf77a52c355c2adaf363976e13d09abc247875cf11cbfce94d87"},
+    {"id": "ascendc-tiling-design", "path": "skills/ascendc-tiling-design/SKILL.md", "sha256": "2509a3ea0dd04a8dcff146d3cc8402ff9ec3ba780f596769396d617a3dcc9c9b"},
+    {"id": "torch-ascendc-op-extension", "path": "skills/torch-ascendc-op-extension/SKILL.md", "sha256": "2318624c85e55ed366a19fb0e148261dcd608e406fc2668d4c0873346521cce2"}
+  ]
+}

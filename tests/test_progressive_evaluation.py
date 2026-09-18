@@ -12,7 +12,7 @@ from ascendc_multi_turn.context_selector import ContextSelector
 from ascendc_multi_turn.diagnostics import (
     compact_evaluation,
     evaluation_gates,
-    parse_structured_failure,
+    parse_failure_evidence,
 )
 from ascendc_multi_turn.evaluator import LocalAscendEvaluator, extract_error_excerpt
 from ascendc_multi_turn.interface_contract import (
@@ -56,96 +56,6 @@ class ProgressiveEvaluationTests(unittest.TestCase):
         self.assertEqual(len(compact["performance"]["per_case_speedup"]), 8)
         self.assertEqual(compact["performance"]["per_case_speedup_omitted"], 2)
 
-    def test_host_wrapper_cannot_dereference_npu_pointer_argument(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
-            task_dir = Path(temporary)
-            kernel_dir = task_dir / "kernel"
-            kernel_dir.mkdir()
-            (kernel_dir / "pybind11.cpp").write_text(
-                'extern "C" void add_do(uint32_t blockDim, void *stream, uint8_t *tiling);\n'
-                "void run(void *s, uint8_t *t) { add_do(1, s, t); }\n"
-                "PYBIND11_MODULE(_add_ext, m) {}\n",
-                encoding="utf-8",
-            )
-            (kernel_dir / "add.cpp").write_text(
-                "struct Tiling { int dtype; };\n"
-                'extern "C" __global__ __aicore__ void kernel(GM_ADDR tiling) {}\n'
-                'extern "C" void add_do(uint32_t blockDim, void *stream, uint8_t *tiling)\n'
-                "{\n"
-                "  Tiling* value = (Tiling*)tiling;\n"
-                "  int dtype = value->dtype;\n"
-                "  kernel<<<blockDim, nullptr, stream>>>((GM_ADDR)tiling);\n"
-                "}\n",
-                encoding="utf-8",
-            )
-            codes = {item.code for item in validate_source_tree(task_dir)}
-            self.assertIn("host_dereferences_device_pointer", codes)
-
-    def test_local_evaluator_stops_at_first_failed_profile(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            task_dir = root / "task"
-            round_dir = root / "round"
-            kernel_dir = task_dir / "kernel"
-            kernel_dir.mkdir(parents=True)
-            round_dir.mkdir()
-            (task_dir / "model_new_ascendc.py").write_text("class ModelNew: pass\n", encoding="utf-8")
-            (kernel_dir / "pybind11.cpp").write_text(
-                'extern "C" void add_do(uint32_t blockDim, void *stream, uint8_t *x);\n'
-                "void run(void *s, uint8_t *x) { add_do(1, s, x); }\n"
-                "PYBIND11_MODULE(_add_ext, m) {}\n",
-                encoding="utf-8",
-            )
-            (kernel_dir / "add.cpp").write_text(
-                'extern "C" __global__ __aicore__ void add_kernel(GM_ADDR x) {}\n'
-                'extern "C" void add_do(uint32_t blockDim, void *stream, uint8_t *x)\n'
-                "{\n  add_kernel<<<blockDim, nullptr, stream>>>(x);\n}\n",
-                encoding="utf-8",
-            )
-            (task_dir / "add.json").write_text(
-                "\n".join(
-                    [
-                        '{"inputs":[{"type":"tensor","shape":[128],"dtype":"float32"},{"type":"tensor","shape":[128],"dtype":"float32"}]}',
-                        '{"inputs":[{"type":"tensor","shape":[128,128],"dtype":"float32"},{"type":"tensor","shape":[128,1],"dtype":"float32"}]}',
-                    ]
-                ),
-                encoding="utf-8",
-            )
-
-            def fake_run(command, *, env, timeout, log_path=None):
-                if "verification_ascendc.py" not in " ".join(command):
-                    return 0, "passed"
-                profile = command[command.index("--profile") + 1]
-                report_path = Path(command[command.index("--report-json") + 1])
-                if profile == "smoke":
-                    report = {
-                        "case_results": [{"index": 0, "status": "passed"}],
-                        "passed_case_indices": [0],
-                        "failed_case_index": None,
-                    }
-                    report_path.write_text(json.dumps(report), encoding="utf-8")
-                    return 0, "case[0]: matched"
-                report = {
-                    "case_results": [
-                        {"index": 0, "status": "passed"},
-                        {"index": 1, "status": "failed"},
-                    ],
-                    "passed_case_indices": [0],
-                    "failed_case_index": 1,
-                }
-                report_path.write_text(json.dumps(report), encoding="utf-8")
-                return 1, "case[1]: comparison mismatch"
-
-            evaluator = LocalAscendEvaluator(device=0, soc_version="Ascend910B3")
-            with patch("ascendc_multi_turn.evaluator._run", side_effect=fake_run):
-                result = evaluator.evaluate(task_dir, round_dir)
-            self.assertTrue(result.compiled)
-            self.assertFalse(result.correctness)
-            self.assertEqual(result.active_profile, "shape")
-            self.assertEqual(result.passed_profiles, ["smoke"])
-            self.assertEqual(result.passed_case_indices, [0])
-            self.assertEqual(result.structured_failure["case_info"]["failed_case_index"], 1)
-
     def test_profiles_keep_explicit_full_gate(self) -> None:
         cases = "\n".join(
             [
@@ -187,22 +97,20 @@ class ProgressiveEvaluationTests(unittest.TestCase):
             self.assertTrue(decision.accept_candidate)
             self.assertTrue(decision.progress["case_progress"])
 
-    def test_interface_contract_rejects_unapproved_wrapper_change(self) -> None:
+    def test_interface_contract_rejects_unapproved_dispatcher_change(self) -> None:
         base = FileBundle(
             files={
-                "kernel/pybind11.cpp": (
-                    'extern "C" void add_do(uint32_t blockDim, void *stream, uint8_t *x);\n'
-                    "PYBIND11_MODULE(_add_ext, m) {}\n"
-                ),
-                "kernel/add.cpp": (
-                    'extern "C" __global__ __aicore__ void add_kernel(GM_ADDR x) {}\n'
-                    'extern "C" void add_do(uint32_t blockDim, void *stream, uint8_t *x) {}\n'
+                "model_new_ascendc.py": "return torch.ops.cannagent.add(x)\n",
+                "op_extension/register.cpp": (
+                    "TORCH_LIBRARY(cannagent, m) {}\n"
+                    "TORCH_LIBRARY_IMPL(cannagent, PrivateUse1, m) {}\n"
+                    "TORCH_LIBRARY_IMPL(cannagent, Meta, m) {}\n"
                 ),
             }
         )
         changed = FileBundle(files=dict(base.files))
-        changed.files["kernel/add.cpp"] = changed.files["kernel/add.cpp"].replace(
-            "uint8_t *x)", "uint8_t *x, uint64_t descriptor)"
+        changed.files["model_new_ascendc.py"] = changed.files["model_new_ascendc.py"].replace(
+            "cannagent.add", "cannagent.add_v2"
         )
         contract = capture_interface_contract(base)
         self.assertTrue(compare_interface_contract(contract, changed))
@@ -214,14 +122,14 @@ class ProgressiveEvaluationTests(unittest.TestCase):
         self.assertEqual(semantic_bundle_hash(before), semantic_bundle_hash(comment))
         self.assertNotEqual(semantic_bundle_hash(before), semantic_bundle_hash(code))
 
-    def test_structured_failure_separates_compiler_and_device_evidence(self) -> None:
-        compile_failure = parse_structured_failure(
+    def test_failure_evidence_separates_compiler_and_device_evidence(self) -> None:
+        compile_failure = parse_failure_evidence(
             stage="ascendc_build",
             output="kernel/add.cpp:9: error: no matching function for call to 'Muls' 507035",
         )
         self.assertEqual(compile_failure.subsystem, "COMPILER")
         self.assertIsNone(compile_failure.runtime_code)
-        device = parse_structured_failure(
+        device = parse_failure_evidence(
             stage="correctness",
             output=(
                 "507035 MTE exception core id=3 block id=7 "

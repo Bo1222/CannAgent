@@ -12,15 +12,13 @@ from typing import Any
 PACKAGE_ROOT = Path(__file__).resolve().parent
 DEFAULT_MAPPING_PATH = PACKAGE_ROOT / "skill_mapping.yaml"
 KNOWLEDGE_MODULE_ROOT = PACKAGE_ROOT / "knowledge_modules"
-LOCAL_KNOWLEDGE_MODULE_MANIFEST_PATH = (
-    KNOWLEDGE_MODULE_ROOT / "knowledge_module_manifest.json"
-)
 CANNBOT_KNOWLEDGE_BASE_ROOT = (
     KNOWLEDGE_MODULE_ROOT / "cannbot_a08c4970_knowledge_base"
 )
 CANNBOT_KNOWLEDGE_BASE_MANIFEST_PATH = (
     CANNBOT_KNOWLEDGE_BASE_ROOT / "knowledge_base_manifest.json"
 )
+CANNBOT_VENDOR_MANIFEST_PATH = CANNBOT_KNOWLEDGE_BASE_ROOT / "vendor_manifest.json"
 EXTERNAL_KNOWLEDGE_MIGRATION_ERROR = (
     "External CANNBot skill paths are no longer supported. Remove "
     "--cannbot-skills-root/--skill-mapping and CANNBOT_SKILLS_ROOT; CannAgent "
@@ -194,11 +192,29 @@ class SkillAdapter:
         mapping = json.loads(self.mapping_path.read_text(encoding="utf-8"))
         if int(mapping.get("schema_version", 0)) != 3:
             raise ValueError(f"unsupported embedded skill mapping schema: {self.mapping_path}")
+        self._validate_vendor_manifest()
         documents, knowledge_base_id = self._load_registry()
         self._validate_mapping(mapping, documents)
         self.mapping: Mapping[str, Any] = _freeze(mapping)
         self.registry: Mapping[str, _KnowledgeModuleDocument] = MappingProxyType(documents)
         self.knowledge_base_id = knowledge_base_id
+
+    @staticmethod
+    def _validate_vendor_manifest() -> None:
+        payload = json.loads(CANNBOT_VENDOR_MANIFEST_PATH.read_text(encoding="utf-8"))
+        if payload.get("upstream_commit") != "a08c49706e35a400d7c77e0875bc7c72a3a79012":
+            raise ValueError("embedded CANNBot skill subset has an unexpected upstream commit")
+        for item in payload.get("skills", []):
+            path = (CANNBOT_KNOWLEDGE_BASE_ROOT / str(item.get("path", ""))).resolve()
+            try:
+                path.relative_to(CANNBOT_KNOWLEDGE_BASE_ROOT.resolve())
+            except ValueError as error:
+                raise ValueError(f"unsafe embedded CANNBot skill path: {path}") from error
+            if not path.is_file() or path.suffix.lower() != ".md":
+                raise ValueError(f"embedded CANNBot skill is missing: {path}")
+            actual = hashlib.sha256(path.read_bytes()).hexdigest()
+            if actual != item.get("sha256"):
+                raise ValueError(f"embedded CANNBot skill hash mismatch: {path}")
 
     @staticmethod
     def _safe_manifest_path(root: Path, relative: str) -> Path:
@@ -251,22 +267,13 @@ class SkillAdapter:
         return result, payload
 
     def _load_registry(self) -> tuple[dict[str, _KnowledgeModuleDocument], str]:
-        local, _ = self._load_manifest_documents(
-            LOCAL_KNOWLEDGE_MODULE_MANIFEST_PATH,
-            root=KNOWLEDGE_MODULE_ROOT,
-            list_key="knowledge_modules",
-            origin="cannagent",
-        )
         knowledge_base, payload = self._load_manifest_documents(
             CANNBOT_KNOWLEDGE_BASE_MANIFEST_PATH,
             root=CANNBOT_KNOWLEDGE_BASE_ROOT,
             list_key="documents",
             origin="cannbot_knowledge_base",
         )
-        overlap = set(local).intersection(knowledge_base)
-        if overlap:
-            raise ValueError(f"duplicate embedded knowledge module IDs across manifests: {sorted(overlap)}")
-        return {**local, **knowledge_base}, str(
+        return knowledge_base, str(
             payload.get("knowledge_base_id", "unknown")
         )
 
@@ -290,7 +297,7 @@ class SkillAdapter:
                     if not knowledge_module_id or not section_id:
                         raise ValueError(f"mapping reference lacks knowledge_module_id or section_id: {stage}:{skill.get('id')}")
                     if knowledge_module_id not in documents:
-                        raise ValueError(f"mapping references unknown embedded knowledge module: {knowledge_module_id}")
+                        continue
                     if stage not in documents[knowledge_module_id].allowed_stages:
                         raise ValueError(f"knowledge module {knowledge_module_id} is not allowed in stage {stage}")
 
@@ -416,6 +423,9 @@ class SkillAdapter:
                     key = (knowledge_module_id, section_id)
                     if key in seen_sections:
                         trace.append({"candidate": reference_id, "decision": "rejected", "reason": "duplicate_knowledge_module_section"})
+                        continue
+                    if knowledge_module_id not in self.registry:
+                        trace.append({"candidate": reference_id, "decision": "rejected", "reason": "non_cannbot_knowledge_excluded"})
                         continue
                     document = self.registry[knowledge_module_id]
                     headings = [str(item) for item in reference.get("headings", ())]

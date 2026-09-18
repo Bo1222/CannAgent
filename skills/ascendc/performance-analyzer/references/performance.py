@@ -149,7 +149,23 @@ def _get_input_groups(output_dir: Path):
     return input_groups, str(json_path)
 
 
+def _ensure_import_paths(output_dir: Path) -> None:
+    """确保已编译的扩展可以被 import。
+
+    `model_new_ascendc.py` 里是普通的 `import <ext>`，而扩展产物位于
+    `<task>/kernel/build`。`verification_ascendc.py` 在加载候选模型前会把这些目录插入
+    `sys.path`，因此一个已经通过正确性验证的算子在这里也必须能加载；
+    否则基准测试会以 `ModuleNotFoundError` 失败，正确的候选永远建立不了 baseline。
+    """
+
+    candidate_paths = [str(output_dir), str(output_dir / "kernel" / "build")]
+    for path in candidate_paths:
+        if Path(path).is_dir() and path not in sys.path:
+            sys.path.insert(0, path)
+
+
 def _load_impl(output_dir: Path, impl: str):
+    _ensure_import_paths(output_dir)
     if impl == "reference":
         module_path = output_dir / "model.py"
         preferred_class = "Model"

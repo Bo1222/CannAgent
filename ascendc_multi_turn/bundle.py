@@ -5,14 +5,14 @@ import io
 import json
 import os
 import re
-import shutil
 import tokenize
 from pathlib import Path
 
 from .models import FileBundle
 
-_ALLOWED_ROOT_FILE = "model_new_ascendc.py"
-_ALLOWED_SUFFIXES = {".py", ".cpp", ".cc", ".cxx", ".h", ".hpp"}
+_ALLOWED_ROOT_FILES = {"model_new_ascendc.py", "CMakeLists.txt"}
+_ALLOWED_DIRECTORIES = {"op_kernel", "op_host", "op_extension", "scripts"}
+_ALLOWED_SUFFIXES = {".py", ".cpp", ".cc", ".cxx", ".h", ".hpp", ".asc", ".cmake"}
 
 
 def _json_object(text: str) -> dict:
@@ -39,12 +39,12 @@ def validate_relative_path(value: str) -> str:
     path = Path(normalized)
     if path.is_absolute() or ".." in path.parts:
         raise ValueError(f"unsafe file path: {value!r}")
-    if normalized == _ALLOWED_ROOT_FILE:
+    if normalized in _ALLOWED_ROOT_FILES:
         return normalized
-    if not normalized.startswith("kernel/") or path.suffix not in _ALLOWED_SUFFIXES:
-        raise ValueError(f"path is outside the editable AscendC sources: {value!r}")
-    if normalized.startswith("kernel/build/"):
-        raise ValueError("kernel/build is generated and cannot be edited")
+    if not path.parts or path.parts[0] not in _ALLOWED_DIRECTORIES or path.suffix not in _ALLOWED_SUFFIXES:
+        raise ValueError(f"path is outside the CANNBot AscendC project sources: {value!r}")
+    if "build" in path.parts:
+        raise ValueError("build output is generated and cannot be edited")
     return normalized
 
 
@@ -91,43 +91,53 @@ def apply_bundle(task_dir: Path, bundle: FileBundle) -> None:
 
 def capture_bundle(task_dir: Path) -> FileBundle:
     files: dict[str, str] = {}
-    wrapper = task_dir / _ALLOWED_ROOT_FILE
-    if wrapper.is_file():
-        files[_ALLOWED_ROOT_FILE] = wrapper.read_text(encoding="utf-8")
-    kernel_dir = task_dir / "kernel"
-    if kernel_dir.is_dir():
-        for path in sorted(kernel_dir.rglob("*")):
-            if not path.is_file() or "build" in path.relative_to(kernel_dir).parts:
-                continue
-            if path.suffix in _ALLOWED_SUFFIXES:
+    for root_file in sorted(_ALLOWED_ROOT_FILES):
+        path = task_dir / root_file
+        if path.is_file():
+            files[root_file] = path.read_text(encoding="utf-8")
+    for directory in sorted(_ALLOWED_DIRECTORIES):
+        source_dir = task_dir / directory
+        if not source_dir.is_dir():
+            continue
+        for path in sorted(source_dir.rglob("*")):
+            if path.is_file() and "build" not in path.relative_to(source_dir).parts and path.suffix in _ALLOWED_SUFFIXES:
                 files[path.relative_to(task_dir).as_posix()] = path.read_text(encoding="utf-8")
     return FileBundle(files=files)
 
 
 def restore_bundle(task_dir: Path, bundle: FileBundle) -> None:
-    wrapper = task_dir / _ALLOWED_ROOT_FILE
-    if wrapper.exists() and _ALLOWED_ROOT_FILE not in bundle.files:
-        wrapper.unlink()
-    kernel_dir = task_dir / "kernel"
-    if kernel_dir.exists():
-        for path in sorted(kernel_dir.rglob("*"), reverse=True):
-            if path.is_file() and "build" not in path.relative_to(kernel_dir).parts:
-                path.unlink()
-        build = kernel_dir / "build"
-        if build.exists():
-            shutil.rmtree(build)
+    existing = capture_bundle(task_dir)
+    for relative in set(existing.files) - set(bundle.files):
+        (task_dir / relative).unlink(missing_ok=True)
     apply_bundle(task_dir, bundle)
 
 
 def validate_initial_bundle(bundle: FileBundle) -> None:
     paths = set(bundle.files)
-    if _ALLOWED_ROOT_FILE not in paths:
-        raise ValueError(f"initial generation must include {_ALLOWED_ROOT_FILE}")
-    if "kernel/pybind11.cpp" not in paths:
-        raise ValueError("initial generation must include kernel/pybind11.cpp")
-    kernel_cpp = [p for p in paths if p.startswith("kernel/") and p.endswith(".cpp") and p != "kernel/pybind11.cpp"]
-    if not kernel_cpp:
-        raise ValueError("initial generation must include at least one AscendC kernel .cpp file")
+    required_exact = {
+        "model_new_ascendc.py",
+        "CMakeLists.txt",
+        "op_host/data_utils.h",
+        "op_extension/register.cpp",
+        "op_extension/ops.h",
+        "scripts/golden.py",
+        "scripts/test_torch.py",
+    }
+    missing = sorted(required_exact - paths)
+    if missing:
+        raise ValueError(f"initial generation is missing required CANNBot project files: {missing}")
+    required_patterns = {
+        "op_kernel/<op>_tiling.h": any(p.startswith("op_kernel/") and p.endswith("_tiling.h") for p in paths),
+        "op_kernel/<op>_kernel.asc": any(p.startswith("op_kernel/") and p.endswith("_kernel.asc") for p in paths),
+        "op_host/<op>.asc": any(p.startswith("op_host/") and p.endswith(".asc") for p in paths),
+        "op_extension/<op>_torch.cpp": any(p.startswith("op_extension/") and p.endswith("_torch.cpp") for p in paths),
+    }
+    absent_roles = [name for name, present in required_patterns.items() if not present]
+    if absent_roles:
+        raise ValueError(f"initial generation is missing required CANNBot project roles: {absent_roles}")
+    legacy = sorted(path for path in paths if path == "kernel/pybind11.cpp" or path.startswith("kernel/"))
+    if legacy:
+        raise ValueError(f"legacy pybind/_do project layout is not accepted: {legacy}")
 
 
 def _semantic_source(path: str, source: str) -> str:

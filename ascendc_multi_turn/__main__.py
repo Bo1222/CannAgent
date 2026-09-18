@@ -3,22 +3,15 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from pathlib import Path
 
 from llm_config import get_env
 
+from .devkit import DevkitError, resolve_devkit, resolve_runtime_version
 from .evaluator import LocalAscendEvaluator, MockEvaluator
-from .knowledge import resolve_knowledge_version
-from .knowledge_paths import DEFAULT_KNOWLEDGE_STORE
 from .llm import MockProvider, OpenAICompatibleProvider
 from .models import RunConfig
 from .progress import ProgressReporter
 from .runner import MultiTurnRunner
-from .structured_knowledge import (
-    ApiConstraintValidator,
-    KnowledgeBuild,
-    locate_knowledge_build,
-)
 
 
 def parser() -> argparse.ArgumentParser:
@@ -66,7 +59,13 @@ def parser() -> argparse.ArgumentParser:
     )
     result.add_argument(
         "--generator-thinking", choices=("enabled", "disabled"),
-        default=get_env("ASCENDC_GENERATOR_THINKING", "enabled"),
+        default=get_env("ASCENDC_GENERATOR_THINKING", "disabled"),
+    )
+    result.add_argument(
+        "--reasoning-log",
+        choices=("full", "metadata"),
+        default=get_env("ASCENDC_REASONING_LOG_MODE", "full"),
+        help="persist full reasoning text locally or retain metadata only",
     )
     result.add_argument(
         "--planner-thinking", choices=("enabled", "disabled"),
@@ -97,41 +96,9 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--soc-version", default="Ascend910B3")
     result.add_argument("--cann-version", default="auto", help="installed CANN version or 'auto'")
     result.add_argument(
-        "--knowledge-mode",
-        choices=("document", "structured"),
-        default="structured",
-    )
-    result.add_argument(
-        "--knowledge-source",
-        choices=("structured", "skills", "hybrid"),
+        "--asc-devkit-dir",
         default="",
-        help="prompt knowledge source; defaults to structured, while --skill-adapter remains a hybrid alias",
-    )
-    result.add_argument(
-        "--knowledge-input-mode",
-        choices=("bounded", "full-selected"),
-        default="bounded",
-        help=(
-            "render compact or full-field selected knowledge; both modes keep deterministic "
-            "per-audience budgets and atomic knowledge-module boundaries"
-        ),
-    )
-    result.add_argument("--knowledge-store", default=str(DEFAULT_KNOWLEDGE_STORE))
-    result.add_argument("--knowledge-build-id", default=None)
-    result.add_argument(
-        "--skill-adapter",
-        action="store_true",
-        help="legacy alias for --knowledge-source hybrid",
-    )
-    result.add_argument(
-        "--cannbot-skills-root",
-        default="",
-        help="removed: passing this option reports the embedded-knowledge base migration error",
-    )
-    result.add_argument(
-        "--skill-mapping",
-        default="",
-        help="removed: passing this option reports the embedded-knowledge base migration error",
+        help="healthy Asc DevKit 9.1.0 checkout; otherwise use the managed cache",
     )
     result.add_argument("--resume", action="store_true")
     result.add_argument("--quiet", action="store_true", help="suppress progress and failure details on stderr")
@@ -149,7 +116,7 @@ def main() -> int:
         raise SystemExit("--max-total-rounds must be at least 1")
     prefix = "DEEPSEEK" if args.provider == "deepseek" else "OPENAI"
     model = args.model or get_env(
-        f"{prefix}_MODEL", "deepseek-v4-flash" if prefix == "DEEPSEEK" else "gpt-4.1"
+        f"{prefix}_MODEL", "deepseek-flash" if prefix == "DEEPSEEK" else "gpt-4.1"
     )
     base_url = args.base_url or get_env(
         f"{prefix}_BASE_URL",
@@ -182,14 +149,8 @@ def main() -> int:
         device=args.device,
         soc_version=args.soc_version,
         cann_version=args.cann_version,
-        knowledge_mode=args.knowledge_mode,
-        knowledge_store=args.knowledge_store,
-        knowledge_build_id=args.knowledge_build_id,
-        knowledge_source=args.knowledge_source,
-        knowledge_input_mode=args.knowledge_input_mode,
-        skill_adapter=args.skill_adapter,
-        cannbot_skills_root=args.cannbot_skills_root,
-        skill_mapping=args.skill_mapping,
+        asc_devkit_dir=args.asc_devkit_dir,
+        reasoning_log_mode=args.reasoning_log,
         evaluator="mock" if args.mock else "local",
         resume=args.resume,
         mock=args.mock,
@@ -212,15 +173,14 @@ def main() -> int:
             raise SystemExit(f"{config.provider} model and base URL must be configured in .env or CLI arguments")
     progress = ProgressReporter(enabled=not args.quiet)
     provider = MockProvider() if args.mock else OpenAICompatibleProvider.from_env(config)
-    knowledge_validator = None
-    if not args.mock and config.knowledge_mode == "structured":
-        version = resolve_knowledge_version(config)
-        knowledge_build_path = locate_knowledge_build(
-            Path(config.knowledge_store),
-            version.knowledge_version,
-            config.knowledge_build_id,
-        )
-        knowledge_validator = ApiConstraintValidator(KnowledgeBuild(knowledge_build_path))
+    if not args.mock:
+        try:
+            config.asc_devkit_dir = str(resolve_devkit(config.asc_devkit_dir or None))
+            runtime = resolve_runtime_version(config.cann_version)
+            if runtime.status != "exact":
+                raise DevkitError(runtime.warning)
+        except DevkitError as error:
+            raise SystemExit(str(error)) from error
     evaluator = (
         MockEvaluator()
         if args.mock
@@ -229,7 +189,6 @@ def main() -> int:
             soc_version=args.soc_version,
             timeout=args.timeout,
             progress=progress,
-            api_constraint_validator=knowledge_validator,
         )
     )
     summary = MultiTurnRunner(config, provider, evaluator, progress=progress).run()

@@ -8,10 +8,10 @@ from pathlib import Path
 from typing import Any
 
 from .models import EvalResult
-from .structured_knowledge.schema import DiagnosticRecord, StructuredFailure
+from .state_schema import DiagnosticRecord, FailureEvidence
 
 ERROR_LINE = re.compile(
-    r"error:|fatal(?: error)?:|traceback|calledprocesserror|timed out|\[fail(?:ed)?\]",
+    r"error(?:\[[A-Za-z0-9_.-]+\])?:|fatal(?: error)?:|traceback|calledprocesserror|timed out|\[fail(?:ed)?\]",
     re.IGNORECASE,
 )
 QUOTED_SYMBOL = re.compile(r"'(?:AscendC::)?([A-Za-z_][A-Za-z0-9_:<>]*)'")
@@ -47,11 +47,13 @@ _ASCENDC_API_SYMBOLS = {
 _HOST_ABI_SYMBOLS = {"getCurrentNPUStream", "is_npu"}
 _LOCATED_ERROR = re.compile(
     r"(?P<path>(?:[A-Za-z]:)?[^:\n]+):\d+(?::\d+)?:\s*"
-    r"(?P<severity>fatal\s+error|error):\s*(?P<message>.+)$",
+    r"(?P<severity>fatal\s+error|error)(?:\[(?P<rule>[A-Za-z0-9_.-]+)\])?:\s*"
+    r"(?P<message>.+)$",
     re.IGNORECASE,
 )
 _PLAIN_ERROR = re.compile(
-    r"(?P<severity>fatal\s+error|error):\s*(?P<message>.+)$",
+    r"(?P<severity>fatal\s+error|error)(?:\[(?P<rule>[A-Za-z0-9_.-]+)\])?:\s*"
+    r"(?P<message>.+)$",
     re.IGNORECASE,
 )
 
@@ -246,7 +248,8 @@ def extract_diagnostic_records(*, stage: str, output: str) -> list[DiagnosticRec
             located.group("path") if located is not None else None
         )
         symbol = _diagnostic_symbol(message)
-        category = _diagnostic_category(stage, message, source_file)
+        rule = plain.groupdict().get("rule")
+        category = rule.lower() if rule else _diagnostic_category(stage, message, source_file)
         normalized = _normalize_diagnostic_message(message)
         identity = "|".join(
             (stage or "unknown", category, symbol or "unknown", normalized)
@@ -568,9 +571,9 @@ def evaluation_gates(result: EvalResult) -> dict[str, str]:
     }
 
 
-def parse_structured_failure(
+def parse_failure_evidence(
     *, stage: str, output: str, case_info: dict[str, Any] | None = None
-) -> StructuredFailure:
+) -> FailureEvidence:
     lowered = output.lower()
     compile_stage = stage in {
         "ascendc_build",
@@ -646,7 +649,7 @@ def parse_structured_failure(
             (case_info or {}).get("failed_case_index") is not None,
         )
     ) else "stage_only"
-    return StructuredFailure(
+    return FailureEvidence(
         stage=stage,
         runtime_code=runtime_match.group(1) if runtime_match else None,
         subsystem=subsystem,
@@ -716,13 +719,56 @@ def compact_evaluation(result: EvalResult | None) -> dict[str, Any] | None:
     performance = {
         key: value
         for key, value in result.performance.items()
-        if key in {"overall_speedup", "framework", "implementation", "mock"}
+        if key
+        in {
+            "schema_version",
+            "status",
+            "score",
+            "overall_speedup",
+            "measurement",
+            "diagnostics",
+            "framework",
+            "implementation",
+            "mock",
+        }
     }
     per_case = result.performance.get("per_case_speedup", [])
     if isinstance(per_case, list):
         performance["per_case_speedup"] = per_case[:8]
         if len(per_case) > 8:
             performance["per_case_speedup_omitted"] = len(per_case) - 8
+    bottlenecks = result.performance.get("bottlenecks", [])
+    if isinstance(bottlenecks, list):
+        compact_bottlenecks = []
+        for item in bottlenecks[:3]:
+            if not isinstance(item, dict):
+                continue
+            compact_item = {
+                key: item[key]
+                for key in (
+                    "index",
+                    "inputs",
+                    "reference_ms",
+                    "ascendc_ms",
+                    "speedup",
+                    "reference_cv",
+                    "ascendc_cv",
+                )
+                if key in item
+            }
+            profiling = item.get("profiling", {})
+            if isinstance(profiling, dict):
+                compact_item["profiling"] = {
+                    implementation: {
+                        "status": profile.get("status"),
+                        "reason": profile.get("reason"),
+                        "operators": profile.get("operators", [])[:5],
+                    }
+                    for implementation, profile in profiling.items()
+                    if isinstance(profile, dict)
+                }
+            compact_bottlenecks.append(compact_item)
+        performance["bottlenecks"] = compact_bottlenecks
     return {
         "compiled": result.compiled,
         "correctness": result.correctness,
@@ -731,7 +777,7 @@ def compact_evaluation(result: EvalResult | None) -> dict[str, Any] | None:
         "failure_code": result.failure_code,
         "message": result.error,
         "diagnostics": compact_diagnostics(output),
-        "structured_failure": result.structured_failure,
+        "failure_evidence": result.failure_evidence,
         "active_profile": result.active_profile,
         "passed_profiles": result.passed_profiles,
         "passed_case_indices": result.passed_case_indices,

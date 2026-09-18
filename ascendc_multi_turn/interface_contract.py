@@ -7,11 +7,11 @@ from typing import Any
 
 from .models import FileBundle
 
-_MODULE = re.compile(r"PYBIND11_MODULE\s*\(\s*([A-Za-z_]\w*)\s*,")
-_HOST_SIGNATURE = re.compile(
-    r'extern\s+"C"\s+void\s+([A-Za-z_]\w*_do)\s*\((.*?)\)\s*([;{])',
-    re.DOTALL,
+_TORCH_LIBRARY = re.compile(
+    r"TORCH_LIBRARY(?P<kind>_IMPL|_FRAGMENT)?\s*\(\s*(?P<namespace>[A-Za-z_]\w*)"
+    r"(?:\s*,\s*(?P<dispatch>[A-Za-z0-9_:]+))?\s*,"
 )
+_TORCH_OP = re.compile(r"torch\.ops\.([A-Za-z_]\w*)\.([A-Za-z_]\w*)")
 _KERNEL_SIGNATURE = re.compile(
     r'extern\s+"C"\s+(?:__global__\s+)?__aicore__\s+void\s+'
     r"([A-Za-z_]\w*)\s*\((.*?)\)\s*\{",
@@ -24,22 +24,23 @@ def _normalize_signature(parameters: str) -> str:
 
 
 def capture_interface_contract(bundle: FileBundle) -> dict[str, Any]:
-    """Capture the stable Python/pybind/host-wrapper/kernel interface surface."""
+    """Capture the stable dispatcher, Python wrapper, and kernel entry surface."""
 
-    modules: list[dict[str, str]] = []
-    host_declarations: list[dict[str, str]] = []
-    host_definitions: list[dict[str, str]] = []
+    registrations: list[dict[str, str]] = []
+    python_ops: list[dict[str, str]] = []
     kernel_entries: list[dict[str, str]] = []
     for path, source in sorted(bundle.files.items()):
-        for match in _MODULE.finditer(source):
-            modules.append({"path": path, "name": match.group(1)})
-        for match in _HOST_SIGNATURE.finditer(source):
-            item = {
-                "path": path,
-                "name": match.group(1),
-                "parameters": _normalize_signature(match.group(2)),
-            }
-            (host_declarations if match.group(3) == ";" else host_definitions).append(item)
+        for match in _TORCH_LIBRARY.finditer(source):
+            registrations.append(
+                {
+                    "path": path,
+                    "kind": match.group("kind") or "DEF",
+                    "namespace": match.group("namespace"),
+                    "dispatch": match.group("dispatch") or "",
+                }
+            )
+        for match in _TORCH_OP.finditer(source):
+            python_ops.append({"path": path, "namespace": match.group(1), "operator": match.group(2)})
         for match in _KERNEL_SIGNATURE.finditer(source):
             kernel_entries.append(
                 {
@@ -49,10 +50,9 @@ def capture_interface_contract(bundle: FileBundle) -> dict[str, Any]:
                 }
             )
     return {
-        "schema_version": 1,
-        "pybind_modules": modules,
-        "host_wrapper_declarations": host_declarations,
-        "host_wrapper_definitions": host_definitions,
+        "schema_version": 2,
+        "torch_registrations": registrations,
+        "python_ops": python_ops,
         "kernel_entries": kernel_entries,
     }
 
@@ -63,9 +63,8 @@ def compare_interface_contract(
     actual = capture_interface_contract(candidate)
     issues: list[str] = []
     for key in (
-        "pybind_modules",
-        "host_wrapper_declarations",
-        "host_wrapper_definitions",
+        "torch_registrations",
+        "python_ops",
         "kernel_entries",
     ):
         if expected.get(key, []) != actual.get(key, []):
