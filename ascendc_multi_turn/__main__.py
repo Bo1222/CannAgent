@@ -19,7 +19,9 @@ def parser() -> argparse.ArgumentParser:
     if provider not in {"deepseek", "openai"}:
         raise RuntimeError("LLM_PROVIDER must be 'deepseek' or 'openai'")
     result = argparse.ArgumentParser(description="Generate and optimize AscendC operators through DeepSeek or OpenAI")
-    result.add_argument("--op-file", required=True, help="reference model.py; a same-stem .json file is copied when present")
+    result.add_argument("--op-name", required=True, help="safe C/C++ operator identifier used by the fixed project template")
+    result.add_argument("--op-file", required=True, help="reference model.py and authoritative Model.forward ABI")
+    result.add_argument("--op-json", default="", help="JSON/JSONL cases; defaults to the same stem as --op-file")
     result.add_argument("--output-dir", required=True)
     result.add_argument("--provider", choices=("deepseek", "openai"), default=provider)
     result.add_argument("--model", default=None, help="override the selected provider's model")
@@ -123,7 +125,9 @@ def main() -> int:
         "https://api.deepseek.com" if prefix == "DEEPSEEK" else "https://api.openai.com/v1",
     )
     config = RunConfig(
+        op_name=args.op_name,
         op_file=args.op_file,
+        op_json=args.op_json,
         output_dir=args.output_dir,
         provider=args.provider,
         model=model,

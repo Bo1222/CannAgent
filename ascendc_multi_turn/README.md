@@ -22,13 +22,15 @@ python -m ascendc_multi_turn.devkit status
 
 ```bash
 python -m ascendc_multi_turn \
+  --op-name my_operator \
   --op-file /path/to/model.py \
+  --op-json /path/to/cases.json \
   --output-dir /path/to/output \
   --asc-devkit-dir /path/to/asc-devkit \
   --reasoning-log full
 ```
 
-Generator 默认关闭 thinking，把输出预算保留给完整工程 JSON。每次 API 调用若返回
+Generator 默认关闭 thinking，把输出预算保留给五个算子逻辑文件。每次 API 调用若返回
 `reasoning_content`，默认在对应轮次保存 `reasoning*.txt`，文件权限为 `0600`；
 `calls.jsonl` 记录其相对路径、长度与 SHA256，而不复制原文。可用
 `--reasoning-log metadata` 禁止原文落盘。`finish_reason=length` 属输出预算耗尽，不会按 transport
@@ -49,7 +51,7 @@ profiler 诊断，为下一轮局部优化提供 operator 和 latency 证据。P
 
 ## 产物契约
 
-首轮生成完整 CANNBot 直调工程：
+新任务先由 `create_ascendc_project.py` 复制固定模板并从 `Model.forward` 确定性生成 ABI：
 
 ```text
 model_new_ascendc.py
@@ -61,10 +63,24 @@ op_host/data_utils.h
 op_extension/<op>_torch.cpp
 op_extension/register.cpp
 op_extension/ops.h
-scripts/golden.py
-scripts/test_torch.py
+scripts/
+model.py
+<cases>.json
 ```
 
+其中 `scripts/` 为空目录，不生成 benchmark 或测试脚本；`model.py` 与 JSON 原样复制。
+固定模板负责 `CMakeLists.txt`、`ops.h`、`register.cpp` 和 `data_utils.h`，LLM 只补全
+kernel、tiling、host、torch 接入实现与 `model_new_ascendc.py`，不得修改工程骨架。
 项目自己的 CMake 负责编译 ASC Kernel 和共享库；扩展使用 `TORCH_LIBRARY` 注册
 PrivateUse1 与 Meta，`ModelNew` 加载共享库并通过 `torch.ops` 调用。旧
 `kernel/pybind11.cpp`、`PYBIND11_MODULE` 和 `*_do` ABI 会被拒绝。
+
+也可以只生成未实现算法的确定性工程骨架：
+
+```bash
+python create_ascendc_project.py \
+  --op-name add_alpha \
+  --op-file benchmarks/NPUKernelBench/level1/3_Add.py \
+  --op-json benchmarks/NPUKernelBench/level1/3_Add.json \
+  --output outputs/add_alpha_template_example
+```

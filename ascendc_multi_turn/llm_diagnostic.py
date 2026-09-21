@@ -10,7 +10,7 @@ from typing import Any
 
 from llm_config import get_env
 
-from .bundle import parse_file_bundle, validate_initial_bundle
+from .bundle import parse_file_bundle, validate_logic_bundle
 from .llm import OpenAICompatibleProvider
 from .logging import TrajectoryLogger
 from .models import LLMCallConfig, LLMResponse
@@ -193,7 +193,7 @@ def run_diagnostics(
                 step["valid"] = isinstance(payload, dict) and response.finish_reason != "length"
             elif validation == "bundle":
                 bundle = parse_file_bundle(response.content)
-                validate_initial_bundle(bundle)
+                validate_logic_bundle(bundle)
                 step["valid"] = response.finish_reason != "length"
                 step["bundle_file_count"] = len(bundle.files)
             else:

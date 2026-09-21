@@ -1,0 +1,19 @@
+#include "acl/acl.h"
+#include "ops.h"
+#include "../op_kernel/@OP_NAME@_tiling.h"
+
+namespace ascend_kernel {
+
+@CPP_RETURN_TYPE@ @OP_NAME@_torch(@CPP_ARGUMENTS@) {
+    // <LLM-TODO: validate inputs, compute tiling, allocate outputs, and launch @OP_NAME@_kernel>
+    TORCH_CHECK(false, "@OP_NAME@_torch has not been implemented");
+    return {};
+}
+
+@CPP_RETURN_TYPE@ @OP_NAME@_meta(@CPP_ARGUMENTS@) {
+    // <LLM-TODO: infer output metadata without running the NPU kernel>
+    TORCH_CHECK(false, "@OP_NAME@_meta has not been implemented");
+    return {};
+}
+
+}  // namespace ascend_kernel

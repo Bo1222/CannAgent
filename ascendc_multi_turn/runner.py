@@ -6,7 +6,6 @@ import json
 import math
 import os
 import re
-import shutil
 from pathlib import Path
 from typing import Any
 
@@ -16,6 +15,7 @@ from .bundle import (
     restore_bundle,
     semantic_bundle_hash,
     validate_initial_bundle,
+    validate_logic_bundle,
 )
 from .context_selector import ContextSelector
 from .devkit import (
@@ -45,6 +45,7 @@ from .llm import LLMProvider, system_prompt_for, system_prompt_id_for
 from .logging import TrajectoryLogger
 from .models import EvalResult, FileBundle, LLMCallConfig, LLMResponse, RunConfig
 from .progress import ProgressReporter, token_detail
+from .project_generator import ProjectSpec, build_project_spec, create_project
 from .prompts import (
     PLANNING_MODE_BLUEPRINT,
     PLANNING_MODE_DIAGNOSE,
@@ -98,29 +99,37 @@ class MultiTurnRunner:
         self.skill_adapter = SkillAdapter(full_selected_input=False)
         self.context_selector = ContextSelector(self.skill_adapter)
         self.devkit_root: Path | None = None
+        self.project_spec: ProjectSpec | None = None
         self._reported_model_routes: set[tuple[str, str]] = set()
 
     def _prepare_task(self) -> None:
         source = Path(self.config.op_file).expanduser().resolve()
-        if not source.is_file():
-            raise FileNotFoundError(f"reference model does not exist: {source}")
+        cases = (
+            Path(self.config.op_json).expanduser().resolve()
+            if self.config.op_json
+            else source.with_suffix(".json")
+        )
+        self.project_spec = build_project_spec(self.config.op_name, source, cases)
         if self.config.resume:
             if not (self.state_dir / "trajectory.json").is_file():
                 raise ValueError(f"cannot resume: no trajectory found in {self.state_dir}")
+            if (self.task_dir / "model.py").read_bytes() != source.read_bytes():
+                raise ValueError("cannot resume with a different model.py reference")
+            if (self.task_dir / cases.name).read_bytes() != cases.read_bytes():
+                raise ValueError("cannot resume with a different op-json")
             return
-        if self.task_dir.exists() and any(self.task_dir.iterdir()):
-            raise ValueError(
-                f"output directory is not empty: {self.task_dir}; use --resume or choose another directory"
-            )
-        self.task_dir.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(source, self.task_dir / "model.py")
-        cases = source.with_suffix(".json")
-        if cases.is_file():
-            shutil.copy2(cases, self.task_dir / cases.name)
+        create_project(
+            op_name=self.config.op_name,
+            op_file=source,
+            op_json=cases,
+            output=self.task_dir,
+        )
 
     def _inputs(self) -> tuple[str, str]:
         reference = (self.task_dir / "model.py").read_text(encoding="utf-8")
-        cases_name = Path(self.config.op_file).expanduser().resolve().with_suffix(".json").name
+        if self.project_spec is None:
+            raise RuntimeError("project specification is not initialized")
+        cases_name = self.project_spec.op_json_filename
         cases_path = self.task_dir / cases_name
         cases = cases_path.read_text(encoding="utf-8") if cases_path.is_file() else "(no JSON case file)"
         return reference, cases
@@ -881,7 +890,7 @@ class MultiTurnRunner:
         stage_request = self.context_selector.request(
             audience=audience,
             workflow_phase=workflow_phase,
-            operator=Path(self.config.op_file).stem,
+            operator=self.config.op_name,
             soc=self.config.soc_version,
             runtime_version=knowledge_version.runtime_version,
             knowledge_version=ASC_DEVKIT_VERSION,
@@ -912,7 +921,7 @@ class MultiTurnRunner:
                 else resolve_devkit(self.config.asc_devkit_dir or None)
             )
         evidence_bundle = DevkitRetriever(self.devkit_root).retrieve(
-            operator=Path(self.config.op_file).stem,
+            operator=self.config.op_name,
             symbols=symbols,
             query_text=evidence,
         )
@@ -1122,7 +1131,16 @@ class MultiTurnRunner:
                     "LLM truncated both the initial response and the semantic retry",
                 )
         try:
-            delta = parse_file_bundle(response.content)
+            if self.project_spec is None:
+                raise RuntimeError("project specification is not initialized")
+            delta = parse_file_bundle(
+                response.content,
+                allowed_paths=set(self.project_spec.editable_paths),
+            )
+            if current is None or any(
+                "<LLM-TODO:" in content for content in current.files.values()
+            ):
+                validate_logic_bundle(delta)
             candidate = FileBundle(files=dict(current.files) if current else {})
             for path in delta.delete:
                 candidate.files.pop(path, None)

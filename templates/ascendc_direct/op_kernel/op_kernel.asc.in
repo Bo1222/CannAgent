@@ -1,0 +1,4 @@
+#include "kernel_operator.h"
+#include "@OP_NAME@_tiling.h"
+
+// <LLM-TODO: implement the AscendC kernel and expose @OP_NAME@_kernel>

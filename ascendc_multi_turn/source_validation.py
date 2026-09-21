@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -21,6 +22,61 @@ class SourceIssue:
 def _without_comments(text: str) -> str:
     text = re.sub(r"/\*.*?\*/", " ", text, flags=re.DOTALL)
     return re.sub(r"//[^\n]*", " ", text)
+
+
+def _forward_signature(path: Path, class_name: str) -> tuple | None:
+    try:
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    except (OSError, UnicodeError, SyntaxError):
+        return None
+    classes = [
+        node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == class_name
+    ]
+    if len(classes) != 1:
+        return None
+    forwards = [
+        node
+        for node in classes[0].body
+        if isinstance(node, ast.FunctionDef) and node.name == "forward"
+    ]
+    if len(forwards) != 1:
+        return None
+    function = forwards[0]
+    arguments = function.args
+    positional = [*arguments.posonlyargs, *arguments.args]
+    if not positional or positional[0].arg != "self":
+        return None
+    positional = positional[1:]
+    defaults: dict[str, str] = {}
+    for argument, default in zip(positional[-len(arguments.defaults) :], arguments.defaults):
+        defaults[argument.arg] = ast.dump(default, include_attributes=False)
+
+    def record(argument: ast.arg, kind: str, default: str | None) -> tuple:
+        annotation = (
+            ast.dump(argument.annotation, include_attributes=False)
+            if argument.annotation is not None
+            else None
+        )
+        return kind, argument.arg, annotation, default
+
+    parameters = [
+        record(argument, "positional", defaults.get(argument.arg))
+        for argument in positional
+    ]
+    parameters.extend(
+        record(
+            argument,
+            "keyword_only",
+            ast.dump(default, include_attributes=False) if default is not None else None,
+        )
+        for argument, default in zip(arguments.kwonlyargs, arguments.kw_defaults)
+    )
+    return_annotation = (
+        ast.dump(function.returns, include_attributes=False)
+        if function.returns is not None
+        else None
+    )
+    return tuple(parameters), return_annotation, bool(arguments.vararg), bool(arguments.kwarg)
 
 
 def validate_source_tree(task_dir: Path) -> list[SourceIssue]:
@@ -46,6 +102,24 @@ def validate_source_tree(task_dir: Path) -> list[SourceIssue]:
         add("model_new_ascendc.py", "missing_torch_ops", "ModelNew must call the registered operator through torch.ops")
     if not re.search(r"(?:torch\.ops\.load_library|torch\.classes\.load_library)", wrapper):
         add("model_new_ascendc.py", "missing_library_load", "wrapper must load the built shared library")
+    reference_path = task_dir / "model.py"
+    if reference_path.is_file() and wrapper_path.is_file():
+        reference_signature = _forward_signature(reference_path, "Model")
+        candidate_signature = _forward_signature(wrapper_path, "ModelNew")
+        if reference_signature is None:
+            add("model.py", "invalid_reference_signature", "reference must define one parseable Model.forward")
+        elif candidate_signature is None:
+            add(
+                "model_new_ascendc.py",
+                "invalid_candidate_signature",
+                "candidate must define one parseable ModelNew.forward",
+            )
+        elif candidate_signature != reference_signature:
+            add(
+                "model_new_ascendc.py",
+                "forward_signature_mismatch",
+                "ModelNew.forward must preserve Model.forward parameters, annotations, defaults, and return annotation",
+            )
 
     cmake_path = task_dir / "CMakeLists.txt"
     cmake = cmake_path.read_text(encoding="utf-8", errors="replace") if cmake_path.is_file() else ""

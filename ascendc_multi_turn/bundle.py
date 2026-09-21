@@ -48,7 +48,7 @@ def validate_relative_path(value: str) -> str:
     return normalized
 
 
-def parse_file_bundle(text: str) -> FileBundle:
+def parse_file_bundle(text: str, *, allowed_paths: set[str] | None = None) -> FileBundle:
     payload = _json_object(text)
     raw_files = payload.get("files")
     if not isinstance(raw_files, list) or not raw_files:
@@ -58,6 +58,8 @@ def parse_file_bundle(text: str) -> FileBundle:
         if not isinstance(item, dict):
             raise ValueError("each files entry must be an object")
         path = validate_relative_path(item.get("path", ""))
+        if allowed_paths is not None and path not in allowed_paths:
+            raise ValueError(f"path is protected or outside the active operator logic: {path!r}")
         content = item.get("content")
         if not isinstance(content, str) or not content.strip():
             raise ValueError(f"file {path!r} has empty content")
@@ -67,6 +69,12 @@ def parse_file_bundle(text: str) -> FileBundle:
     if not isinstance(raw_delete, list):
         raise ValueError("response.delete must be a list")
     delete = [validate_relative_path(path) for path in raw_delete]
+    if allowed_paths is not None:
+        protected_delete = sorted(set(delete) - allowed_paths)
+        if protected_delete:
+            raise ValueError(
+                f"protected paths cannot be deleted: {protected_delete}"
+            )
     overlap = set(files).intersection(delete)
     if overlap:
         raise ValueError(f"paths cannot be both written and deleted: {sorted(overlap)}")
@@ -120,8 +128,6 @@ def validate_initial_bundle(bundle: FileBundle) -> None:
         "op_host/data_utils.h",
         "op_extension/register.cpp",
         "op_extension/ops.h",
-        "scripts/golden.py",
-        "scripts/test_torch.py",
     }
     missing = sorted(required_exact - paths)
     if missing:
@@ -138,6 +144,40 @@ def validate_initial_bundle(bundle: FileBundle) -> None:
     legacy = sorted(path for path in paths if path == "kernel/pybind11.cpp" or path.startswith("kernel/"))
     if legacy:
         raise ValueError(f"legacy pybind/_do project layout is not accepted: {legacy}")
+    script_files = sorted(path for path in paths if path.startswith("scripts/"))
+    if script_files:
+        raise ValueError(f"scripts directory must remain empty: {script_files}")
+    unfinished = sorted(
+        path for path, content in bundle.files.items() if "<LLM-TODO:" in content
+    )
+    if unfinished:
+        raise ValueError(f"candidate still contains LLM TODO markers: {unfinished}")
+
+
+def validate_logic_bundle(bundle: FileBundle) -> None:
+    """Validate a generator response before it is merged into a fixed scaffold."""
+
+    paths = set(bundle.files)
+    roles = {
+        "model_new_ascendc.py": "model_new_ascendc.py" in paths,
+        "op_kernel/<op>_tiling.h": any(
+            path.startswith("op_kernel/") and path.endswith("_tiling.h") for path in paths
+        ),
+        "op_kernel/<op>_kernel.asc": any(
+            path.startswith("op_kernel/") and path.endswith("_kernel.asc") for path in paths
+        ),
+        "op_host/<op>.asc": any(
+            path.startswith("op_host/") and path.endswith(".asc") for path in paths
+        ),
+        "op_extension/<op>_torch.cpp": any(
+            path.startswith("op_extension/") and path.endswith("_torch.cpp") for path in paths
+        ),
+    }
+    missing = sorted(role for role, present in roles.items() if not present)
+    if missing:
+        raise ValueError(f"generator response is missing operator logic files: {missing}")
+    if len(paths) != len(roles):
+        raise ValueError(f"generator response must contain exactly five operator logic files: {sorted(paths)}")
 
 
 def _semantic_source(path: str, source: str) -> str:

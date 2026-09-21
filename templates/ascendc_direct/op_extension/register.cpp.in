@@ -1,0 +1,16 @@
+#include <torch/extension.h>
+#include <torch/library.h>
+
+#include "ops.h"
+
+TORCH_LIBRARY_FRAGMENT(cannagent, m) {
+    m.def("@OP_SCHEMA@");
+}
+
+TORCH_LIBRARY_IMPL(cannagent, PrivateUse1, m) {
+    m.impl("@OP_NAME@", TORCH_FN(ascend_kernel::@OP_NAME@_torch));
+}
+
+TORCH_LIBRARY_IMPL(cannagent, Meta, m) {
+    m.impl("@OP_NAME@", TORCH_FN(ascend_kernel::@OP_NAME@_meta));
+}

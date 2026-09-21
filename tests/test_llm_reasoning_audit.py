@@ -22,13 +22,7 @@ def _project_bundle_text() -> str:
         "op_kernel/add_tiling.h": "#pragma once\n",
         "op_kernel/add_kernel.asc": "// kernel\n",
         "op_host/add.asc": "// host\n",
-        "op_host/data_utils.h": "#pragma once\n",
         "op_extension/add_torch.cpp": "// torch\n",
-        "op_extension/register.cpp": "// registration\n",
-        "op_extension/ops.h": "#pragma once\n",
-        "scripts/golden.py": "# golden\n",
-        "scripts/test_torch.py": "# test\n",
-        "CMakeLists.txt": "project(add LANGUAGES ASC CXX)\n",
     }
     return json.dumps(
         {
@@ -140,7 +134,9 @@ class _DiagnosticProvider:
 class ReasoningAuditTests(unittest.TestCase):
     def _config(self, root: Path, **overrides) -> RunConfig:
         values = {
+            "op_name": "mock",
             "op_file": str(root / "model.py"),
+            "op_json": str(root / "cases.json"),
             "output_dir": str(root / "task"),
             "mock": True,
             "model": "deepseek-flash",
@@ -266,7 +262,12 @@ class ReasoningAuditTests(unittest.TestCase):
     def test_generator_exhaustion_finishes_with_auditable_pause(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            (root / "model.py").write_text("class Model: pass\n", encoding="utf-8")
+            (root / "model.py").write_text(
+                "import torch\nclass Model:\n"
+                "    def forward(self, x: torch.Tensor) -> torch.Tensor:\n        return x\n",
+                encoding="utf-8",
+            )
+            (root / "cases.json").write_text('{"inputs": []}\n', encoding="utf-8")
             provider = _PlannerThenLengthProvider()
             runner = MultiTurnRunner(self._config(root), provider, MockEvaluator())
             summary = runner.run()
@@ -281,7 +282,12 @@ class ReasoningAuditTests(unittest.TestCase):
     def test_partial_length_gets_one_semantic_retry_then_pauses(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            (root / "model.py").write_text("class Model: pass\n", encoding="utf-8")
+            (root / "model.py").write_text(
+                "import torch\nclass Model:\n"
+                "    def forward(self, x: torch.Tensor) -> torch.Tensor:\n        return x\n",
+                encoding="utf-8",
+            )
+            (root / "cases.json").write_text('{"inputs": []}\n', encoding="utf-8")
             provider = _PlannerThenPartialLengthProvider()
             runner = MultiTurnRunner(self._config(root), provider, MockEvaluator())
             summary = runner.run()
@@ -314,7 +320,7 @@ class ReasoningAuditTests(unittest.TestCase):
                 item for item in manifest["steps"] if item["label"] == "real_prompt_nonthinking"
             )
             self.assertTrue(nonthinking["valid"])
-            self.assertEqual(nonthinking["bundle_file_count"], 11)
+            self.assertEqual(nonthinking["bundle_file_count"], 5)
             self.assertEqual(
                 provider.call_types,
                 ["diagnostic", "diagnostic", "generator", "generator"],
@@ -330,6 +336,7 @@ class ReasoningAuditTests(unittest.TestCase):
             },
         ):
             config = RunConfig(
+                op_name="mock",
                 op_file=str(Path(temporary) / "model.py"),
                 output_dir=str(Path(temporary) / "task"),
                 mock=True,

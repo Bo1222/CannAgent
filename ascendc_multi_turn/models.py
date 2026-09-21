@@ -133,6 +133,8 @@ class RunConfig:
     reasoning_log_mode: str = field(
         default_factory=lambda: get_env("ASCENDC_REASONING_LOG_MODE", "full")
     )
+    op_name: str = ""
+    op_json: str = ""
     blanket_max_tokens_override_active: bool = field(default=False, init=False)
     deprecated_repair_options_active: bool = field(default=False, init=False)
 

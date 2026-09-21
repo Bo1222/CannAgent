@@ -4,6 +4,89 @@
 代码标识符、文件路径、命令、模型名、产品名和原始错误信息可以保留原文，其余叙述统一使用中文。
 对应有TODO的修改项的时候使用二级标题作为修改的部分，并且放在文件首，目的是避免日期的累积就遗忘对应的TODO列表。
 
+## 2026-09-21
+
+### 变更
+
+- 调整 `.gitignore`，使项目可在另一台 NPU 设备上继续 agent 优化：恢复忽略外部 AscendC SDK 克隆
+  目录 `ascendc_multi_turn/asc-devkit-*/`（来自 `https://gitcode.com/cann/asc-devkit.git`，约 683M 的
+  嵌套 git 仓库，不应提交，换设备重新克隆），并新增忽略 `*.log`、`.pytest_cache/`、`.ruff_cache/`。
+- `CHANGELOG.md` 保持纳入版本控制，随源码一起上传，保证跨设备可追溯优化历史。
+- 本地仓库 git 身份设置为 `Bo1222 <geqingbo123@outlook.com>`。
+
+### 分析
+
+- 跨设备续做的关键是“提交可复现的源码与配置，忽略可再生的产物与外部依赖”。需要提交：`ascendc_multi_turn/`
+  源码与 `skill_mapping.yaml`、`templates/`、`tests/`、`create_ascendc_project.py`、`docs/`、`README.md`、
+  `CHANGELOG.md`、`AGENTS.md`、`requirements.txt` 与 `.env.example`。需要忽略：`asc-devkit-*` 外部 SDK、
+  `outputs/`（由 `output*` 规则命中）、`__pycache__/`、`.pytest_cache/`、`.ruff_cache/` 以及 `.env` 等含密钥文件。
+- 新设备续做需先克隆 `asc-devkit-9.1.0` 到 `ascendc_multi_turn/asc-devkit-9.1.0`，并按 `.env.example`
+  重建 `.env`，再执行 `pip install -r requirements.txt`。
+
+### 验证
+
+- `git check-ignore -v` 确认 `ascendc_multi_turn/asc-devkit-9.1.0/**`、`outputs/`、`.pytest_cache/`、
+  `.ruff_cache/`、`*.log` 均被忽略，且 `CHANGELOG.md` 仍可提交。
+- `python -m pytest tests/test_ascendc_project_generator.py -q`：11 passed。
+
+## 2026-09-19
+
+### 方案：AscendC 固定模板工程生成器与 Workflow 接入
+
+状态：**已解决**。
+
+- 新增根命令 `create_ascendc_project.py` 与可复用的 `project_generator.py`。生成器校验安全算子名、
+  Python reference、JSON/JSONL 和空输出目录，在同级临时目录完成全部渲染后原子移动到目标位置；不调用
+  LLM，也不根据算子语义生成 CMake。
+- `Model.forward` 是 ABI 的唯一来源。生成器只使用 Python AST 提取参数顺序、注解、默认值和返回类型，
+  确定性生成 PyTorch schema、C++ 声明和 `ModelNew.forward` 签名；缺少或无法映射的类型直接拒绝。
+  JSON/JSONL 只做格式校验并逐字节复制，不参与输入输出参数推断或一致性判断。
+- 新增 `templates/ascendc_direct/` 固定模板。`CMakeLists.txt`、`ops.h`、`register.cpp`、
+  `data_utils.h` 和目录结构由生成器负责；kernel、tiling、host、Torch 接入与
+  `model_new_ascendc.py` 使用统一 `LLM-TODO`。`model.py` 从 `--op-file` 原样复制并作为受保护的正确性
+  reference，不再由 LLM 补全。
+- CMake 骨架以 CANNBot 固定提交 `a08c49706e35a400d7c77e0875bc7c72a3a79012` 的
+  `add_custom` 双 target 模板为依据。保留上游 ASC、ACL、Torch 与 torch_npu 链接结构，并使用
+  `importlib.util.find_spec` 无副作用定位 `TorchConfig.cmake` 和 torch_npu，避免导入设备模块污染 CMake
+  输出；本变更不恢复 Evaluator 的 CMake 路径自动注入。
+- `ascendc_multi_turn` 新增必填 `--op-name` 和可选 `--op-json`。新任务先生成固定 scaffold，LLM 首轮只需
+  返回五个逻辑文件；后续 bundle、planner target 和 repair policy 均禁止修改或删除 CMake、注册层、
+  公共声明、data_utils、reference、JSON 与空 `scripts/`。
+- 初始 bundle 校验不再要求 `scripts/golden.py` 或 `scripts/test_torch.py`，改为要求 `scripts/` 保持为空，
+  并拒绝候选中残留的 `LLM-TODO`。source validation 新增 `ModelNew.forward` 与 `Model.forward` 的参数、
+  注解、默认值及返回注解一致性检查。
+- 更新 Mock provider、分层 LLM 诊断、主文档和模块文档，使诊断验证五文件逻辑 bundle，Mock workflow
+  也从固定模板启动。
+
+### 分析
+
+- 固定 `ops.h/register.cpp` 与“不固定输入输出参数”并不冲突：模板结构固定，ABI 内容由 Python AST
+  生成的受控占位符替换；LLM 无权修改注册层。对于无法从 Python 类型注解唯一确定的接口，显式失败比
+  从 JSON case、函数体或模型猜测更可靠。
+- `3_Add.json` 是合法 JSONL 而不是单个 JSON 文档，因此生成器同时接受 JSON 与逐行 JSON；解析仅用于
+  拒绝损坏输入，复制使用原始字节，保证不会改变 case 语义。
+- CANNBot 原始模板的 `torch.utils.cmake_prefix_path` 在当前环境会因 Python 启动时设备模块输出污染且
+  `TorchConfig.cmake` 位于 `Torch/` 子目录而查找失败。模板改为不导入 torch 的模块定位后，ASC compiler
+  与 Torch 均能在 CMake configure 阶段被找到。这是固定模板内的确定性适配，不是运行时注入。
+- 带 `LLM-TODO` 的示例工程只验证目录、ABI、模板和 CMake configure，不包含具体算子算法，不能表述为
+  已编译或已通过正确性/性能测试的 Add 算子。
+
+### 验证
+
+- `python -m unittest discover -s tests`：93 项全部通过，包含恢复任务不重建固定 scaffold 的回归覆盖。
+- `python -m py_compile ...`：生成器、CLI、bundle、runner、Prompt、repair policy 与 source validation
+  均通过语法检查；新增文件的 `ruff check` 与改动文件 import 检查通过。
+- 使用 `add_alpha`、`3_Add.py` 与 `3_Add.json` 实际生成
+  `outputs/add_alpha_template_example`；输出文件树严格匹配契约，`scripts/` 为空，Python 与 JSON 原样
+  复制，所有模板占位符均已替换，未生成 build、benchmark、README、manifest、build.sh、
+  CMakePresets、main.cpp 或 aclnn 文件。
+- 对示例执行 `cmake -S outputs/add_alpha_template_example -B <临时目录>`：configure 与 generate 成功，
+  识别 CANN 9.1.0 ASC compiler 和本机 Torch；仅报告环境中的 `kineto_LIBRARY-NOTFOUND` 警告以及调用方
+  `SOC_VERSION` 未使用警告。未执行 build，因为算子逻辑按要求保留 `LLM-TODO`。
+- 使用新 CLI 参数执行一次单候选 Mock workflow：固定 scaffold 与五文件逻辑 bundle 合并成功，
+  `evaluations_completed=1`、`baseline_round=1`、`status=completed`；该结果只验证编排，不代表真实编译、
+  NPU 正确性或性能。
+
 ## 2026-09-18
 
 ### 方案：当前进度 Git 归档

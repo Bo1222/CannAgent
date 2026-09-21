@@ -1,0 +1,4 @@
+#include "data_utils.h"
+#include "../op_kernel/@OP_NAME@_kernel.asc"
+
+// <LLM-TODO: implement the standalone host launch path for @OP_NAME@>

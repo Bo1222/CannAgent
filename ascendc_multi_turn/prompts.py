@@ -13,27 +13,21 @@ from .models import EvalResult, FileBundle
 OUTPUT_CONTRACT = r"""
 只返回一个 JSON 对象，不要使用 Markdown 代码围栏：
 {
-  "analysis": "任务语义、设计依据、验证目标的简短说明",
+  "analysis": "算子逻辑、设计依据、验证目标的简短说明",
   "files": [
     {"path": "model_new_ascendc.py", "content": "完整内容"},
     {"path": "op_kernel/<op>_tiling.h", "content": "完整内容"},
     {"path": "op_kernel/<op>_kernel.asc", "content": "完整内容"},
     {"path": "op_host/<op>.asc", "content": "完整内容"},
-    {"path": "op_host/data_utils.h", "content": "完整内容"},
-    {"path": "op_extension/<op>_torch.cpp", "content": "完整内容"},
-    {"path": "op_extension/register.cpp", "content": "完整内容"},
-    {"path": "op_extension/ops.h", "content": "完整内容"},
-    {"path": "scripts/golden.py", "content": "完整内容"},
-    {"path": "scripts/test_torch.py", "content": "完整内容"},
-    {"path": "CMakeLists.txt", "content": "完整内容"}
+    {"path": "op_extension/<op>_torch.cpp", "content": "完整内容"}
   ],
   "delete": []
 }
-`content` 是完整文件，不是 diff。首轮必须提供完整 CANNBot 直调工程。只允许写入以下路径：
-`model_new_ascendc.py`、`CMakeLists.txt`，以及 `op_kernel/`、`op_host/`、`op_extension/`、`scripts/`
-目录下的源码文件；禁止生成 `kernel/pybind11.cpp`、`*_do` wrapper、构建产物或图片。若活动 plan
-item 的 `target_files` 与上述白名单冲突，以白名单为准，不得创建白名单外的文件，并在 `analysis`
-中说明该冲突。
+`content` 是完整文件，不是 diff。工程目录、CMake、dispatcher 注册、公共声明、data_utils、reference
+和 JSON 已由固定模板生成。只允许补全上面五个算子逻辑文件；禁止写入或删除 `CMakeLists.txt`、
+`op_extension/ops.h`、`op_extension/register.cpp`、`op_host/data_utils.h`、`model.py`、JSON、`scripts/`
+和任何构建产物。必须移除这五个文件中的全部 `LLM-TODO`。若活动 plan item 与该白名单冲突，
+以白名单为准，并在 `analysis` 中说明。
 """.strip()
 
 RULES = f"""
@@ -83,7 +77,7 @@ _PLAN_BODY = r"""
       "hypothesis": "一个可验证假设",
       "change": "一项具体源码修改",
       "expected_signal": "能够验证该假设的评测结果",
-      "target_files": ["model_new_ascendc.py", "op_kernel/<op>_kernel.asc", "op_host/<op>.asc", "op_extension/<op>_torch.cpp", "op_extension/register.cpp", "CMakeLists.txt"],
+      "target_files": ["model_new_ascendc.py", "op_kernel/<op>_tiling.h", "op_kernel/<op>_kernel.asc", "op_host/<op>.asc", "op_extension/<op>_torch.cpp"],
       "edit_scope": "文件或区域",
       "allow_interface_change": false,
       "evidence_refs": [{"source": "evaluation", "line_excerpt": "准确证据摘录"}],
@@ -138,7 +132,7 @@ INITIAL_PLAN_OUTPUT_CONTRACT = r"""
       "hypothesis": "一个可验证的端到端 AscendC 实现假设",
       "change": "覆盖算法、block/tiling、内存和数据搬运、dtype/shape/tail、Host ABI 及源码布局的完整蓝图",
       "expected_signal": "静态校验、编译、全部正确性用例和有效 benchmark score 均成功",
-      "target_files": ["model_new_ascendc.py", "op_kernel/<op>_kernel.asc", "op_host/<op>.asc", "op_extension/<op>_torch.cpp", "op_extension/register.cpp", "CMakeLists.txt"],
+      "target_files": ["model_new_ascendc.py", "op_kernel/<op>_tiling.h", "op_kernel/<op>_kernel.asc", "op_host/<op>.asc", "op_extension/<op>_torch.cpp"],
       "edit_scope": "file",
       "allow_interface_change": true,
       "evidence_refs": [{"source": "reference", "line_excerpt": "依据摘录"}],
@@ -169,9 +163,9 @@ COMPILATION_REPAIR_CONTRACT = """
 STAGE_CONTRACTS = {
     "bootstrap_generation": """
 - 生成覆盖 reference 和全部测试用例约束的完整端到端实现。
-- 明确 tiling、数据搬运、dtype、layout、shape、tail、Host/Kernel 边界和完整目录布局。
-- 使用 CANNBot 直调工程模式：项目 CMake 编译 ASC Kernel 与 PyTorch 扩展，
-  `TORCH_LIBRARY` 同时注册 PrivateUse1 和 Meta，`ModelNew` 通过 `torch.ops` 调用。
+- 明确 tiling、数据搬运、dtype、layout、shape、tail 和 Host/Kernel 边界，只补全模板中的五个逻辑文件。
+- 固定模板已经提供 CMake、PrivateUse1/Meta 注册、公共声明和目录布局；不得重新生成或修改这些文件，
+  `ModelNew` 必须通过模板定义的 `torch.ops` schema 调用。
 - 禁止生成 `kernel/pybind11.cpp`、`PYBIND11_MODULE` 或 `*_do` 历史 ABI。
 """.strip(),
     "compile_repair": COMPILATION_REPAIR_CONTRACT,
@@ -715,7 +709,22 @@ def _sanitize_target_files(target_files: list[str]) -> tuple[list[str], list[str
         if not stripped:
             continue
         try:
-            accepted.append(validate_relative_path(stripped))
+            normalized = validate_relative_path(stripped)
+            editable = bool(
+                normalized == "model_new_ascendc.py"
+                or (
+                    normalized.startswith("op_kernel/")
+                    and normalized.endswith(("_kernel.asc", "_tiling.h"))
+                )
+                or (normalized.startswith("op_host/") and normalized.endswith(".asc"))
+                or (
+                    normalized.startswith("op_extension/")
+                    and normalized.endswith("_torch.cpp")
+                )
+            )
+            if not editable:
+                raise ValueError("path is protected by the fixed project template")
+            accepted.append(normalized)
         except ValueError:
             rejected.append(stripped)
     return accepted, rejected

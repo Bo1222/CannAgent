@@ -62,8 +62,6 @@ def _project_files() -> dict[str, str]:
             "TORCH_LIBRARY_IMPL(cannagent, Meta, m) {}\n"
         ),
         "op_extension/ops.h": "#pragma once\n",
-        "scripts/golden.py": "# golden\n",
-        "scripts/test_torch.py": "# test\n",
         "CMakeLists.txt": (
             "cmake_minimum_required(VERSION 3.16)\n"
             "project(add LANGUAGES ASC CXX)\n"
@@ -147,9 +145,32 @@ class ArchitectureContractTests(unittest.TestCase):
                 path = root / name
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_text(content, encoding="utf-8")
+            (root / "model.py").write_text(
+                "class Model:\n    def forward(self, x): return x\n",
+                encoding="utf-8",
+            )
             self.assertEqual(validate_source_tree(root), [])
             (root / "op_host/add.asc").write_text('extern "C" void add_do() {}\n', encoding="utf-8")
             self.assertIn("legacy_do_abi", {item.code for item in validate_source_tree(root)})
+
+    def test_model_new_must_preserve_reference_forward_signature(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "model.py").write_text(
+                "import torch\nclass Model:\n"
+                "    def forward(self, x: torch.Tensor, alpha: float = 1.0) -> torch.Tensor:\n"
+                "        return x\n",
+                encoding="utf-8",
+            )
+            (root / "model_new_ascendc.py").write_text(
+                "import torch\nclass ModelNew:\n"
+                "    def forward(self, x: torch.Tensor) -> torch.Tensor:\n"
+                "        torch.ops.load_library('x')\n"
+                "        return torch.ops.cannagent.add(x)\n",
+                encoding="utf-8",
+            )
+            codes = {item.code for item in validate_source_tree(root)}
+            self.assertIn("forward_signature_mismatch", codes)
 
     def test_pinned_cannbot_subset_is_hash_validated(self) -> None:
         payload = json.loads(CANNBOT_VENDOR_MANIFEST_PATH.read_text(encoding="utf-8"))
@@ -161,17 +182,61 @@ class ArchitectureContractTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             op = root / "add.py"
-            op.write_text("class Model: pass\n", encoding="utf-8")
+            op.write_text(
+                "import torch\n"
+                "class Model:\n"
+                "    def forward(self, x: torch.Tensor) -> torch.Tensor:\n"
+                "        return x\n",
+                encoding="utf-8",
+            )
+            cases = root / "add.json"
+            cases.write_text('{"inputs": []}\n', encoding="utf-8")
             output = root / "output"
             config = RunConfig(
-                op_file=str(op), output_dir=str(output), mock=True,
+                op_name="mock", op_file=str(op), op_json=str(cases),
+                output_dir=str(output), mock=True,
                 max_bootstrap_rounds=1, max_rounds=1, max_total_rounds=1,
             )
             summary = MultiTurnRunner(config, MockProvider(), MockEvaluator()).run()
             self.assertTrue(summary["success"])
             bundle = capture_bundle(output)
             self.assertIn("op_extension/register.cpp", bundle.files)
+            self.assertFalse(any(path.startswith("scripts/") for path in bundle.files))
             self.assertNotIn("kernel/pybind11.cpp", bundle.files)
+
+    def test_resume_does_not_regenerate_the_fixed_scaffold(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            op = root / "add.py"
+            cases = root / "add.json"
+            op.write_text(
+                "import torch\nclass Model:\n"
+                "    def forward(self, x: torch.Tensor) -> torch.Tensor:\n        return x\n",
+                encoding="utf-8",
+            )
+            cases.write_text('{"inputs": []}\n', encoding="utf-8")
+            output = root / "output"
+            base = dict(
+                op_name="add",
+                op_file=str(op),
+                op_json=str(cases),
+                output_dir=str(output),
+                mock=True,
+            )
+            first = MultiTurnRunner(RunConfig(**base), MockProvider(), MockEvaluator())
+            first._prepare_task()
+            cmake_before = (output / "CMakeLists.txt").read_bytes()
+            edited = output / "op_kernel/add_kernel.asc"
+            edited.write_text("// existing candidate\n", encoding="utf-8")
+            first.state_dir.mkdir(parents=True)
+            (first.state_dir / "trajectory.json").write_text("{}\n", encoding="utf-8")
+
+            resumed = MultiTurnRunner(
+                RunConfig(**base, resume=True), MockProvider(), MockEvaluator()
+            )
+            resumed._prepare_task()
+            self.assertEqual(edited.read_text(encoding="utf-8"), "// existing candidate\n")
+            self.assertEqual((output / "CMakeLists.txt").read_bytes(), cmake_before)
 
 
 if __name__ == "__main__":

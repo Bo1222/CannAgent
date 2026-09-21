@@ -1,0 +1,16 @@
+#pragma once
+
+#include <torch/extension.h>
+#include <c10/util/Optional.h>
+
+#include <cstdint>
+#include <string>
+#include <tuple>
+#include <vector>
+
+namespace ascend_kernel {
+
+@CPP_RETURN_TYPE@ @OP_NAME@_torch(@CPP_ARGUMENTS@);
+@CPP_RETURN_TYPE@ @OP_NAME@_meta(@CPP_ARGUMENTS@);
+
+}  // namespace ascend_kernel

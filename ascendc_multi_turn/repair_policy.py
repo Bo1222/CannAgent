@@ -7,8 +7,8 @@ from .diagnostics import diagnostics_for_result
 from .models import EvalResult, FileBundle
 
 _PATH = re.compile(
-    r"(?:model_new_ascendc\.py|CMakeLists\.txt|"
-    r"(?:op_kernel|op_host|op_extension|scripts)/[A-Za-z0-9_./-]+\.(?:asc|cpp|cc|cxx|h|hpp|py))"
+    r"(?:model_new_ascendc\.py|"
+    r"(?:op_kernel|op_host|op_extension)/[A-Za-z0-9_./-]+\.(?:asc|cpp|cc|cxx|h|hpp))"
 )
 
 
@@ -62,6 +62,15 @@ def _anchor_lines(source: str, markers: tuple[str, ...]) -> list[str]:
     return result
 
 
+def _is_editable_logic_path(path: str) -> bool:
+    return bool(
+        path == "model_new_ascendc.py"
+        or (path.startswith("op_kernel/") and path.endswith(("_kernel.asc", "_tiling.h")))
+        or (path.startswith("op_host/") and path.endswith(".asc"))
+        or (path.startswith("op_extension/") and path.endswith("_torch.cpp"))
+    )
+
+
 def build_repair_policy(
     current: FileBundle | None,
     previous: EvalResult | None,
@@ -86,14 +95,19 @@ def build_repair_policy(
         if item.source_file
     }
     requested = mentioned | diagnostic_paths
-    allowed = tuple(sorted(path for path in requested if path in current.files))
+    allowed = tuple(
+        sorted(
+            path
+            for path in requested
+            if path in current.files and _is_editable_logic_path(path)
+        )
+    )
     if not allowed:
         allowed = tuple(
             sorted(
                 path
                 for path in current.files
-                if path.startswith(("op_kernel/", "op_host/", "op_extension/", "scripts/"))
-                or path in {"model_new_ascendc.py", "CMakeLists.txt"}
+                if _is_editable_logic_path(path)
             )
         )
 

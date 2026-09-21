@@ -10,15 +10,20 @@ framework_profile*
 asc_profile_case*/
 output*
 **/.llm_state/**/reasoning*.txt
-ascendc_multi_turn/asc-devkit-*/
 build/
 extra-info/
 *.tar
+*.log
 
 # --- python ---
 __pycache__/
 *.pyc
 *.egg-info/
+.pytest_cache/
+.ruff_cache/
+
+# --- external AscendC SDK clone (683M, nested git repo; re-clone on new device) ---
+ascendc_multi_turn/asc-devkit-*/
 
 # --- AutoResearch runtime state (under autoresearch/) ---
 ar_tasks/
@@ -45,5 +50,4 @@ workspace/
 !.env.example
 
 # 代理规则和日志文件
-CHANGELOG.md
 .vscode/

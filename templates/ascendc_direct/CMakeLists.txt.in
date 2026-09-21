@@ -1,0 +1,83 @@
+# Copyright (c) 2026 Huawei Technologies Co., Ltd.
+# Licensed under the CANN Open Software License Agreement Version 2.0.
+
+cmake_minimum_required(VERSION 3.16)
+
+find_package(ASC REQUIRED)
+project(@OP_NAME@ LANGUAGES ASC CXX)
+
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+set(ACL_INCLUDE_DIR "$ENV{ASCEND_HOME_PATH}/aarch64-linux/include")
+set(ACL_LIB_DIR "$ENV{ASCEND_HOME_PATH}/lib64")
+
+add_executable(@OP_NAME@ op_host/@OP_NAME@.asc)
+target_link_libraries(@OP_NAME@ PRIVATE
+    tiling_api
+    register
+    platform
+    unified_dlog
+    dl
+    m
+    graph_base
+)
+target_include_directories(@OP_NAME@ PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/op_kernel
+    ${CMAKE_CURRENT_SOURCE_DIR}/op_host
+)
+target_compile_options(@OP_NAME@ PRIVATE
+    $<$<COMPILE_LANGUAGE:ASC>:--npu-arch=dav-2201>
+)
+
+find_package(Python3 COMPONENTS Interpreter Development REQUIRED)
+execute_process(
+    COMMAND ${Python3_EXECUTABLE} -c "import importlib.util, os; p=importlib.util.find_spec('torch'); print(os.path.join(os.path.dirname(p.origin), 'share', 'cmake', 'Torch'))"
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    OUTPUT_VARIABLE TORCH_CMAKE_DIR
+)
+find_package(Torch REQUIRED PATHS "${TORCH_CMAKE_DIR}" NO_DEFAULT_PATH)
+
+execute_process(
+    COMMAND ${Python3_EXECUTABLE} -c "import importlib.util, os; p=importlib.util.find_spec('torch_npu'); print(os.path.dirname(p.origin))"
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    OUTPUT_VARIABLE TORCH_NPU_PATH
+)
+set(TORCH_NPU_INCLUDE_DIRS ${TORCH_NPU_PATH}/include)
+set(TORCH_NPU_LIBRARIES ${TORCH_NPU_PATH}/lib)
+
+add_library(@OP_NAME@_ops SHARED
+    op_kernel/@OP_NAME@_kernel.asc
+    op_extension/@OP_NAME@_torch.cpp
+    op_extension/register.cpp
+)
+target_include_directories(@OP_NAME@_ops PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/op_kernel
+    ${CMAKE_CURRENT_SOURCE_DIR}/op_extension
+    ${TORCH_INCLUDE_DIRS}
+    ${TORCH_NPU_INCLUDE_DIRS}
+    ${ACL_INCLUDE_DIR}
+)
+target_link_libraries(@OP_NAME@_ops PRIVATE
+    torch_npu
+    tiling_api
+    register
+    platform
+    unified_dlog
+    dl
+    m
+    graph_base
+    ascendcl
+    ascendc_runtime
+)
+target_link_directories(@OP_NAME@_ops PRIVATE
+    ${ACL_LIB_DIR}
+    "$ENV{ASCEND_HOME_PATH}/aarch64-linux/lib64"
+    ${TORCH_NPU_LIBRARIES}
+)
+target_compile_options(@OP_NAME@_ops PRIVATE
+    ${TORCH_CXX_FLAGS}
+    $<$<COMPILE_LANGUAGE:ASC>:--npu-arch=dav-2201>
+)
+
+message(STATUS "TORCH_LIBRARY module 'lib@OP_NAME@_ops.so' will be built")

@@ -154,7 +154,7 @@ flowchart TD
 - **直接规划**：首个候选生成前先创建一个完整 AscendC baseline 计划，覆盖算法、tiling、内存搬运、dtype/尾块和 Host ABI；不使用 TileLang、DSL 中间实现或源码转换。后续计划再依据真实评测证据生成 3–5 个独立实验项。
 - **每轮输入**：`prompts.py` 把 `reference_code + cases + current(FileBundle) + previous_result(EvalResult)` 组装进 prompt；同一轮 PLAN 和 generator 复用已选择的 AscendC 知识。
 - **SETTLE**：基线前失败为 FAIL；基线后更快为 KEEP、有效但不快为 DISCARD、无效为 FAIL。连续三次 FAIL 进入 DIAGNOSE。
-- **文件协议与安全**：`bundle.py` —— 模型只能返回 `model_new_ascendc.py`、项目 CMake 和 `op_kernel/`、`op_host/`、`op_extension/`、`scripts/` 下的源码（`validate_relative_path` 阻止绝对路径、`..` 穿越和 build 文件），`validate_initial_bundle` 强制首轮包含完整 CANNBot 直调工程并拒绝旧 PyBind ABI。
+- **文件协议与安全**：固定模板先生成 CMake、dispatcher 注册、公共声明和目录；模型只能补全 `model_new_ascendc.py`、kernel、tiling、host 与 torch 接入五个逻辑文件。`bundle.py` 阻止绝对路径、`..` 穿越、固定文件修改和 build 文件，并拒绝旧 PyBind ABI。
 - **评测反馈**：先校验 CANNBot 工程目录、ASC CMake、PyTorch dispatcher、PrivateUse1/Meta 和 `ModelNew → torch.ops`，再执行项目构建、正确性 profile 和包内独立 benchmark；正式时延由 `torch.npu.Event` 测量，几何平均 speedup 作为分数，仓库级 `skills/` 不参与该执行链。
 - **知识控制**：只使用固定提交的 CANNBot 文本技能与 Asc DevKit 9.1.0 离线检索，按 `docs/api → examples → include → impl` 注入带版本、commit 和路径的文本证据；不存在旧结构化知识或模式回退。完整运行方法见 [AscendC 多轮算子生成与优化](ascendc_multi_turn/README.md)，架构方案见 [9.1.0 执行方案](docs/ascendc-agent-architecture-plan.md)。
 - **状态保存**：phase、plan、双预算、pending checkpoint、baseline 和 best 均持久化；EVAL 环境失败后 resume 直接重评候选，不重复调用模型。
@@ -303,8 +303,8 @@ DeepSeek 示例：
 pip install -r requirements.txt
 cp .env.example .env
 # 编辑 .env，填写 DEEPSEEK_API_KEY
-python -m ascendc_multi_turn.knowledge.build --version 8.5.0
 python -m ascendc_multi_turn \
+  --op-name gelu \
   --op-file benchmarks/NPUKernelBench/level1/1_GELU.py \
   --output-dir outputs/1_GELU \
   --provider deepseek \
@@ -316,7 +316,7 @@ python -m ascendc_multi_turn \
 
 使用 OpenAI/GPT 测试时，在 `.env` 填写 `OPENAI_API_KEY`、`OPENAI_MODEL`、
 `OPENAI_BASE_URL`，并改用 `--provider openai`。直调流程使用固定的 CANNBot 文本技能和
-Asc DevKit 9.1.0 离线证据；首轮先生成完整工程蓝图，再执行代码生成和评测。
+Asc DevKit 9.1.0 离线证据；首轮先复制固定工程模板，再让 LLM 补全五个算子逻辑文件并评测。
 命令默认在 stderr 显示当前轮次、各阶段和每 15 秒心跳，stdout 只保留最终
 JSON；需要静默运行时增加 `--quiet`。每轮完整的静态检查、编译、正确性与性能
 输出保存在 `.llm_state/round_NN/*.log`，最终 JSON 的 `failure.details_path` 会指向
@@ -344,6 +344,7 @@ python -m ascendc_multi_turn.llm_diagnostic \
 无 NPU 验证编排：
 ```bash
 python -m ascendc_multi_turn \
+  --op-name gelu \
   --op-file benchmarks/NPUKernelBench/level1/1_GELU.py \
   --output-dir /tmp/ascendc-flow-check --max-rounds 3 --mock
 ```

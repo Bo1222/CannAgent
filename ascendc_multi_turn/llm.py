@@ -294,13 +294,7 @@ class MockProvider:
                 {"path": "op_kernel/mock_tiling.h", "content": "#pragma once\nstruct MockTiling {};\n"},
                 {"path": "op_kernel/mock_kernel.asc", "content": f"// mock AscendC kernel round {self.calls}\n"},
                 {"path": "op_host/mock.asc", "content": "// mock host launch\n"},
-                {"path": "op_host/data_utils.h", "content": "#pragma once\n"},
                 {"path": "op_extension/mock_torch.cpp", "content": "// mock torch implementation\n"},
-                {"path": "op_extension/ops.h", "content": "#pragma once\n"},
-                {"path": "op_extension/register.cpp", "content": "TORCH_LIBRARY(cannagent, m) {}\n// PrivateUse1\n// Meta\n"},
-                {"path": "scripts/golden.py", "content": "# golden fixture\n"},
-                {"path": "scripts/test_torch.py", "content": "# torch fixture\n"},
-                {"path": "CMakeLists.txt", "content": "cmake_minimum_required(VERSION 3.16)\nproject(mock LANGUAGES ASC CXX)\nfind_package(ASC REQUIRED)\nadd_library(mock_ascendc SHARED op_kernel/mock_kernel.asc op_host/mock.asc op_extension/mock_torch.cpp op_extension/register.cpp)\n"},
             ],
             "delete": [],
         }

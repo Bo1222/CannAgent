@@ -1,0 +1,14 @@
+from pathlib import Path
+
+import torch
+import torch.nn as nn
+
+
+class ModelNew(nn.Module):
+    def __init__(self):
+        super().__init__()
+        torch.ops.load_library(str(Path(__file__).resolve().parent / "build" / "lib@OP_NAME@_ops.so"))
+
+    def forward(self, @PY_FORWARD_SIGNATURE@) -> @PY_RETURN_ANNOTATION@:
+        # <LLM-TODO: call torch.ops.cannagent.@OP_NAME@ with the validated arguments>
+        raise NotImplementedError("@OP_NAME@ is not implemented")

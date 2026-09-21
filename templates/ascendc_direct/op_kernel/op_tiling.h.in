@@ -1,0 +1,5 @@
+#pragma once
+
+#include <cstdint>
+
+// <LLM-TODO: define the tiling data shared by host and kernel for @OP_NAME_PASCAL@>
